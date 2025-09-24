@@ -47,6 +47,7 @@ httpx~=0.27.0               # Async HTTP client (if needed for external calls)
 user-agents~=2.2.0          # Generate realistic User-Agent strings
 langdetect~=1.0.9           # Language detection for post content
 pandas~=2.2.0               # CSV export convenience (optional heavy dep)
+XlsxWriter~=3.2.0           # Excel export engine for pandas.to_excel
 
 # =============================
 # Security

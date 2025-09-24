@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Corbeille des posts supprimés</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    * { box-sizing:border-box; }
+    body { margin:0; padding:2rem 1.5rem 4rem; font-family:"Inter",system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#0f172a; color:#e2e8f0; }
+    a { color:#60a5fa; text-decoration:none; }
+    a:hover { text-decoration:underline; }
+    header { display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap; margin-bottom:1.5rem; }
+    h1 { margin:0; font-size:1.6rem; font-weight:600; }
+    .warning { background:#fefce8; color:#854d0e; padding:0.9rem 1rem; border-radius:10px; margin-bottom:1rem; font-size:0.95rem; }
+    .card { background:rgba(15,23,42,0.6); border:1px solid rgba(148,163,184,0.15); border-radius:14px; padding:1.4rem; box-shadow:0 15px 45px rgba(15,23,42,0.45); }
+    table { width:100%; border-collapse:collapse; margin-top:1rem; font-size:0.9rem; }
+    th, td { padding:0.75rem 0.6rem; border-bottom:1px solid rgba(148,163,184,0.15); vertical-align:top; }
+    th { text-align:left; color:#94a3b8; font-size:0.78rem; text-transform:uppercase; letter-spacing:0.05em; }
+    tbody tr:hover { background:rgba(30,41,59,0.45); }
+    code { background:rgba(148,163,184,0.15); padding:0.2rem 0.4rem; border-radius:6px; }
+    .actions-cell { display:flex; gap:0.4rem; }
+    button.restore-btn { background:#22c55e; border:none; color:#022c22; font-weight:600; padding:0.45rem 0.8rem; border-radius:8px; cursor:pointer; transition:background 0.2s ease, transform 0.15s ease; }
+    button.restore-btn:hover { background:#16a34a; transform:translateY(-1px); }
+    button.restore-btn:disabled { opacity:0.7; cursor:wait; }
+    .meta { display:flex; gap:1rem; align-items:center; font-size:0.85rem; color:#cbd5f5; }
+    .toast-container { position:fixed; top:1rem; right:1rem; display:flex; flex-direction:column; gap:0.5rem; z-index:1000; }
+    .toast { padding:0.65rem 1rem; border-radius:6px; font-size:0.78rem; color:#fff; box-shadow:0 2px 8px rgba(0,0,0,0.25); opacity:0; transform:translateY(-6px); transition:all 0.25s ease; }
+    .toast.info { background:#2563eb; }
+    .toast.success { background:#15803d; }
+    .toast.error { background:#b91c1c; }
+    .empty { text-align:center; padding:2rem 1rem; color:#94a3b8; font-size:0.9rem; }
+    @media (max-width: 768px){
+      body { padding:1.5rem 1rem 4rem; }
+      table { font-size:0.85rem; }
+      th, td { padding:0.65rem 0.4rem; }
+      .actions-cell { flex-direction:column; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Corbeille</h1>
+    <a href="/">⟵ Retour au tableau</a>
+  </header>
+  <div class="warning">Attention : si vous fermez l’application, les posts présents dans la corbeille seront supprimés définitivement.</div>
+  <div class="card">
+    <div class="meta">
+      <span>Posts dans la corbeille : <strong id="deletedCount">{{ trash_count }}</strong></span>
+      <span>(Dernières suppressions affichées par ordre chronologique)</span>
+    </div>
+    {% if posts|length == 0 %}
+      <div class="empty">La corbeille est vide pour le moment.</div>
+    {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th>Actions</th>
+            <th>Keyword</th>
+            <th>Auteur</th>
+            <th>Entreprise</th>
+            <th>Texte</th>
+            <th>Supprimé le</th>
+            <th>Lien</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for post in posts %}
+            <tr data-post-id="{{ post._id }}">
+              <td class="actions-cell"><button type="button" class="restore-btn" data-id="{{ post._id }}">Restaurer</button></td>
+              <td><code>{{ post.keyword }}</code></td>
+              <td>{{ post.author or '—' }}</td>
+              <td>{{ post.company or '—' }}</td>
+              <td>{{ post.text[:120] }}{% if post.text|length > 120 %}…{% endif %}</td>
+              <td>{{ post.deleted_at|fmt_date }}</td>
+              <td>{% if post.permalink %}<a href="{{ post.permalink }}" target="_blank">ouvrir</a>{% else %}—{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+  <div class="toast-container" id="toastContainer"></div>
+  <script>
+    function showToast(msg, type='info'){
+      const container = document.getElementById('toastContainer');
+      if(!container) return;
+      const div = document.createElement('div');
+      div.className = `toast ${type}`;
+      div.textContent = msg;
+      container.appendChild(div);
+      requestAnimationFrame(()=>{div.style.opacity='1'; div.style.transform='translateY(0)';});
+      setTimeout(()=>{
+        div.style.opacity='0';
+        div.style.transform='translateY(-6px)';
+        setTimeout(()=>div.remove(), 300);
+      }, 3400);
+    }
+
+    function updateDeletedCount(value){
+      const el = document.getElementById('deletedCount');
+      if(el){ el.textContent = value ?? 0; }
+    }
+
+    async function restorePost(id, row){
+      try {
+        const r = await fetch(`/api/posts/${id}/restore`, { method:'POST' });
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        const data = await r.json();
+        updateDeletedCount(data.trash_count ?? 0);
+        showToast('Post restauré dans le tableau','success');
+        if(row){ row.remove(); }
+        if(document.querySelectorAll('tbody tr').length === 0){
+          const tbody = document.querySelector('tbody');
+          if(tbody){
+            tbody.innerHTML = '';
+            const empty = document.createElement('div');
+            empty.className = 'empty';
+            empty.textContent = 'La corbeille est vide pour le moment.';
+            tbody.parentElement.replaceWith(empty);
+          }
+        }
+      } catch(e){
+        showToast('Erreur restauration: '+e,'error');
+      }
+    }
+
+    document.querySelectorAll('.restore-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.id;
+        if(!id) return;
+        btn.disabled = true;
+        const row = btn.closest('tr');
+        await restorePost(id, row);
+      });
+    });
+  </script>
+</body>
+</html>

@@ -13,10 +13,30 @@
     tr:hover { background:#f1f7fd; }
     code { background:#eee; padding:2px 4px; border-radius:4px; }
     .meta { display:flex; gap:1rem; flex-wrap:wrap; font-size:0.8rem; margin-top:0.5rem; color:#555; }
-    .actions { margin-top:1rem; }
-    button { background:#2563eb; color:white; border:none; padding:0.6rem 1rem; border-radius:6px; cursor:pointer; font-size:0.9rem; }
+    .actions { margin-top:1rem; display:flex; gap:0.6rem; align-items:center; flex-wrap:wrap; }
+    button { background:#2563eb; color:white; border:none; padding:0.6rem 1rem; border-radius:6px; cursor:pointer; font-size:0.9rem; transition:background 0.2s ease, color 0.2s ease; }
     button:hover { background:#1d4ed8; }
+    button.btn-outline { background:#fff; color:#1e3a8a; border:1px solid #cbd5e1; }
+    button.btn-outline:hover { background:#e0ecff; color:#1d4ed8; }
+    button.btn-danger { background:#dc2626; }
+    button.btn-danger:hover { background:#b91c1c; }
     .badge { display:inline-block; padding:2px 6px; border-radius:4px; background:#e0ecff; font-size:0.7rem; }
+    .status-texts { display:flex; flex-direction:column; gap:0.35rem; }
+    .status-hint { padding:0.45rem 0.75rem; border-radius:6px; font-size:0.85rem; }
+    .status-hint-wait { background:#fefce8; color:#854d0e; }
+    .status-hint-ok { background:#dcfce7; color:#166534; }
+    .status-hint-error { background:#fee2e2; color:#b91c1c; }
+  .icon-btn { background:none; border:none; cursor:pointer; font-size:1rem; line-height:1; padding:0.25rem; display:inline-flex; align-items:center; justify-content:center; border-radius:4px; transition:transform 0.15s ease, color 0.2s ease; }
+  .icon-btn:focus { outline:2px solid #2563eb33; outline-offset:2px; }
+  .icon-btn:hover { transform:translateY(-1px); }
+  .favorite-toggle { color:#cbd5e1; }
+  .favorite-toggle.active { color:#facc15; }
+  .delete-post { color:#dc2626; }
+  .delete-post:hover { color:#b91c1c; }
+  .actions-cell { display:flex; gap:0.25rem; align-items:center; justify-content:flex-start; }
+  .floating-trash { position:fixed; bottom:1.5rem; right:1.5rem; background:#1e293b; color:#f8fafc; padding:0.6rem 0.9rem; border-radius:999px; display:flex; align-items:center; gap:0.5rem; box-shadow:0 10px 25px rgba(15,23,42,0.25); text-decoration:none; font-size:0.9rem; }
+  .floating-trash:hover { background:#0f172a; }
+  .floating-trash .count { background:#facc15; color:#1e293b; padding:0 0.6rem; border-radius:999px; font-weight:600; }
     .footer { margin-top:3rem; font-size:0.7rem; color:#777; }
     form.inline { display:inline; }
     nav.pagination { margin-top:1rem; display:flex; gap:0.4rem; flex-wrap:wrap; }
@@ -39,9 +59,11 @@
   {% endif %}
   <div id="statusContainer" data-interval="{{ autonomous_interval or 0 }}" style="margin-top:0.75rem; font-size:0.9rem; display:flex; align-items:center; gap:.75rem;">
     <div class="spinner" aria-label="statut scraping"></div>
-    <div id="scrapeStatus">Chargement du statut…</div>
+    <div class="status-texts">
+      <div id="scrapeStatus">Chargement du statut…</div>
+      <div id="statusHint" class="status-hint status-hint-wait">Scraper démarre, merci de patienter ~2 min</div>
+    </div>
     <span id="statusBadge" class="badge" style="background:#e0ecff; color:#1e3a8a;">…</span>
-    <a id="logoutLink" href="#" style="margin-left:auto; font-size:.85rem; text-decoration:none; color:#2563eb;">Se déconnecter</a>
   </div>
   <style>
     .spinner { width:18px; height:18px; border:3px solid #c8d5e6; border-top-color:#2563eb; border-radius:50%; animation:spin 0.9s linear infinite; }
@@ -71,16 +93,99 @@
       setTimeout(()=>{div.style.opacity='0';div.style.transform='translateY(-6px)'; setTimeout(()=>div.remove(),300);}, 3400);
     }
 
+    const hintEl = document.getElementById('statusHint');
+    function setHint(text, variant='status-hint-wait'){
+      if(!hintEl) return;
+      hintEl.textContent = text;
+      hintEl.className = 'status-hint ' + variant;
+    }
+
+    function updateTrashBadge(count){
+      const badge = document.getElementById('trashCountBadge');
+      if(!badge) return;
+      const value = Number.isFinite(count) ? count : 0;
+      badge.textContent = value;
+    }
+
+    async function refreshTrashCount(){
+      try {
+        const r = await fetch('/api/trash/count');
+        if(!r.ok) return;
+        const data = await r.json();
+        updateTrashBadge(data.count ?? 0);
+      } catch(_) { /* ignore */ }
+    }
+
+    async function handleFavorite(postId, makeFav){
+      try {
+        const r = await fetch(`/api/posts/${postId}/favorite`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ favorite: makeFav })
+        });
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        showToast(makeFav ? 'Post ajouté aux favoris' : 'Favori retiré','success');
+      } catch(e){
+        showToast('Erreur favori: '+e,'error');
+      } finally {
+        await refreshPosts();
+      }
+    }
+
+    async function handleDelete(postId){
+      try {
+        const r = await fetch(`/api/posts/${postId}/delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ delete: true })
+        });
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        const data = await r.json();
+        showToast('Post déplacé dans la corbeille','info');
+        if(data && typeof data.trash_count !== 'undefined'){
+          updateTrashBadge(data.trash_count);
+        }
+      } catch(e){
+        showToast('Erreur suppression: '+e,'error');
+      } finally {
+        await refreshPosts();
+      }
+    }
+
+    function attachRowActions(){
+      document.querySelectorAll('.favorite-toggle').forEach(btn => {
+        if(btn.dataset.bound === '1') return;
+        btn.dataset.bound = '1';
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.id;
+          if(!id) return;
+          const makeFav = !btn.classList.contains('active');
+          btn.disabled = true;
+          await handleFavorite(id, makeFav);
+        });
+      });
+      document.querySelectorAll('.delete-post').forEach(btn => {
+        if(btn.dataset.bound === '1') return;
+        btn.dataset.bound = '1';
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.id;
+          if(!id) return;
+          btn.disabled = true;
+          await handleDelete(id);
+        });
+      });
+    }
+
     async function refreshStatus(){
       try {
         const r = await fetch('/health');
         if(!r.ok) throw new Error('HTTP '+r.status);
         const data = await r.json();
-        const el = document.getElementById('scrapeStatus');
-        const spinner = document.querySelector('.spinner');
-  const btn = document.getElementById('toggleBtn');
-        const enabled = data.scraping_enabled;
-  const interval = Number(document.getElementById('statusContainer').dataset.interval || 0);
+    const el = document.getElementById('scrapeStatus');
+    const spinner = document.querySelector('.spinner');
+    const btn = document.getElementById('toggleBtn');
+    const enabled = data.scraping_enabled;
+    const interval = Number(document.getElementById('statusContainer').dataset.interval || 0);
         let txt = '';
         const badge = document.getElementById('statusBadge');
         if(enabled){
@@ -90,8 +195,10 @@
             } else {
               txt = 'Scraper actif';
             }
+            setHint('Scraper actif', 'status-hint-ok');
           } else {
             txt = 'Scraper démarre…';
+            setHint('Scraper démarre, merci de patienter ~2 min', 'status-hint-wait');
           }
           el.className='status-ok';
           spinner.style.display='inline-block';
@@ -107,6 +214,7 @@
           badge.textContent = 'PAUSE';
           badge.style.background = '#fee2e2';
           badge.style.color = '#991b1b';
+          setHint('Scraper arrêté — cliquez sur Reprendre pour relancer', 'status-hint-wait');
         }
         if(data.last_run && data.last_job_posts !== undefined){
           // Format heure locale lisible
@@ -129,6 +237,7 @@
         badge.textContent = 'ERREUR';
         badge.style.background = '#fde68a';
         badge.style.color = '#92400e';
+        setHint('Statut indisponible – vérifiez les logs', 'status-hint-error');
       }
     }
     async function toggleScraping(){
@@ -174,7 +283,14 @@
           let dateFmt = '';
           try { dateFmt = new Date(dateVal).toLocaleString('fr-FR',{dateStyle:'short', timeStyle:'short'});} catch(_) { dateFmt = dateVal||''; }
           const permalink = p.permalink ? `<a href="${p.permalink}" target="_blank">ouvrir</a>` : '—';
-          return `<tr>
+          const starActive = Number(p.is_favorite || 0) === 1;
+          const starClass = starActive ? 'icon-btn favorite-toggle active' : 'icon-btn favorite-toggle';
+          const starTitle = starActive ? 'Retirer des favoris' : 'Marquer en favori';
+          return `<tr data-post-id="${p._id}">
+            <td class="actions-cell">
+              <button type="button" class="${starClass}" data-id="${p._id}" title="${starTitle}">★</button>
+              <button type="button" class="icon-btn delete-post" data-id="${p._id}" title="Supprimer ce post">🗑</button>
+            </td>
             <td><code>${p.keyword||''}</code></td>
             <td>${p.author||''}</td>
             <td>${p.company||'—'}</td>
@@ -184,6 +300,7 @@
           </tr>`;
         }).join('');
         tbody.innerHTML = rows;
+        attachRowActions();
       } catch(e){ /* silent */ }
     }
     function setupSSE(){
@@ -195,13 +312,16 @@
             if(payload.type === 'job_complete'){
               await refreshPosts();
               await refreshStatus();
+              await refreshTrashCount();
               showToast(`Cycle terminé (${payload.posts} posts)`, 'info');
+              setHint('Scraper actif', 'status-hint-ok');
             }
           } catch(e){ /* ignore JSON parse */ }
         };
         es.onerror = ()=>{
           // Fallback: restart after delay (will rely on polling if fails repeatedly)
           showToast('SSE coupé - fallback polling','error');
+          setHint('Flux SSE interrompu – passage en mode polling', 'status-hint-error');
           es.close();
           startPollingFallback();
         };
@@ -231,13 +351,16 @@
     }
     refreshStatus();
     setupSSE();
+  attachRowActions();
+  refreshTrashCount();
     // Logout handler
-    const logoutLink = document.getElementById('logoutLink');
-    if (logoutLink) {
-      logoutLink.addEventListener('click', async (e)=>{
-        e.preventDefault();
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) {
+      logoutBtn.addEventListener('click', async ()=>{
+        logoutBtn.disabled = true;
+        logoutBtn.textContent = 'Déconnexion…';
         try {
-          const r = await fetch('/api/session/logout', { method:'POST' });
+          await fetch('/api/session/logout', { method:'POST' });
         } catch(_) { /* ignore */ }
         window.location.href = '/login';
       });
@@ -252,10 +375,22 @@
       <a href="/?limit={{ limit }}" style="font-size:.85rem;">Effacer</a>
     {% endif %}
   </form>
+  <div class="actions">
+    <form id="exportForm" class="inline" action="/export/excel" method="get">
+      <input type="hidden" name="q" value="{{ q or '' }}" />
+      <input type="hidden" name="sort_by" value="{{ sort_by }}" />
+      <input type="hidden" name="sort_dir" value="{{ sort_dir }}" />
+      <input type="hidden" name="page" value="1" />
+      <input type="hidden" name="limit" value="1000" />
+  <button type="submit" class="btn-outline">Exporter au format Excel (≤ 1000 lignes)</button>
+    </form>
+    <button id="logoutBtn" type="button" class="btn-outline">Se déconnecter</button>
+  </div>
   <table>
     <thead>
       <tr>
         {% set nextDir = 'asc' if sort_dir=='desc' else 'desc' %}
+        <th>Actions</th>
         <th>
           <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=keyword&sort_dir={{ 'desc' if sort_by!='keyword' else nextDir }}">Keyword{% if sort_by=='keyword' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
         </th>
@@ -274,7 +409,11 @@
     </thead>
     <tbody>
     {% for post in posts %}
-      <tr>
+      <tr data-post-id="{{ post._id }}">
+        <td class="actions-cell">
+          <button type="button" class="icon-btn favorite-toggle{% if post.is_favorite %} active{% endif %}" data-id="{{ post._id }}" title="Marquer en favori">★</button>
+          <button type="button" class="icon-btn delete-post" data-id="{{ post._id }}" title="Supprimer ce post">🗑</button>
+        </td>
         <td><code>{{ post.keyword }}</code></td>
         <td>{{ post.author }}</td>
         <td>{{ post.company or '—' }}</td>
@@ -284,7 +423,7 @@
       </tr>
     {% endfor %}
     {% if posts|length == 0 %}
-      <tr><td colspan="6" style="text-align:center; font-size:0.8rem; color:#555;">Aucun résultat pour le moment.</td></tr>
+      <tr><td colspan="7" style="text-align:center; font-size:0.8rem; color:#555;">Aucun résultat pour le moment.</td></tr>
     {% endif %}
     </tbody>
   </table>
@@ -293,6 +432,9 @@
       <a href="/?page={{ page_num }}&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}" class="{% if page_num == page %}active{% endif %}">{{ page_num }}</a>
     {% endfor %}
   </nav>
+  <a id="floatingTrash" class="floating-trash" href="/corbeille" title="Ouvrir la corbeille">
+    🗑️ <span class="count" id="trashCountBadge">{{ trash_count }}</span>
+  </a>
   
 </body>
 </html>
