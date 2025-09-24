@@ -1,0 +1,35 @@
+# Deta Space configuration
+# Documentation: https://deta.space/docs/en/reference/spacefile
+
+v: 0
+
+name: linkedin-scraper-dashboard
+
+services:
+  - name: app
+    engine: python3.11
+    src: .
+    primary: true
+    run: python scripts/run_server.py
+    env:
+      - key: PLAYWRIGHT_HEADLESS
+        value: "1"
+      - key: INPROCESS_AUTONOMOUS
+        value: "1"          # Démarre un job périodique interne (intervalle défini ci-dessous)
+      - key: AUTONOMOUS_WORKER_INTERVAL_SECONDS
+        value: "900"
+      - key: PLAYWRIGHT_MOCK_MODE
+        value: "1"          # Mettre 0 pour mode réel (navigateur)
+      - key: DASHBOARD_PUBLIC
+        value: "1"
+      - key: LOG_LEVEL
+        value: "INFO"
+      - key: ENABLE_METRICS
+        value: "1"
+    # Note: Pour utiliser MongoDB Atlas, ajouter MONGO_URI via variables d'environnement Space UI.
+
+# Notes importantes:
+# - Deta Space n'offre pas de service de navigateur complet; le mode mock est recommandé.
+# - Pour du scraping réel continu, préférer Render/Railway avec Playwright.
+# - L'option INPROCESS_AUTONOMOUS lance un cycle périodique dans le même process FastAPI.
+# - SSE (/stream) reste fonctionnel via l'unique instance.

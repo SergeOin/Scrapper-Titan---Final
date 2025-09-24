@@ -1,0 +1,11 @@
+# Ruff configuration
+line-length = 120
+select = ["E","F","I","W","B","UP","N","ASYNC","S" ]
+ignore = [
+  "E203", # whitespace before ':' (black compatibility)
+  "E501", # line length handled by formatter/soft
+  "B008", # do not perform function call in argument defaults (not critical here)
+]
+
+[per-file-ignores]
+"tests/*" = ["S101"]  # allow asserts in tests

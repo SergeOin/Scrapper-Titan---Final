@@ -1,0 +1,101 @@
+# =============================
+# Python / Virtual Env
+# =============================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# =============================
+# Distribution / Packaging
+# =============================
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+wheels/
+
+# =============================
+# Logs & Runtime Artifacts
+# =============================
+logs/
+*.log
+*.json.log
+log/*.log
+
+# =============================
+# Coverage & Test
+# =============================
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+.mypy_cache/
+ruff_cache/
+.cache/
+pytestdebug.log
+
+# =============================
+# IDE / Editor
+# =============================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.orig
+.DS_Store
+Thumbs.db
+
+# =============================
+# Playwright / Browser
+# =============================
+playwright-report/
+playwright/.cache/
+*.webm
+trace.zip
+traces/
+screenshots/
+**/storage_state.json
+
+# =============================
+# Data / Temp Outputs
+# =============================
+/tmp/
+*.sqlite3
+*.db
+exports/
+*.csv
+runtime_state.json
+fallback.sqlite3
+exports/*.csv
+
+# =============================
+# Docker
+# =============================
+*.pid
+.docker/
+
+# =============================
+# Node (if any frontend assets later)
+# =============================
+node_modules/
+
+# =============================
+# Security
+# =============================
+.secrets/
+secret*/
+
+# =============================
+# Cache
+# =============================
+__pypackages__/
+*.pkl
+
+# End

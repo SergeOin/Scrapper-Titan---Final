@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: linkedin-scraper-web
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt && python -m playwright install --with-deps chromium
+    startCommand: python scripts/run_server.py
+    envVars:
+      - key: PLAYWRIGHT_HEADLESS
+        value: '1'
+      - key: DASHBOARD_PUBLIC
+        value: '1'
+      - key: AUTONOMOUS_WORKER_INTERVAL_SECONDS
+        value: '0'   # Le worker dédié fera le scraping; mettre >0 pour fallback autonome
+      - key: INPROCESS_AUTONOMOUS
+        value: '0'
+      - key: LOG_LEVEL
+        value: INFO
+  - type: worker
+    name: linkedin-scraper-worker
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt && python -m playwright install --with-deps chromium
+    startCommand: python scripts/run_worker.py
+    envVars:
+      - key: PLAYWRIGHT_HEADLESS
+        value: '1'
+      - key: AUTONOMOUS_WORKER_INTERVAL_SECONDS
+        value: '900'
+      - key: PLAYWRIGHT_MOCK_MODE
+        value: '1'   # Mettre 0 en production réelle
+      - key: LOG_LEVEL
+        value: INFO
+# Notes:
+# - Utiliser un Redis managé si nécessaire pour la queue (sinon mode autonome périodique).
+# - Fournir MONGO_URI via Dashboard Render (Environment Variables).
+# - Pour mode real scraping: PLAYWRIGHT_MOCK_MODE=0 et stockage state pré-créé.

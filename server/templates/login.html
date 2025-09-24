@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connexion LinkedIn</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; }
+    .card { max-width: 720px; margin: 0 auto; padding: 1.5rem; border: 1px solid #e5e7eb; border-radius: 12px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    input, button { padding: .6rem .8rem; font-size: 0.95rem; }
+    button { cursor: pointer; }
+    .muted { color: #6b7280; font-size: .9rem; }
+    .ok { color: #059669; }
+    .warn { color: #b45309; }
+    .error { color: #dc2626; }
+      /* Loader overlay */
+      .overlay { position: fixed; inset: 0; background: rgba(255,255,255,.85); display:none; align-items:center; justify-content:center; z-index: 1000; }
+      .spinner { width: 42px; height: 42px; border-radius: 50%; border: 4px solid #cbd5e1; border-top-color: #2563eb; animation: spin .9s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+  <script>
+    async function doLogin(ev) {
+      ev.preventDefault();
+      const fd = new FormData(ev.target);
+        // Show loader overlay while Playwright opens LinkedIn and waits for auth/MFA
+        const overlay = document.getElementById('overlay');
+        overlay.style.display = 'flex';
+        const btn = ev.target.querySelector('button[type="submit"]');
+        if (btn) { btn.disabled = true; btn.textContent = 'Connexion en cours…'; }
+      const res = await fetch('/api/session/login', { method:'POST', body: fd });
+      if (res.ok) {
+        alert('Connexion réussie.');
+        location.href = '/';
+      } else {
+        let msg = 'Connexion impossible.';
+        try {
+          const j = await res.json();
+          if (j && (j.detail || j.message)) { msg = String(j.detail || j.message); }
+        } catch {}
+          alert('Échec de la connexion. ' + msg);
+          overlay.style.display = 'none';
+          if (btn) { btn.disabled = false; btn.textContent = 'Se connecter'; }
+      }
+    }
+  </script>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+</head>
+<body>
+  <div class="card">
+    <h1>Connexion LinkedIn requise</h1>
+    {% if valid %}
+      <p class="ok">Une session semble valide. <a href="/">Aller au tableau de bord</a></p>
+    {% else %}
+        <p class="muted">Connectez-vous via Playwright. Une fenêtre LinkedIn va s'ouvrir — merci de patienter et complétez les étapes (MFA/CAPTCHA le cas échéant).</p>
+        <h3>Connexion via Playwright</h3>
+      <form onsubmit="doLogin(event)">
+        <div class="row">
+          <input id="loginEmail" name="email" type="email" placeholder="Email" required />
+          <input name="password" type="password" placeholder="Mot de passe" required />
+        </div>
+        <div class="row" style="margin-top:.6rem">
+          <input name="mfa_code" type="text" placeholder="Code MFA (optionnel)" />
+          <div></div>
+        </div>
+        <button type="submit" style="margin-top: .8rem">Se connecter</button>
+      </form>
+    {% endif %}
+  </div>
+    <!-- Full-screen loader overlay displayed during Playwright login -->
+    <div id="overlay" class="overlay">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:.75rem;">
+        <div class="spinner" aria-label="chargement"></div>
+        <div class="muted" style="text-align:center;max-width:460px;">
+          Ouverture de LinkedIn… merci de patienter et d'accepter les étapes d'authentification si nécessaire (MFA/CAPTCHA).
+        </div>
+      </div>
+    </div>
+</body>
+</html>

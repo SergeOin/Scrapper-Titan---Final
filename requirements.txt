@@ -1,0 +1,90 @@
+# =============================
+# Core Runtime Dependencies
+# =============================
+fastapi~=0.111.0            # Web framework for API + minimal dashboard
+uvicorn[standard]~=0.30.0   # ASGI server
+orjson~=3.10.0              # Fast JSON responses with FastAPI
+jinja2~=3.1.0               # Templates for minimal dashboard UI
+python-dotenv~=1.0.0        # Load environment variables from .env
+pydantic~=2.8.0             # Data validation / base models
+pydantic-settings~=2.3.0    # Settings management (BaseSettings moved here in Pydantic v2)
+
+# =============================
+# Scraping & Automation
+# =============================
+playwright~=1.46.0          # Browser automation (Chromium)
+# After install run: playwright install chromium
+browser-cookie3~=0.19.1     # Import cookies from local browsers (Chrome/Edge/Firefox)
+
+# =============================
+# Data Stores (Primary + Fallback)
+# =============================
+motor~=3.5.0                # Async MongoDB driver (primary storage)
+pymongo~=4.8.0              # Underlying Mongo driver (motor dependency clarity)
+dnspython~=2.6.0            # SRV record support for MongoDB Atlas (mongodb+srv://)
+redis~=5.0.0                # Redis client (async + sync) for queue / cache (includes asyncio support)
+# (Removed 'airedis' – not available on PyPI; redis >=5 covers async usage)
+aiosqlite~=0.20.0           # Lightweight async SQLite fallback
+
+# =============================
+# Queue / Background / Concurrency Helpers
+# =============================
+tenacity~=9.0.0             # Robust retry logic for scraping
+filelock~=3.15.0            # Cross-process locking (anti-concurrent scrape)
+cachetools~=5.3.0           # In-memory TTL cache
+
+# =============================
+# Observability / Logging / Metrics
+# =============================
+structlog~=24.1.0           # Structured logging
+python-json-logger~=2.0.0   # JSON log formatter (alt / fallback)
+prometheus-client~=0.20.0   # /metrics endpoint exposition
+
+# =============================
+# Utilities
+# =============================
+httpx~=0.27.0               # Async HTTP client (if needed for external calls)
+user-agents~=2.2.0          # Generate realistic User-Agent strings
+langdetect~=1.0.9           # Language detection for post content
+pandas~=2.2.0               # CSV export convenience (optional heavy dep)
+
+# =============================
+# Security
+# =============================
+passlib[bcrypt]~=1.7.0      # Password hashing if internal auth layer added
+bcrypt==3.2.2               # Pinned for compatibility with passlib 1.7.x (bcrypt 4.x breaks __about__ attr usage)
+pyopenssl~=24.1.0           # TLS utilities (optional)
+
+# =============================
+# Dev & Tooling (can be moved to separate requirements-dev.txt if desired)
+# =============================
+black~=24.8.0               # Code formatter
+ruff~=0.5.0                 # Linter & import sorter
+mypy~=1.11.0                # Static type checking
+pytest~=8.2.0               # Test framework
+pytest-asyncio~=0.23.0      # Async tests
+pytest-cov~=5.0.0           # Coverage reports
+coverage~=7.6.0             # Coverage tooling
+faker~=25.0.0               # Test data generation
+freezegun~=1.5.0            # Time freezing in tests
+requests-mock~=1.12.0       # HTTP call mocking
+
+# =============================
+# Type Stubs
+# =============================
+types-redis~=4.6.0.20240425 # Type hints for redis
+
+# =============================
+# Optional / Future Enhancements (commented out)
+# =============================
+# sqlmodel~=0.0.22          # If moving to ORM abstraction layer
+# apscheduler~=3.10.0       # If time-based scheduling instead of manual trigger
+# opentelemetry-sdk~=1.26.0 # Tracing/metrics if needed later
+
+# =============================
+# Notes
+# =============================
+# - Keep versions moderately pinned (~=) for stability with security updates.
+# - Use a virtual environment: python -m venv .venv && .venv/Scripts/activate (Windows)
+# - After install: playwright install chromium
+# - If slimming image size, remove pandas and optional deps.

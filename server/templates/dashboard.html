@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>LinkedIn Scraper - Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif; margin: 1.5rem; background:#f7f9fb; color:#222; }
+    h1 { margin-top:0; font-size:1.4rem; }
+    table { width:100%; border-collapse:collapse; margin-top:1rem; font-size:0.9rem; }
+    th, td { padding:0.5rem 0.6rem; border-bottom:1px solid #ddd; vertical-align:top; }
+    th { background:#eef2f5; text-align:left; position:sticky; top:0; }
+    tr:hover { background:#f1f7fd; }
+    code { background:#eee; padding:2px 4px; border-radius:4px; }
+    .meta { display:flex; gap:1rem; flex-wrap:wrap; font-size:0.8rem; margin-top:0.5rem; color:#555; }
+    .actions { margin-top:1rem; }
+    button { background:#2563eb; color:white; border:none; padding:0.6rem 1rem; border-radius:6px; cursor:pointer; font-size:0.9rem; }
+    button:hover { background:#1d4ed8; }
+    .badge { display:inline-block; padding:2px 6px; border-radius:4px; background:#e0ecff; font-size:0.7rem; }
+    .footer { margin-top:3rem; font-size:0.7rem; color:#777; }
+    form.inline { display:inline; }
+    nav.pagination { margin-top:1rem; display:flex; gap:0.4rem; flex-wrap:wrap; }
+    nav.pagination a { padding:4px 8px; text-decoration:none; border:1px solid #bbb; border-radius:4px; font-size:0.75rem; color:#222; background:#fff; }
+    nav.pagination a.active { background:#2563eb; color:#fff; border-color:#2563eb; }
+    nav.pagination a:hover { background:#1d4ed8; color:#fff; }
+    .wrap { white-space:pre-wrap; word-break:break-word; }
+    /* Neutral header link styling (no blue, no underline) */
+    th a { color:#222; text-decoration:none; }
+    th a:visited { color:#222; }
+    th a:hover { text-decoration:none; }
+  </style>
+</head>
+<body>
+  <h1>LinkedIn Scraper</h1>
+  {% if mock_mode %}
+  <div style="margin:.5rem 0 0.75rem 0; padding:.6rem .8rem; border-radius:6px; background:#fff7ed; color:#9a3412; border:1px solid #fdba74; font-size:.9rem;">
+    Mode démonstration actif (PLAYWRIGHT_MOCK_MODE=1) — les posts affichés sont synthétiques. Désactivez le mode mock pour scraper des posts réels.
+  </div>
+  {% endif %}
+  <div id="statusContainer" data-interval="{{ autonomous_interval or 0 }}" style="margin-top:0.75rem; font-size:0.9rem; display:flex; align-items:center; gap:.75rem;">
+    <div class="spinner" aria-label="statut scraping"></div>
+    <div id="scrapeStatus">Chargement du statut…</div>
+    <span id="statusBadge" class="badge" style="background:#e0ecff; color:#1e3a8a;">…</span>
+    <a id="logoutLink" href="#" style="margin-left:auto; font-size:.85rem; text-decoration:none; color:#2563eb;">Se déconnecter</a>
+  </div>
+  <style>
+    .spinner { width:18px; height:18px; border:3px solid #c8d5e6; border-top-color:#2563eb; border-radius:50%; animation:spin 0.9s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg);} }
+    .status-ok { color:#166534; }
+    .status-paused { color:#92400e; }
+    .status-wait { color:#1d4ed8; }
+  </style>
+  <script>
+    // Toast system
+    const _toastQ = [];
+    function showToast(msg, type='info'){ // type: info|error|success
+      let c = document.getElementById('toastContainer');
+      if(!c){
+        c = document.createElement('div');
+        c.id='toastContainer';
+        c.style.cssText='position:fixed;top:1rem;right:1rem;display:flex;flex-direction:column;gap:.5rem;z-index:1000;';
+        document.body.appendChild(c);
+      }
+      const div = document.createElement('div');
+      div.textContent = msg;
+      div.style.cssText='padding:.6rem .9rem;border-radius:6px;font-size:.75rem;box-shadow:0 2px 6px rgba(0,0,0,.15);color:#fff;opacity:0;transform:translateY(-6px);transition:all .25s;';
+      const colors = {info:'#2563eb', success:'#15803d', error:'#b91c1c'};
+      div.style.background = colors[type]||colors.info;
+      c.appendChild(div);
+      requestAnimationFrame(()=>{div.style.opacity='1';div.style.transform='translateY(0)';});
+      setTimeout(()=>{div.style.opacity='0';div.style.transform='translateY(-6px)'; setTimeout(()=>div.remove(),300);}, 3400);
+    }
+
+    async function refreshStatus(){
+      try {
+        const r = await fetch('/health');
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        const data = await r.json();
+        const el = document.getElementById('scrapeStatus');
+        const spinner = document.querySelector('.spinner');
+  const btn = document.getElementById('toggleBtn');
+        const enabled = data.scraping_enabled;
+  const interval = Number(document.getElementById('statusContainer').dataset.interval || 0);
+        let txt = '';
+        const badge = document.getElementById('statusBadge');
+        if(enabled){
+          if(data.last_run_age_seconds !== undefined){
+            if(interval>0){
+              txt = `Scraper actif · prochain cycle estimé dans ~${Math.max(interval - (data.last_run_age_seconds % interval),1)}s`;
+            } else {
+              txt = 'Scraper actif';
+            }
+          } else {
+            txt = 'Scraper démarre…';
+          }
+          el.className='status-ok';
+          spinner.style.display='inline-block';
+          if (btn) { btn.textContent = 'Mettre en pause'; btn.style.background = '#dc2626'; }
+          badge.textContent = 'ACTIF';
+          badge.style.background = '#dcfce7';
+          badge.style.color = '#166534';
+        } else {
+          txt = 'Scraper en pause';
+          el.className='status-paused';
+          spinner.style.display='none';
+          if (btn) { btn.textContent = 'Reprendre'; btn.style.background = '#16a34a'; }
+          badge.textContent = 'PAUSE';
+          badge.style.background = '#fee2e2';
+          badge.style.color = '#991b1b';
+        }
+        if(data.last_run && data.last_job_posts !== undefined){
+          // Format heure locale lisible
+          try {
+            const d = new Date(data.last_run);
+            const localeStr = d.toLocaleString('fr-FR', { dateStyle:'short', timeStyle:'short' });
+            txt += ` · dernier run: ${localeStr} (${data.last_job_posts} posts)`;
+          } catch(_) {
+            txt += ` · dernier run: ${data.last_run} (${data.last_job_posts} posts)`;
+          }
+        }
+        el.textContent = txt;
+      } catch(e){
+        const el = document.getElementById('scrapeStatus');
+        el.textContent = 'Statut indisponible';
+        el.className='status-paused';
+        const spinner = document.querySelector('.spinner');
+        spinner.style.display='none';
+        const badge = document.getElementById('statusBadge');
+        badge.textContent = 'ERREUR';
+        badge.style.background = '#fde68a';
+        badge.style.color = '#92400e';
+      }
+    }
+    async function toggleScraping(){
+      const btn = document.getElementById('toggleBtn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Veuillez patienter…'; }
+      try {
+        const r = await fetch('/toggle', { method:'POST'});
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        await refreshStatus();
+        showToast('État mis à jour','success');
+      } catch(e){
+        showToast('Erreur toggle: '+e,'error');
+      } finally {
+        if (btn) { btn.disabled = false; }
+        // refreshStatus already set final text
+      }
+    }
+    const _toggleEl = document.getElementById('toggleBtn');
+    if (_toggleEl) _toggleEl.addEventListener('click', toggleScraping);
+    // Auto refresh posts if a new run detected
+    let _lastRunSeen = null;
+    async function refreshPosts(){
+      try {
+        const url = new URL(window.location.href);
+        const page = url.searchParams.get('page') || '1';
+        const limit = url.searchParams.get('limit') || '20';
+        const q = encodeURIComponent(url.searchParams.get('q')||'');
+        const sortBy = encodeURIComponent(url.searchParams.get('sort_by')||'');
+        const sortDir = encodeURIComponent(url.searchParams.get('sort_dir')||'');
+        const r = await fetch(`/api/posts?page=${page}&limit=${limit}&q=${q}&sort_by=${sortBy}&sort_dir=${sortDir}`);
+        if(!r.ok) return;
+        const data = await r.json();
+        const tbody = document.querySelector('table tbody');
+        if(!tbody) return;
+        if(data.items.length === 0){
+          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;font-size:0.8rem;color:#555;">Aucun résultat pour le moment.</td></tr>';
+          return;
+        }
+        const rows = data.items.map(p=>{
+          const txt = (p.text||'');
+          const short = txt.length>500? txt.substring(0,500)+'…' : txt;
+          const dateVal = p.published_at || p.collected_at;
+          let dateFmt = '';
+          try { dateFmt = new Date(dateVal).toLocaleString('fr-FR',{dateStyle:'short', timeStyle:'short'});} catch(_) { dateFmt = dateVal||''; }
+          const permalink = p.permalink ? `<a href="${p.permalink}" target="_blank">ouvrir</a>` : '—';
+          return `<tr>
+            <td><code>${p.keyword||''}</code></td>
+            <td>${p.author||''}</td>
+            <td>${p.company||'—'}</td>
+            <td class="wrap">${short.replace(/</g,'&lt;')}</td>
+            <td>${dateFmt}</td>
+            <td>${permalink}</td>
+          </tr>`;
+        }).join('');
+        tbody.innerHTML = rows;
+      } catch(e){ /* silent */ }
+    }
+    function setupSSE(){
+      try {
+        const es = new EventSource('/stream');
+        es.onmessage = async (ev)=>{
+          try {
+            const payload = JSON.parse(ev.data);
+            if(payload.type === 'job_complete'){
+              await refreshPosts();
+              await refreshStatus();
+              showToast(`Cycle terminé (${payload.posts} posts)`, 'info');
+            }
+          } catch(e){ /* ignore JSON parse */ }
+        };
+        es.onerror = ()=>{
+          // Fallback: restart after delay (will rely on polling if fails repeatedly)
+          showToast('SSE coupé - fallback polling','error');
+          es.close();
+          startPollingFallback();
+        };
+      } catch(e){
+        startPollingFallback();
+      }
+    }
+    let _pollHandle = null;
+    function startPollingFallback(){
+      if(_pollHandle) return;
+      _pollHandle = setInterval(async ()=>{
+        try {
+          const r = await fetch('/health');
+          if(r.ok){
+            const data = await r.json();
+            if(data.last_run && data.last_run !== _lastRunSeen){
+              if(_lastRunSeen !== null){
+                await refreshPosts();
+                showToast('Nouveaux posts chargés (poll)','info');
+              }
+              _lastRunSeen = data.last_run;
+            }
+          }
+        } catch(_){ }
+        refreshStatus();
+      }, 10000);
+    }
+    refreshStatus();
+    setupSSE();
+    // Logout handler
+    const logoutLink = document.getElementById('logoutLink');
+    if (logoutLink) {
+      logoutLink.addEventListener('click', async (e)=>{
+        e.preventDefault();
+        try {
+          const r = await fetch('/api/session/logout', { method:'POST' });
+        } catch(_) { /* ignore */ }
+        window.location.href = '/login';
+      });
+    }
+  </script>
+  <!-- Search bar placed between status and table -->
+  <form id="searchForm" action="/" method="get" style="margin-top:1rem; display:flex; gap:.5rem; align-items:center;">
+    <input type="text" name="q" placeholder="Rechercher (texte, auteur, entreprise, mot-clé)" value="{{ q or '' }}" style="flex:1; padding:.5rem .6rem; border:1px solid #cbd5e1; border-radius:6px;" />
+    <input type="hidden" name="limit" value="{{ limit }}" />
+    <button type="submit">Rechercher</button>
+    {% if q %}
+      <a href="/?limit={{ limit }}" style="font-size:.85rem;">Effacer</a>
+    {% endif %}
+  </form>
+  <table>
+    <thead>
+      <tr>
+        {% set nextDir = 'asc' if sort_dir=='desc' else 'desc' %}
+        <th>
+          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=keyword&sort_dir={{ 'desc' if sort_by!='keyword' else nextDir }}">Keyword{% if sort_by=='keyword' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
+        </th>
+        <th>
+          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=author&sort_dir={{ 'desc' if sort_by!='author' else nextDir }}">Auteur{% if sort_by=='author' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
+        </th>
+        <th>
+          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=company&sort_dir={{ 'desc' if sort_by!='company' else nextDir }}">Entreprise{% if sort_by=='company' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
+        </th>
+        <th>Texte</th>
+        <th>
+          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=published_at&sort_dir={{ 'desc' if sort_by!='published_at' else nextDir }}">Date{% if sort_by=='published_at' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
+        </th>
+        <th>Lien</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for post in posts %}
+      <tr>
+        <td><code>{{ post.keyword }}</code></td>
+        <td>{{ post.author }}</td>
+        <td>{{ post.company or '—' }}</td>
+        <td class="wrap">{{ post.text[:500] }}{% if post.text|length > 500 %}…{% endif %}</td>
+  <td>{{ (post.published_at or post.collected_at)|fmt_date }}</td>
+        <td>{% if post.permalink %}<a href="{{ post.permalink }}" target="_blank">ouvrir</a>{% else %}—{% endif %}</td>
+      </tr>
+    {% endfor %}
+    {% if posts|length == 0 %}
+      <tr><td colspan="6" style="text-align:center; font-size:0.8rem; color:#555;">Aucun résultat pour le moment.</td></tr>
+    {% endif %}
+    </tbody>
+  </table>
+  <nav class="pagination">
+    {% for page_num in range(1, total_pages + 1) %}
+      <a href="/?page={{ page_num }}&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}" class="{% if page_num == page %}active{% endif %}">{{ page_num }}</a>
+    {% endfor %}
+  </nav>
+  
+</body>
+</html>

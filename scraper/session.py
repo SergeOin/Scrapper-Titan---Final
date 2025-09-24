@@ -1,0 +1,207 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from dataclasses import dataclass
+import contextlib
+from pathlib import Path
+from typing import Any, Optional
+
+import structlog
+
+try:
+    from playwright.async_api import async_playwright
+except Exception:  # pragma: no cover
+    async_playwright = None  # type: ignore
+
+try:
+    import browser_cookie3 as bc3  # type: ignore
+except Exception:  # pragma: no cover
+    bc3 = None  # type: ignore
+
+from .bootstrap import AppContext
+
+
+@dataclass
+class SessionStatus:
+    valid: bool
+    details: dict[str, Any]
+
+
+def _save_session_store(ctx: AppContext, cookies: dict[str, Any]) -> None:
+    try:
+        Path(ctx.settings.session_store_path).write_text(json.dumps(cookies, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _read_session_store(ctx: AppContext) -> dict[str, Any]:
+    try:
+        if Path(ctx.settings.session_store_path).exists():
+            return json.loads(Path(ctx.settings.session_store_path).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return {}
+
+
+async def session_status(ctx: AppContext) -> SessionStatus:
+    # basic validation: storage_state.json presence and contains cookies
+    details: dict[str, Any] = {"storage_state": ctx.settings.storage_state}
+    try:
+        if Path(ctx.settings.storage_state).exists():
+            data = json.loads(Path(ctx.settings.storage_state).read_text(encoding="utf-8"))
+            cookies = data.get("cookies") or []
+            li_cookie = None
+            for c in cookies:
+                if c.get("name") == "li_at":
+                    li_cookie = c
+                    break
+            jsess = any(c.get("name", "").upper().startswith("JSESSIONID") for c in cookies)
+            import time as _time
+            li_expires = None
+            li_expired = False
+            if li_cookie is not None:
+                li_expires = li_cookie.get("expires")
+                try:
+                    if isinstance(li_expires, (int, float)) and li_expires > 0:
+                        li_expired = _time.time() > float(li_expires)
+                except Exception:  # pragma: no cover
+                    li_expired = False
+            valid = bool(li_cookie) and not li_expired
+            details.update({
+                "cookies_count": len(cookies),
+                "has_li_at": bool(li_cookie),
+                "li_at_expires": li_expires,
+                "li_at_expired": li_expired,
+                "has_jsessionid": jsess,
+            })
+            return SessionStatus(valid=valid, details=details)
+    except Exception:
+        pass
+    return SessionStatus(valid=False, details=details)
+
+
+def _maybe_force_close_browsers(ctx: AppContext) -> None:
+    if not ctx.settings.browser_force_close:
+        return
+    # Best-effort: try closing Chrome/Edge/Firefox on Windows
+    for exe in ("chrome", "msedge", "firefox", "chrome.exe", "msedge.exe", "firefox.exe"):
+        with contextlib.suppress(Exception):  # type: ignore
+            subprocess.run(["taskkill", "/IM", exe, "/F"], check=False, capture_output=True)
+
+
+def force_close_browsers() -> None:
+    """Always attempt to close common browsers regardless of settings.
+
+    Used by the forced cookie import endpoint to release file locks.
+    """
+    for exe in ("chrome", "msedge", "firefox", "chrome.exe", "msedge.exe", "firefox.exe"):
+        with contextlib.suppress(Exception):  # type: ignore
+            subprocess.run(["taskkill", "/IM", exe, "/F"], check=False, capture_output=True)
+
+
+def _diagnose_browser_sync(result: dict[str, Any], err: str) -> None:
+    result.setdefault("attempts", []).append(err)
+
+
+def _export_storage_state_from_cookies(cookies: list[dict[str, Any]], out_path: str) -> None:
+    # Create a minimal storage state file compatible with Playwright: {cookies: [...]}
+    Path(out_path).write_text(json.dumps({"cookies": cookies}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def browser_sync(ctx: AppContext) -> tuple[bool, dict[str, Any]]:
+    """Try to import cookies from local browsers and write storage_state.json.
+
+    Returns (success, diagnostics)
+    """
+    diag: dict[str, Any] = {"used": None, "attempts": []}
+    if bc3 is None:
+        _diagnose_browser_sync(diag, "browser-cookie3 not installed")
+        return False, diag
+    _maybe_force_close_browsers(ctx)
+    # Try Edge then Chrome then Firefox
+    for name, getter in ("edge", getattr(bc3, "edge", None)), ("chrome", getattr(bc3, "chrome", None)), ("firefox", getattr(bc3, "firefox", None)):
+        if not getter:
+            continue
+        try:
+            jar = getter(domain_name=".linkedin.com")
+            cookies = []
+            for c in jar:
+                cookies.append({
+                    "name": c.name,
+                    "value": c.value,
+                    "domain": c.domain,
+                    "path": c.path,
+                    "expires": c.expires or 0,
+                    "httpOnly": c.has_nonstandard_attr("HttpOnly"),
+                    "secure": c.secure,
+                    "sameSite": "Lax",
+                })
+            li_at = any(c["name"] == "li_at" for c in cookies)
+            if cookies and li_at:
+                _export_storage_state_from_cookies(cookies, ctx.settings.storage_state)
+                _save_session_store(ctx, {"source": name, "cookies_count": len(cookies)})
+                diag.update({"used": name, "cookies_count": len(cookies)})
+                return True, diag
+            _diagnose_browser_sync(diag, f"{name}: cookies found={len(cookies)} li_at={li_at}")
+        except Exception as e:  # pragma: no cover
+            _diagnose_browser_sync(diag, f"{name}: {e}")
+    return False, diag
+
+
+async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_code: Optional[str] = None) -> tuple[bool, dict[str, Any]]:
+    if async_playwright is None:
+        return False, {"error": "playwright not installed"}
+    diag: dict[str, Any] = {}
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=False)  # login visible by design
+        page = await browser.new_page()
+        try:
+            await page.goto("https://www.linkedin.com/login", timeout=ctx.settings.playwright_login_timeout_ms)
+            await page.fill("input#username", email)
+            await page.fill("input#password", password)
+            await page.click("button[type=submit]")
+            # MFA handling (best-effort if code provided)
+            if mfa_code:
+                try:
+                    await page.wait_for_selector("input[name=pin]", timeout=20_000)
+                    await page.fill("input[name=pin]", mfa_code)
+                    await page.click("button[type=submit]")
+                except Exception:
+                    pass
+            # Wait for feed or presence of li_at cookie, with extended wait for captcha manual solving
+            total_wait = 0
+            step = 2000
+            has_li_at = False
+            while total_wait < ctx.settings.captcha_max_wait_ms:
+                try:
+                    # check cookies
+                    cookies = await page.context.cookies()
+                    has_li_at = any(c.get("name") == "li_at" for c in cookies)
+                    if has_li_at:
+                        break
+                    if page.url.startswith("https://www.linkedin.com/feed"):
+                        break
+                except Exception:
+                    pass
+                await page.wait_for_timeout(step)
+                total_wait += step
+            # success if li_at present
+            if has_li_at:
+                await page.context.storage_state(path=ctx.settings.storage_state)
+                _save_session_store(ctx, {"source": "playwright", "has_li_at": True})
+                await browser.close()
+                return True, {"has_li_at": True}
+            # Fallback: if on feed even if li_at not inspected
+            if page.url.startswith("https://www.linkedin.com/feed"):
+                await page.context.storage_state(path=ctx.settings.storage_state)
+                _save_session_store(ctx, {"source": "playwright", "on_feed": True})
+                await browser.close()
+                return True, {"on_feed": True}
+            await browser.close()
+            return False, {"error": "timeout or captcha/mfa not completed"}
+        except Exception as e:
+            with contextlib.suppress(Exception):  # type: ignore
+                await browser.close()
+            return False, {"error": str(e)}
