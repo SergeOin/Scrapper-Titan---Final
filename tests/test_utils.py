@@ -47,3 +47,13 @@ def test_compute_score_bounds():
         settings=Dummy(),  # type: ignore
     )
     assert 0 <= s <= 1
+
+
+def test_normalize_for_search_accents():
+    assert utils.normalize_for_search("École") == "ecole"
+    assert utils.normalize_for_search("  CÔTE  d'Azur  ") == "cote  d'azur"
+
+
+def test_build_search_norm_concat_and_trim():
+    blob = utils.build_search_norm("Été", None, "Société", "Dévéloppé")
+    assert "ete" in blob and "societe" in blob and "developpe" in blob

@@ -281,7 +281,7 @@ async def fetch_meta(ctx) -> dict[str, Any]:
             if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
                 conn = sqlite3.connect(ctx.settings.sqlite_path)
                 with conn:
-                    c = conn.execute("SELECT COUNT(*) FROM posts").fetchone()
+                    c = conn.execute("SELECT COUNT(*) FROM posts WHERE LOWER(author) <> 'demo_recruteur' AND LOWER(keyword) <> 'demo_recruteur'").fetchone()
                     if c:
                         meta["posts_count"] = c[0]
         except Exception:  # pragma: no cover

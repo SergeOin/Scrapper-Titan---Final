@@ -61,6 +61,20 @@ function Invoke-Task {
       Ensure-Venv
       python -m scraper.worker
     }
+    'backfill-search' {
+      Ensure-Venv
+      Write-Host "Backfilling search_norm and ensuring indices on SQLite..." -ForegroundColor Cyan
+      python scripts/backfill_search_norm.py --db .\fallback.sqlite3
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      Write-Host "Vacuuming SQLite..." -ForegroundColor Cyan
+      python - << 'PY'
+import sqlite3
+conn = sqlite3.connect('fallback.sqlite3')
+with conn:
+    conn.execute('VACUUM')
+print('vacuum_done')
+PY
+    }
     'compose-up' {
       docker compose up -d --build
     }
@@ -75,7 +89,7 @@ function Invoke-Task {
 
 if ($Help -or -not $Task) {
   Write-Host "Tâches disponibles:" -ForegroundColor Yellow
-  'setup','lint','format','test','coverage','server','worker','compose-up','compose-down' | ForEach-Object { " - $_" }
+  'setup','lint','format','test','coverage','server','worker','backfill-search','compose-up','compose-down' | ForEach-Object { " - $_" }
   if (-not $Task) { return }
 }
 
