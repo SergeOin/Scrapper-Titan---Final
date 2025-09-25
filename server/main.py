@@ -65,13 +65,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
     else:
         ctx.logger.info("api_startup")
     bg_task: asyncio.Task | None = None
-    # In-process autonomous worker (fallback for platforms without separate worker process e.g., Deta Space)
-    if os.environ.get("INPROCESS_AUTONOMOUS", "0").lower() in ("1", "true", "yes"):
-        interval = ctx.settings.autonomous_worker_interval_seconds
+    # In-process autonomous worker
+    # Behavior:
+    #  - If no Redis is configured, we always start the in-process worker so the dashboard alone is sufficient.
+    #  - If Redis exists (typical multi-process deploy), we keep opt-in via INPROCESS_AUTONOMOUS to avoid duplicate workers.
+    interval = ctx.settings.autonomous_worker_interval_seconds
+    want_inprocess = (ctx.redis is None) or (os.environ.get("INPROCESS_AUTONOMOUS", "0").lower() in ("1", "true", "yes"))
+    if want_inprocess:
         if interval > 0:
             async def _periodic():
                 logger = ctx.logger.bind(component="inprocess_worker")
-                logger.info("inprocess_autonomous_started", interval=interval)
+                logger.info("inprocess_autonomous_started", interval=interval, mode=("no_redis" if ctx.redis is None else "env_opt_in"))
                 while True:
                     try:
                         if ctx.settings.scraping_enabled:

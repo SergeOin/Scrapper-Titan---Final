@@ -167,6 +167,19 @@ class Settings(BaseSettings):
     # Public dashboard & autonomous worker
     dashboard_public: bool = Field(False, alias="DASHBOARD_PUBLIC")
     autonomous_worker_interval_seconds: int = Field(0, alias="AUTONOMOUS_WORKER_INTERVAL_SECONDS")  # 0=disabled
+    # Human-like cadence (optional)
+    human_mode_enabled: bool = Field(False, alias="HUMAN_MODE_ENABLED")
+    human_active_hours_start: int = Field(8, alias="HUMAN_ACTIVE_HOURS_START")  # local hour
+    human_active_hours_end: int = Field(20, alias="HUMAN_ACTIVE_HOURS_END")    # local hour
+    human_min_cycle_pause_seconds: int = Field(60, alias="HUMAN_MIN_CYCLE_PAUSE_SECONDS")
+    human_max_cycle_pause_seconds: int = Field(180, alias="HUMAN_MAX_CYCLE_PAUSE_SECONDS")
+    human_long_break_probability: float = Field(0.08, alias="HUMAN_LONG_BREAK_PROBABILITY")
+    human_long_break_min_seconds: int = Field(600, alias="HUMAN_LONG_BREAK_MIN_SECONDS")
+    human_long_break_max_seconds: int = Field(1200, alias="HUMAN_LONG_BREAK_MAX_SECONDS")
+    human_night_mode: bool = Field(True, alias="HUMAN_NIGHT_MODE")
+    human_night_pause_min_seconds: int = Field(1800, alias="HUMAN_NIGHT_PAUSE_MIN_SECONDS")
+    human_night_pause_max_seconds: int = Field(3600, alias="HUMAN_NIGHT_PAUSE_MAX_SECONDS")
+    human_max_cycles_per_hour: int = Field(6, alias="HUMAN_MAX_CYCLES_PER_HOUR")
 
     # Quiet startup logs (suppresses info-level boot messages)
     quiet_startup: bool = Field(False, alias="QUIET_STARTUP")

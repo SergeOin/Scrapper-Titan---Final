@@ -26,14 +26,15 @@
     .status-hint-wait { background:#fefce8; color:#854d0e; }
     .status-hint-ok { background:#dcfce7; color:#166534; }
     .status-hint-error { background:#fee2e2; color:#b91c1c; }
-  .icon-btn { background:none; border:none; cursor:pointer; font-size:1rem; line-height:1; padding:0.25rem; display:inline-flex; align-items:center; justify-content:center; border-radius:4px; transition:transform 0.15s ease, color 0.2s ease; }
+  .icon-btn { background:none; border:none; cursor:pointer; font-size:1.3rem; line-height:1; padding:0.35rem; display:inline-flex; align-items:center; justify-content:center; border-radius:6px; transition:transform 0.15s ease, color 0.2s ease; }
   .icon-btn:focus { outline:2px solid #2563eb33; outline-offset:2px; }
   .icon-btn:hover { transform:translateY(-1px); }
   .favorite-toggle { color:#cbd5e1; }
   .favorite-toggle.active { color:#facc15; }
   .delete-post { color:#dc2626; }
   .delete-post:hover { color:#b91c1c; }
-  .actions-cell { display:flex; gap:0.25rem; align-items:center; justify-content:flex-start; }
+  .actions-cell { display:flex; gap:0.35rem; align-items:center; justify-content:flex-end; }
+  th.actions-head, td.actions-cell { text-align:right; }
   .floating-trash { position:fixed; bottom:1.5rem; right:1.5rem; background:#1e293b; color:#f8fafc; padding:0.6rem 0.9rem; border-radius:999px; display:flex; align-items:center; gap:0.5rem; box-shadow:0 10px 25px rgba(15,23,42,0.25); text-decoration:none; font-size:0.9rem; }
   .floating-trash:hover { background:#0f172a; }
   .floating-trash .count { background:#facc15; color:#1e293b; padding:0 0.6rem; border-radius:999px; font-weight:600; }
@@ -48,22 +49,38 @@
     th a { color:#222; text-decoration:none; }
     th a:visited { color:#222; }
     th a:hover { text-decoration:none; }
+    /* Inline badges and sublines */
+    .pill { display:inline-block; padding:2px 6px; border-radius:999px; font-size:.7rem; line-height:1; border:1px solid #cbd5e1; background:#eef2f5; color:#334155; }
+    .pill-opp { background:#dcfce7; border-color:#86efac; color:#166534; font-weight:600; }
+    .meta-sub { display:block; font-size:.75rem; color:#64748b; margin-top:2px; }
   </style>
 </head>
 <body>
-  <h1>LinkedIn Scraper</h1>
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
+    <h1 style="margin:0;">LinkedIn Scraper</h1>
+    <div class="actions" style="margin-top:0;">
+      <form id="exportForm" class="inline" action="/export/excel" method="get">
+        <input type="hidden" name="q" value="{{ q or '' }}" />
+        <input type="hidden" name="sort_by" value="{{ sort_by }}" />
+        <input type="hidden" name="sort_dir" value="{{ sort_dir }}" />
+        <input type="hidden" name="page" value="1" />
+        <input type="hidden" name="limit" value="1000" />
+        <button type="submit" class="btn-outline">Exporter au format Excel (≤ 1000 lignes)</button>
+      </form>
+      <button id="logoutBtn" type="button" class="btn-outline">Se déconnecter</button>
+    </div>
+  </div>
   {% if mock_mode %}
   <div style="margin:.5rem 0 0.75rem 0; padding:.6rem .8rem; border-radius:6px; background:#fff7ed; color:#9a3412; border:1px solid #fdba74; font-size:.9rem;">
     Mode démonstration actif (PLAYWRIGHT_MOCK_MODE=1) — les posts affichés sont synthétiques. Désactivez le mode mock pour scraper des posts réels.
   </div>
   {% endif %}
-  <div id="statusContainer" data-interval="{{ autonomous_interval or 0 }}" style="margin-top:0.75rem; font-size:0.9rem; display:flex; align-items:center; gap:.75rem;">
+  <div id="statusContainer" data-interval="{{ autonomous_interval or 0 }}" data-init-wait="{{ login_initial_wait_seconds or 120 }}" style="margin-top:0.75rem; font-size:0.9rem; display:flex; align-items:center; gap:.75rem;">
     <div class="spinner" aria-label="statut scraping"></div>
     <div class="status-texts">
       <div id="scrapeStatus">Chargement du statut…</div>
-      <div id="statusHint" class="status-hint status-hint-wait">Scraper démarre, merci de patienter ~2 min</div>
+  <div id="statusHint" class="status-hint status-hint-wait" aria-live="polite">Scraper démarre, merci de patienter ~2 min</div>
     </div>
-    <span id="statusBadge" class="badge" style="background:#e0ecff; color:#1e3a8a;">…</span>
   </div>
   <style>
     .spinner { width:18px; height:18px; border:3px solid #c8d5e6; border-top-color:#2563eb; border-radius:50%; animation:spin 0.9s linear infinite; }
@@ -93,11 +110,36 @@
       setTimeout(()=>{div.style.opacity='0';div.style.transform='translateY(-6px)'; setTimeout(()=>div.remove(),300);}, 3400);
     }
 
+    // Periodic status ticker (keeps ETA/countdowns fresh without reload)
+    let _statusTicker = null;
+    function startStatusTicker(){
+      if(_statusTicker) return;
+      const tick = async ()=>{
+        if(document.visibilityState === 'visible'){
+          try { await refreshStatus(); } catch(_) {}
+        }
+      };
+      _statusTicker = setInterval(tick, 5000);
+    }
+    function stopStatusTicker(){ if(_statusTicker){ clearInterval(_statusTicker); _statusTicker=null; } }
+    document.addEventListener('visibilitychange', ()=>{
+      if(document.visibilityState === 'visible'){ startStatusTicker(); }
+      else { /* optional: keep running but could pause to save CPU */ }
+    });
+
     const hintEl = document.getElementById('statusHint');
     function setHint(text, variant='status-hint-wait'){
       if(!hintEl) return;
       hintEl.textContent = text;
       hintEl.className = 'status-hint ' + variant;
+    }
+    function setHintVisible(visible){
+      if(!hintEl) return;
+      hintEl.style.display = visible ? 'block' : 'none';
+    }
+    function setHintAppend(text){
+      if(!hintEl) return;
+      hintEl.innerHTML = text;
     }
 
     function updateTrashBadge(count){
@@ -152,30 +194,68 @@
       }
     }
 
-    function attachRowActions(){
-      document.querySelectorAll('.favorite-toggle').forEach(btn => {
-        if(btn.dataset.bound === '1') return;
-        btn.dataset.bound = '1';
-        btn.addEventListener('click', async () => {
-          const id = btn.dataset.id;
-          if(!id) return;
-          const makeFav = !btn.classList.contains('active');
-          btn.disabled = true;
-          await handleFavorite(id, makeFav);
-        });
-      });
-      document.querySelectorAll('.delete-post').forEach(btn => {
-        if(btn.dataset.bound === '1') return;
-        btn.dataset.bound = '1';
-        btn.addEventListener('click', async () => {
-          const id = btn.dataset.id;
-          if(!id) return;
-          btn.disabled = true;
-          await handleDelete(id);
-        });
+    // Event delegation for actions to ensure reliability after table refreshes
+    function setupActionDelegation(){
+      const table = document.querySelector('table');
+      if(!table || table.dataset.actionsBound === '1') return;
+      table.dataset.actionsBound = '1';
+      table.addEventListener('click', async (ev)=>{
+        const target = ev.target;
+        if(!(target instanceof Element)) return;
+        const btn = target.closest('button.favorite-toggle, button.delete-post');
+        if(!btn) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const id = btn.getAttribute('data-id');
+        if(!id) return;
+        btn.setAttribute('disabled','true');
+        try {
+          if(btn.classList.contains('favorite-toggle')){
+            const makeFav = !btn.classList.contains('active');
+            await handleFavorite(id, makeFav);
+          } else if(btn.classList.contains('delete-post')){
+            await handleDelete(id);
+          }
+        } finally {
+          btn.removeAttribute('disabled');
+        }
       });
     }
 
+    let _initCountdownHandle = null;
+    let _initLeft = null;
+    function startInitCountdown(){
+      const cont = document.getElementById('statusContainer');
+      if(!cont) return;
+      const target = Number(cont.dataset.initWait || 120);
+      if(_initCountdownHandle) return; // already running
+      if(_initLeft === null){ _initLeft = Math.floor(target); }
+      const update = ()=>{
+        const left = Math.max(_initLeft ?? 0, 0);
+        const m = Math.floor(left/60);
+        const s = left%60;
+        const parts = [];
+        if(m>0) parts.push(m+" min");
+        parts.push(s.toString().padStart(2,'0')+" s");
+        setHintAppend(`Scraper démarre, merci de patienter ~${parts.join(' ')}`);
+        if(left<=0){
+          clearInterval(_initCountdownHandle);
+          _initCountdownHandle=null;
+          // Countdown finished but first run may still be in progress
+          setHint('Premier cycle en cours…', 'status-hint-wait');
+          setHintVisible(true);
+          // Try a status refresh shortly after to flip to actif when available
+          setTimeout(()=>{ try { refreshStatus(); } catch(_){} }, 1500);
+          return;
+        }
+        _initLeft = left - 1;
+      };
+      update();
+      _initCountdownHandle = setInterval(update, 1000);
+    }
+    function stopInitCountdown(){ if(_initCountdownHandle){ clearInterval(_initCountdownHandle); _initCountdownHandle=null; } _initLeft = null; }
+
+    let _autoTriggeredFirstRun = false;
     async function refreshStatus(){
       try {
         const r = await fetch('/health');
@@ -185,36 +265,54 @@
     const spinner = document.querySelector('.spinner');
     const btn = document.getElementById('toggleBtn');
     const enabled = data.scraping_enabled;
-    const interval = Number(document.getElementById('statusContainer').dataset.interval || 0);
+      const interval = Number(document.getElementById('statusContainer').dataset.interval || 0);
+      const base = "Scraper actif - Laissez l'application ouverte pour collecter automatiquement de nouveaux posts.";
         let txt = '';
-        const badge = document.getElementById('statusBadge');
         if(enabled){
           if(data.last_run_age_seconds !== undefined){
             if(interval>0){
-              txt = `Scraper actif · prochain cycle estimé dans ~${Math.max(interval - (data.last_run_age_seconds % interval),1)}s`;
+              const eta = Math.max(interval - (data.last_run_age_seconds % interval),1);
+              const perMinPosts = (typeof data.last_job_posts === 'number' && data.last_job_posts >= 0) ? (data.last_job_posts * 60 / interval) : null;
+              if(perMinPosts !== null){
+              txt = `${base} · ~${perMinPosts.toFixed(1)} posts/min · prochain cycle dans ~${eta}s`;
+              } else {
+                const perMin = (60/interval).toFixed(2);
+              txt = `${base} · ~${perMin} cycles/min · prochain cycle dans ~${eta}s`;
+              }
             } else {
-              txt = 'Scraper actif';
+            txt = base;
+            setHintVisible(false);
             }
-            setHint('Scraper actif', 'status-hint-ok');
+            // Active: afficher texte vert, masquer le spinner
+            el.className='status-ok';
+            spinner.style.display='none';
+            stopInitCountdown();
           } else {
-            txt = 'Scraper démarre…';
-            setHint('Scraper démarre, merci de patienter ~2 min', 'status-hint-wait');
+            txt = '';
+            setHintVisible(true);
+            // Initialisation: texte bleu et spinner visible
+            el.className='status-wait';
+            spinner.style.display='inline-block';
+            // Show countdown against configured initial wait if available
+            startInitCountdown();
+            // Auto-trigger a first cycle once if scraping enabled and no last_run yet
+            if (!_autoTriggeredFirstRun) {
+              _autoTriggeredFirstRun = true;
+              try {
+                const fd = new FormData();
+                const tr = await fetch('/trigger', { method:'POST', body: fd });
+                if(tr.ok){ showToast('Premier cycle lancé','info'); }
+              } catch(_) { /* ignore */ }
+            }
           }
-          el.className='status-ok';
-          spinner.style.display='inline-block';
           if (btn) { btn.textContent = 'Mettre en pause'; btn.style.background = '#dc2626'; }
-          badge.textContent = 'ACTIF';
-          badge.style.background = '#dcfce7';
-          badge.style.color = '#166534';
         } else {
           txt = 'Scraper en pause';
           el.className='status-paused';
           spinner.style.display='none';
           if (btn) { btn.textContent = 'Reprendre'; btn.style.background = '#16a34a'; }
-          badge.textContent = 'PAUSE';
-          badge.style.background = '#fee2e2';
-          badge.style.color = '#991b1b';
-          setHint('Scraper arrêté — cliquez sur Reprendre pour relancer', 'status-hint-wait');
+        setHintVisible(false);
+          stopInitCountdown();
         }
         if(data.last_run && data.last_job_posts !== undefined){
           // Format heure locale lisible
@@ -233,11 +331,9 @@
         el.className='status-paused';
         const spinner = document.querySelector('.spinner');
         spinner.style.display='none';
-        const badge = document.getElementById('statusBadge');
-        badge.textContent = 'ERREUR';
-        badge.style.background = '#fde68a';
-        badge.style.color = '#92400e';
         setHint('Statut indisponible – vérifiez les logs', 'status-hint-error');
+        setHintVisible(true);
+        stopInitCountdown();
       }
     }
     async function toggleScraping(){
@@ -273,7 +369,7 @@
         const tbody = document.querySelector('table tbody');
         if(!tbody) return;
         if(data.items.length === 0){
-          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;font-size:0.8rem;color:#555;">Aucun résultat pour le moment.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;font-size:0.8rem;color:#555;">Aucun résultat pour le moment.</td></tr>';
           return;
         }
         const rows = data.items.map(p=>{
@@ -283,24 +379,28 @@
           let dateFmt = '';
           try { dateFmt = new Date(dateVal).toLocaleString('fr-FR',{dateStyle:'short', timeStyle:'short'});} catch(_) { dateFmt = dateVal||''; }
           const permalink = p.permalink ? `<a href="${p.permalink}" target="_blank">ouvrir</a>` : '—';
+          const status = p.status || '—';
+          const metierSub = p.metier ? `<div class="meta-sub" title="Métier détecté">${String(p.metier||'').replace(/</g,'&lt;')}</div>` : '';
+          const oppBadge = p.opportunity ? '<span class="pill pill-opp" title="Signal de recrutement détecté">Opportunité</span> ' : '';
           const starActive = Number(p.is_favorite || 0) === 1;
           const starClass = starActive ? 'icon-btn favorite-toggle active' : 'icon-btn favorite-toggle';
           const starTitle = starActive ? 'Retirer des favoris' : 'Marquer en favori';
           return `<tr data-post-id="${p._id}">
+            <td><code>${p.keyword||''}</code></td>
+            <td>${(p.author||'').replace(/\b(\w+\s+\w+)\s+\1\b/gi,'$1')}${metierSub}</td>
+            <td>${(p.company&&p.company.toLowerCase()!==String(p.author||'').toLowerCase())?p.company:'—'}</td>
+            <td class="wrap">${oppBadge}${short.replace(/</g,'&lt;')}</td>
+            <td>${dateFmt}</td>
+            <td>${permalink}</td>
+            <td>${status}</td>
             <td class="actions-cell">
               <button type="button" class="${starClass}" data-id="${p._id}" title="${starTitle}">★</button>
               <button type="button" class="icon-btn delete-post" data-id="${p._id}" title="Supprimer ce post">🗑</button>
             </td>
-            <td><code>${p.keyword||''}</code></td>
-            <td>${p.author||''}</td>
-            <td>${p.company||'—'}</td>
-            <td class="wrap">${short.replace(/</g,'&lt;')}</td>
-            <td>${dateFmt}</td>
-            <td>${permalink}</td>
           </tr>`;
         }).join('');
         tbody.innerHTML = rows;
-        attachRowActions();
+        // No need to rebind per-row handlers thanks to event delegation
       } catch(e){ /* silent */ }
     }
     function setupSSE(){
@@ -314,7 +414,12 @@
               await refreshStatus();
               await refreshTrashCount();
               showToast(`Cycle terminé (${payload.posts} posts)`, 'info');
-              setHint('Scraper actif', 'status-hint-ok');
+              // Keep guidance visible in active mode
+              setHint('Laissez l\'application ouverte pour collecter automatiquement de nouveaux posts.', 'status-hint-ok');
+              setHintVisible(true);
+            } else if (payload.type === 'toggle') {
+              await refreshStatus();
+              showToast(payload.scraping_enabled ? 'Scraper repris' : 'Scraper en pause', payload.scraping_enabled ? 'success' : 'info');
             }
           } catch(e){ /* ignore JSON parse */ }
         };
@@ -349,9 +454,10 @@
         refreshStatus();
       }, 10000);
     }
-    refreshStatus();
-    setupSSE();
-  attachRowActions();
+  refreshStatus();
+  setupSSE();
+  startStatusTicker();
+  setupActionDelegation();
   refreshTrashCount();
     // Logout handler
     const logoutBtn = document.getElementById('logoutBtn');
@@ -375,22 +481,12 @@
       <a href="/?limit={{ limit }}" style="font-size:.85rem;">Effacer</a>
     {% endif %}
   </form>
-  <div class="actions">
-    <form id="exportForm" class="inline" action="/export/excel" method="get">
-      <input type="hidden" name="q" value="{{ q or '' }}" />
-      <input type="hidden" name="sort_by" value="{{ sort_by }}" />
-      <input type="hidden" name="sort_dir" value="{{ sort_dir }}" />
-      <input type="hidden" name="page" value="1" />
-      <input type="hidden" name="limit" value="1000" />
-  <button type="submit" class="btn-outline">Exporter au format Excel (≤ 1000 lignes)</button>
-    </form>
-    <button id="logoutBtn" type="button" class="btn-outline">Se déconnecter</button>
-  </div>
+  <!-- Top-right actions moved into header -->
+  <!-- Note: En cas de doublons visibles, ils sont généralement dus à des posts sans lien canonique (permalink). Le worker applique déjà une déduplication stricte par lien puis (auteur + date). -->
   <table>
     <thead>
       <tr>
         {% set nextDir = 'asc' if sort_dir=='desc' else 'desc' %}
-        <th>Actions</th>
         <th>
           <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=keyword&sort_dir={{ 'desc' if sort_by!='keyword' else nextDir }}">Keyword{% if sort_by=='keyword' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
         </th>
@@ -404,26 +500,29 @@
         <th>
           <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=published_at&sort_dir={{ 'desc' if sort_by!='published_at' else nextDir }}">Date{% if sort_by=='published_at' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
         </th>
-        <th>Lien</th>
+  <th>Lien</th>
+  <th>Statut</th>
+  <th class="actions-head">Actions</th>
       </tr>
     </thead>
     <tbody>
     {% for post in posts %}
       <tr data-post-id="{{ post._id }}">
+        <td><code>{{ post.keyword }}</code></td>
+        <td>{{ post.author }}{% if post.metier %}<div class="meta-sub" title="Métier détecté">{{ post.metier }}</div>{% endif %}</td>
+  <td>{% if post.company and (post.company|lower) != (post.author|lower) %}{{ post.company }}{% else %}—{% endif %}</td>
+        <td class="wrap">{% if post.opportunity %}<span class="pill pill-opp" title="Signal de recrutement détecté">Opportunité</span> {% endif %}{{ post.text[:500] }}{% if post.text|length > 500 %}…{% endif %}</td>
+  <td>{{ (post.published_at or post.collected_at)|fmt_date }}</td>
+  <td>{% if post.permalink %}<a href="{{ post.permalink }}" target="_blank">ouvrir</a>{% else %}—{% endif %}</td>
+  <td>{{ post.status or '—' }}</td>
         <td class="actions-cell">
           <button type="button" class="icon-btn favorite-toggle{% if post.is_favorite %} active{% endif %}" data-id="{{ post._id }}" title="Marquer en favori">★</button>
           <button type="button" class="icon-btn delete-post" data-id="{{ post._id }}" title="Supprimer ce post">🗑</button>
         </td>
-        <td><code>{{ post.keyword }}</code></td>
-        <td>{{ post.author }}</td>
-        <td>{{ post.company or '—' }}</td>
-        <td class="wrap">{{ post.text[:500] }}{% if post.text|length > 500 %}…{% endif %}</td>
-  <td>{{ (post.published_at or post.collected_at)|fmt_date }}</td>
-        <td>{% if post.permalink %}<a href="{{ post.permalink }}" target="_blank">ouvrir</a>{% else %}—{% endif %}</td>
       </tr>
     {% endfor %}
     {% if posts|length == 0 %}
-      <tr><td colspan="7" style="text-align:center; font-size:0.8rem; color:#555;">Aucun résultat pour le moment.</td></tr>
+      <tr><td colspan="8" style="text-align:center; font-size:0.8rem; color:#555;">Aucun résultat pour le moment.</td></tr>
     {% endif %}
     </tbody>
   </table>

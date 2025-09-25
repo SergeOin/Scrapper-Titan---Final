@@ -57,16 +57,12 @@
     {% if valid %}
       <p class="ok">Une session semble valide. <a href="/">Aller au tableau de bord</a></p>
     {% else %}
-        <p class="muted">Connectez-vous via Playwright. Une fenêtre LinkedIn va s'ouvrir — merci de patienter et complétez les étapes (MFA/CAPTCHA le cas échéant).</p>
+        <p class="muted">Connectez-vous via Playwright. Une fenêtre LinkedIn va s'ouvrir — merci de patienter et complétez les étapes directement sur LinkedIn (MFA/CAPTCHA le cas échéant).</p>
         <h3>Connexion via Playwright</h3>
       <form onsubmit="doLogin(event)">
         <div class="row">
           <input id="loginEmail" name="email" type="email" placeholder="Email" required />
           <input name="password" type="password" placeholder="Mot de passe" required />
-        </div>
-        <div class="row" style="margin-top:.6rem">
-          <input name="mfa_code" type="text" placeholder="Code MFA (optionnel)" />
-          <div></div>
         </div>
         <button type="submit" style="margin-top: .8rem">Se connecter</button>
       </form>

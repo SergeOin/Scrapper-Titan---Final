@@ -1046,26 +1046,76 @@ async def worker_loop() -> None:
 
     # If no redis available, single-run mode over configured keywords.
     if not ctx.redis:
-        # Autonomous periodic mode if interval > 0
-        if ctx.settings.autonomous_worker_interval_seconds > 0:
-            logger.info("autonomous_mode_enabled", interval=ctx.settings.autonomous_worker_interval_seconds)
+        # Human-like continuous mode
+        if ctx.settings.human_mode_enabled:
+            import random, datetime
+            logger.info("human_mode_enabled", start=ctx.settings.human_active_hours_start, end=ctx.settings.human_active_hours_end)
+            import collections, time as _time
+            window = collections.deque()  # timestamps of cycle completions
             while True:
+                if not ctx.settings.scraping_enabled:
+                    logger.info("scraping_disabled_wait")
+                    await asyncio.sleep(5)
+                    continue
+                local_hour = datetime.datetime.now().hour
+                in_active = ctx.settings.human_active_hours_start <= local_hour < ctx.settings.human_active_hours_end
+                # run a cycle
+                async with run_with_lock(ctx):
+                    try:
+                        new = await process_job(ctx.settings.keywords, ctx)
+                        logger.info("human_cycle_complete", new=new, hour=local_hour)
+                    except Exception as exc:  # pragma: no cover
+                        logger.error("human_cycle_failed", error=str(exc))
+                # record completion
+                now_ts = _time.time()
+                window.append(now_ts)
+                # drop entries older than 1 hour
+                one_hour_ago = now_ts - 3600
+                while window and window[0] < one_hour_ago:
+                    window.popleft()
+                # if cap exceeded, enforce a longer cooldown
+                if len(window) >= max(1, ctx.settings.human_max_cycles_per_hour):
+                    extra = 600  # 10 minutes cooldown when cap hit
+                    logger.debug("human_hourly_cap_reached", cycles=len(window), cooldown=extra)
+                    await asyncio.sleep(extra)
+                # decide next pause
+                if in_active:
+                    # short random pause between cycles
+                    pause = random.randint(max(45, ctx.settings.human_min_cycle_pause_seconds), max(180, ctx.settings.human_max_cycle_pause_seconds))
+                    # occasionally take a longer break (like a meeting)
+                    if random.random() < ctx.settings.human_long_break_probability:
+                        pause = random.randint(ctx.settings.human_long_break_min_seconds, ctx.settings.human_long_break_max_seconds)
+                    logger.debug("human_pause", seconds=pause)
+                    await asyncio.sleep(pause)
+                else:
+                    # outside active hours: long cool-downs
+                    if ctx.settings.human_night_mode:
+                        pause = random.randint(ctx.settings.human_night_pause_min_seconds, ctx.settings.human_night_pause_max_seconds)
+                        logger.debug("human_night_pause", seconds=pause)
+                        await asyncio.sleep(pause)
+                    else:
+                        await asyncio.sleep(300)
+        else:
+            # Autonomous periodic mode if interval > 0
+            if ctx.settings.autonomous_worker_interval_seconds > 0:
+                logger.info("autonomous_mode_enabled", interval=ctx.settings.autonomous_worker_interval_seconds)
+                while True:
+                    if ctx.settings.scraping_enabled:
+                        async with run_with_lock(ctx):
+                            try:
+                                new = await process_job(ctx.settings.keywords, ctx)
+                                logger.info("autonomous_cycle_complete", new=new)
+                            except Exception as exc:  # pragma: no cover
+                                logger.error("autonomous_cycle_failed", error=str(exc))
+                    else:
+                        logger.info("scraping_disabled_wait")
+                    await asyncio.sleep(ctx.settings.autonomous_worker_interval_seconds)
+            else:
                 if ctx.settings.scraping_enabled:
                     async with run_with_lock(ctx):
-                        try:
-                            new = await process_job(ctx.settings.keywords, ctx)
-                            logger.info("autonomous_cycle_complete", new=new)
-                        except Exception as exc:  # pragma: no cover
-                            logger.error("autonomous_cycle_failed", error=str(exc))
+                        await process_job(ctx.settings.keywords, ctx)
                 else:
-                    logger.info("scraping_disabled_wait")
-                await asyncio.sleep(ctx.settings.autonomous_worker_interval_seconds)
-        else:
-            if ctx.settings.scraping_enabled:
-                async with run_with_lock(ctx):
-                    await process_job(ctx.settings.keywords, ctx)
-            else:
-                logger.info("scraping_disabled")
+                    logger.info("scraping_disabled")
         return
 
     # Continuous loop: poll queue

@@ -50,7 +50,16 @@ async def purge(ctx, force: bool):
         try:
             conn = sqlite3.connect(ctx.settings.sqlite_path)
             with conn:
+                # Remove posts and any flags so UI state (favoris/corbeille) starts clean
+                try:
+                    conn.execute("DELETE FROM post_flags")
+                except Exception:
+                    pass
                 conn.execute("DELETE FROM posts")
+                try:
+                    conn.execute("VACUUM")
+                except Exception:
+                    pass
             ctx.logger.info("purge_sqlite_ok", path=ctx.settings.sqlite_path)
         except Exception as exc:  # pragma: no cover
             ctx.logger.error("purge_sqlite_failed", error=str(exc))

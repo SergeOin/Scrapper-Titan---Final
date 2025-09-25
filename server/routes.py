@@ -57,6 +57,251 @@ def _fmt_date(value: Optional[str]):  # value expected ISO string
 
 templates.env.filters['fmt_date'] = _fmt_date
 
+# Name/company helpers for display hygiene
+def _dedupe_person_name(name: Optional[str]) -> str:
+    s = (name or "").strip()
+    if not s:
+        return s
+    tokens = s.split()
+    # Pattern: exact duplication like "John Doe John Doe"
+    if len(tokens) >= 2 and len(tokens) % 2 == 0:
+        half = len(tokens) // 2
+        if tokens[:half] == tokens[half:]:
+            return " ".join(tokens[:half])
+    return s
+
+def _derive_company(author: str, author_profile: Optional[str], text: Optional[str]) -> Optional[str]:
+    """Best-effort company derivation from profile/text.
+    Heuristics:
+    - Prefer author_profile; handle 'chez'/'at' patterns and common separators.
+    - Avoid returning segments that look like roles (Recruiter, Manager, etc.).
+    - Never return the author name.
+    - Fall back to scanning text for 'chez/at @Company' markers and parenthesis.
+    """
+    import re
+    norm_author = (author or "").strip().lower()
+    role_keywords = {
+        "recruteur","recruiter","talent","senior","junior","stagiaire","alternant",
+        "manager","responsable","lead","engineer","ingénieur","consultant","développeur","developer",
+        "cto","ceo","cfo","cmo","rh","hr","human resources","marketing","sales","commercial",
+    }
+    company_suffixes = {"sas","sarl","sa","inc","llc","gmbh","ltd","spa","s.p.a","ag","bv","nv"}
+
+    def looks_like_role(segment: str) -> bool:
+        seg = segment.lower()
+        return any(k in seg for k in role_keywords)
+
+    def company_score(segment: str) -> int:
+        s = segment.strip()
+        score = 0
+        # bonus if contains company suffixes
+        if any(s.lower().endswith(" "+suf) or (" "+suf+" ") in s.lower() for suf in company_suffixes):
+            score += 3
+        # bonus for Title Case words
+        tokens = [t for t in re.split(r"\s+", s) if t]
+        score += sum(1 for t in tokens if t[:1].isupper())
+        # penalty if contains role
+        if looks_like_role(s):
+            score -= 2
+        return score
+
+    prof = (author_profile or "").strip()
+    if prof:
+        # Direct patterns in profile: 'chez X' / 'at X'
+        for marker in (" chez ", " at "):
+            if marker in prof.lower():
+                tail = prof.lower().split(marker, 1)[1]
+                # Recover original casing by slicing same length offset
+                start_idx = prof.lower().index(marker) + len(marker)
+                tail = prof[start_idx:].strip()
+                for stop in [" |", " -", ",", " •", " ·", " – ", " — ", "  "]:
+                    if stop in tail:
+                        tail = tail.split(stop, 1)[0].strip()
+                if 2 <= len(tail) <= 80 and tail.strip().lower() != norm_author:
+                    return tail
+        # Split on common separators and pick the most company-like segment
+        seps = [" • ", " — ", " – ", " | ", " •", "•", "—", "-", "|", "·"]
+        if any(sep in prof for sep in seps):
+            parts: list[str] = []
+            tmp = prof
+            for sep in [" • ", " — ", " – ", " | "]:
+                tmp = tmp.replace(sep, "|")
+            for sep in [" •", "•", "—", "-", "|", "·"]:
+                tmp = tmp.replace(sep, "|")
+            parts = [p.strip() for p in tmp.split("|") if p.strip()]
+            candidates = [p for p in parts if p and p.lower() != norm_author]
+            # prefer segments that don't look like roles, then by score/length
+            candidates.sort(key=lambda p: (looks_like_role(p), -company_score(p), -len(p)))
+            if candidates:
+                top = candidates[0]
+                if 2 <= len(top) <= 80 and top.lower() != norm_author:
+                    return top
+
+    # Fallback: look into text for markers
+    blob = (text or "")
+    for marker in ["@ ", "chez ", " chez ", " at ", " chez l'", " chez le ", " chez la ", " chez les "]:
+        if marker in blob:
+            tail = blob.split(marker, 1)[1].strip()
+            for stop in [" |", " -", ",", " •", " ·", "  "]:
+                if stop in tail:
+                    tail = tail.split(stop, 1)[0].strip()
+            if 2 <= len(tail) <= 80 and tail.lower() != norm_author:
+                return tail
+    # Try parentheses like "(Company)"
+    for m in re.finditer(r"\(([^)]+)\)", blob):
+        cand = m.group(1).strip()
+        if 2 <= len(cand) <= 80 and cand.lower() != norm_author:
+            return cand
+    return None
+
+def _sanitize_company(company: Optional[str]) -> Optional[str]:
+    s = (company or "").strip()
+    if not s:
+        return None
+    # Remove common prefixes/symbols
+    if s.startswith("@"):
+        s = s[1:].strip()
+    for pref in ["chez ", "Chez ", "at ", "At "]:
+        if s.startswith(pref):
+            s = s[len(pref):].strip()
+            break
+    # Collapse excessive whitespace
+    s = " ".join(s.split())
+    # Strip trailing punctuation
+    s = s.strip("-•|·—,;: ")
+    return s or None
+
+def _looks_like_followers(segment: str) -> bool:
+    import re
+    seg = segment.strip().lower()
+    # Normalize nbsp/thin spaces
+    seg = seg.replace("\u00a0", " ").replace("\u202f", " ")
+    # e.g., "12 345 abonnés", "12k abonnés", "1.2m followers"
+    return re.search(r"\b\d[\d\s\.,]*\s*(k|m)?\s*(abonn[eé]s|followers)\b", seg) is not None
+
+def _strip_followers_suffix(value: Optional[str]) -> Optional[str]:
+    import re
+    s = (value or "").strip()
+    if not s:
+        return None
+    original = s
+    # Remove parenthesized followers e.g., "(12 345 abonnés)"
+    s = re.sub(r"\(\s*\d[\d\s\.,\u202f\u00a0]*\s*(?:k|m)?\s*(?:abonn[eé]s|followers)\s*\)", "", s, flags=re.IGNORECASE)
+    # Remove trailing segments like " | 12k abonnés", " · 1 234 followers", " - 2 345 abonnés"
+    for sep in [" | ", " · ", " - ", " — ", " – "]:
+        parts = [p.strip() for p in s.split(sep) if p is not None]
+        if len(parts) >= 2 and _looks_like_followers(parts[-1]):
+            s = sep.join(parts[:-1])
+    # Remove simple terminal follower phrase if present at the end
+    s = re.sub(r"[\s\-•|·—,;:]*\d[\d\s\.,\u202f\u00a0]*\s*(?:k|m)?\s*(?:abonn[eé]s|followers)\s*$", "", s, flags=re.IGNORECASE)
+    # Cleanup whitespace/separators
+    s = " ".join(s.split())
+    s = s.strip("-•|·—,;: ")
+    return s or None
+
+def _dedupe_repeated_phrase(value: Optional[str]) -> Optional[str]:
+    s = (value or "").strip()
+    if not s:
+        return None
+    tokens = s.split()
+    if len(tokens) % 2 == 0 and len(tokens) >= 2:
+        half = len(tokens) // 2
+        if tokens[:half] == tokens[half:]:
+            return " ".join(tokens[:half])
+    return s
+
+def _extract_contract_status(text: Optional[str]) -> Optional[str]:
+    """Extract a contract/status label like CDI/CDD/Alternance/Freelance from the post text only.
+
+    Returns a comma-separated string in a consistent order, or None if nothing found.
+    """
+    blob = (text or "").strip()
+    if not blob:
+        return None
+    low = blob.lower()
+    found = set()
+    # Simple keyword spotting (FR + EN equivalents where useful)
+    if " cdi" in low or low.startswith("cdi") or "(cdi" in low:
+        found.add("CDI")
+    if " cdd" in low or low.startswith("cdd") or "(cdd" in low:
+        found.add("CDD")
+    if " alternance" in low or low.startswith("alternance") or "apprentissage" in low:
+        found.add("Alternance")
+    if " stage" in low or low.startswith("stage") or "internship" in low:
+        found.add("Stage")
+    if " freelance" in low or low.startswith("freelance") or "indépendant" in low or "independant" in low:
+        found.add("Freelance")
+    if "temps plein" in low or "full time" in low or "full-time" in low:
+        found.add("Temps plein")
+    if "temps partiel" in low or "part time" in low or "part-time" in low:
+        found.add("Temps partiel")
+    if not found:
+        return None
+    order = ["CDI", "CDD", "Alternance", "Stage", "Freelance", "Temps plein", "Temps partiel"]
+    ordered = [x for x in order if x in found]
+    return ", ".join(ordered) if ordered else None
+
+def _extract_metier(text: Optional[str]) -> Optional[str]:
+    """Extract legal/tax job roles from post text based on curated patterns.
+
+    Returns a comma-separated label list or None.
+    """
+    blob = (text or "").lower()
+    if not blob:
+        return None
+    hits: list[str] = []
+    patterns: list[tuple[list[str], str]] = [
+        # Avocats
+        (["avocat collaborateur"], "Avocat collaborateur"),
+        (["avocat associe", "avocat associé"], "Avocat associé"),
+        (["avocat counsel", "counsel"], "Avocat counsel"),
+        (["avocat"], "Avocat"),
+        # Juristes / Legal
+        (["paralegal"], "Paralegal"),
+        (["legal counsel"], "Legal counsel"),
+        (["juriste"], "Juriste"),
+        # Management juridique
+        (["responsable juridique"], "Responsable juridique"),
+        (["directeur juridique"], "Directeur juridique"),
+        # Notariat
+        (["notaire stagiaire"], "Notaire stagiaire"),
+        (["notaire associe", "notaire associé"], "Notaire associé"),
+        (["notaire salarie", "notaire salarié"], "Notaire salarié"),
+        (["notaire assistant"], "Notaire assistant"),
+        (["clerc de notaire"], "Clerc de notaire"),
+        (["redacteur d'actes", "rédacteur d’actes", "rédacteur d'actes", "redacteur d’actes"], "Rédacteur d’actes"),
+        (["notaire"], "Notaire"),
+        # Fiscalité
+        (["responsable fiscal"], "Responsable fiscal"),
+        (["directeur fiscal"], "Directeur fiscal"),
+        (["juriste fiscaliste"], "Juriste fiscaliste"),
+        (["comptable taxateur"], "Comptable taxateur"),
+        (["formaliste"], "Formaliste"),
+    ]
+    for keys, label in patterns:
+        if any(k in blob for k in keys):
+            # avoid duplicates
+            if label not in hits:
+                hits.append(label)
+    if not hits:
+        return None
+    # Preserve pattern order; cap to 3 labels to keep UI compact
+    return ", ".join(hits[:3])
+
+def _detect_opportunity(text: Optional[str]) -> bool:
+    """Detect recruitment signals in post text (FR/EN)."""
+    t = (text or "").lower()
+    if not t:
+        return False
+    signals = [
+        # FR
+        " recrute", "nous recrutons", "on recrute", "recrutement", "poste a pourvoir", "poste à pourvoir",
+        "offre d'emploi", "offre d’emploi", "candidature", "postulez", "envoyez votre cv", "cv@", "joignez votre cv",
+        # EN
+        "hiring", "we're hiring", "we are hiring", "join our team", "apply now", "apply here",
+    ]
+    return any(s in t for s in signals)
+
 # ------------------------------------------------------------
 # Optional internal auth dependency
 # ------------------------------------------------------------
@@ -244,6 +489,7 @@ def _fetch_deleted_posts(ctx) -> list[dict[str, Any]]:
 async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_by: Optional[str] = None, sort_dir: Optional[str] = None) -> list[dict[str, Any]]:
     q = _sanitize_query(q)
     sort_field, sort_direction = _normalize_sort(sort_by, sort_dir)
+    rows: list[dict[str, Any]] = []
     # Mongo path
     if ctx.mongo_client:
         try:
@@ -259,13 +505,13 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
                 ]
             # Exclude raw + legacy score fields
             cursor = coll.find(mf, {"raw": 0, "score": 0, "recruitment_score": 0}).sort(sort_field, sort_direction).skip(skip).limit(limit)
-            return [doc async for doc in cursor]
+            rows = [doc async for doc in cursor]
         except Exception as exc:  # pragma: no cover
             ctx.logger.error("posts_query_failed", error=str(exc))
-    # SQLite fallback
-    rows: list[dict[str, Any]] = []
+            rows = []
+    # SQLite fallback (if no mongo rows and/or mongo unavailable)
     try:
-        if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
+        if (not rows) and ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
             conn = sqlite3.connect(ctx.settings.sqlite_path)
             conn.row_factory = sqlite3.Row
             with conn:
@@ -325,28 +571,75 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
             with conn:
                 ids = [str(item.get("_id")) for item in rows if item.get("_id")]
                 flags = _flags_for_ids(conn, ids)
-            reorder_needed = bool(rows) and "is_favorite" not in rows[0]
             filtered: list[dict[str, Any]] = []
             for item in rows:
                 pid = str(item.get("_id")) if item.get("_id") else None
                 flag = flags.get(pid) if pid else None
                 if flag:
-                    item["is_favorite"] = flag["is_favorite"]
-                    item["is_deleted"] = flag["is_deleted"]
-                    if flag["is_deleted"]:
+                    item["is_favorite"] = int(flag.get("is_favorite") or 0)
+                    item["is_deleted"] = int(flag.get("is_deleted") or 0)
+                    if item["is_deleted"]:
                         continue
                 else:
-                    item.setdefault("is_favorite", 0)
-                    item.setdefault("is_deleted", 0)
+                    item["is_favorite"] = int(item.get("is_favorite") or 0)
+                    item["is_deleted"] = int(item.get("is_deleted") or 0)
                 filtered.append(item)
-            if reorder_needed:
-                favorites = [itm for itm in filtered if itm.get("is_favorite")]
-                others = [itm for itm in filtered if not itm.get("is_favorite")]
-                rows = favorites + others
-            else:
-                rows = filtered
+            # Always surface favorites first while preserving original relative order
+            favorites = [itm for itm in filtered if int(itm.get("is_favorite") or 0) == 1]
+            others = [itm for itm in filtered if int(itm.get("is_favorite") or 0) != 1]
+            rows = favorites + others
     except Exception as exc:  # pragma: no cover
         ctx.logger.debug("flags_annotation_failed", error=str(exc))
+    # Final UI-level deduplication to avoid showing duplicate entries
+    try:
+        if rows:
+            seen: set[str] = set()
+            deduped: list[dict[str, Any]] = []
+            for item in rows:
+                # Sanitize author duplication in display
+                item_author = _dedupe_person_name(item.get("author"))
+                item_author = _strip_followers_suffix(item_author)
+                if item_author:
+                    item["author"] = item_author
+                # Fix company if missing or same as author
+                comp = item.get("company")
+                if not comp or str(comp).strip().lower() == str(item.get("author") or "").strip().lower():
+                    derived = _derive_company(item.get("author") or "", item.get("author_profile"), item.get("text"))
+                    if derived:
+                        item["company"] = derived
+                # Sanitize company and ensure we don't show author as company
+                item["company"] = _sanitize_company(item.get("company"))
+                item["company"] = _strip_followers_suffix(item.get("company")) or item.get("company")
+                item["company"] = _dedupe_repeated_phrase(item.get("company")) or item.get("company")
+                if (item.get("company") or "").strip().lower() == (item.get("author") or "").strip().lower():
+                    item["company"] = None
+                # Derive contract status for UI
+                status = _extract_contract_status(item.get("text"))
+                if status:
+                    item["status"] = status
+                # Derive metier and opportunity
+                metier = _extract_metier(item.get("text"))
+                if metier:
+                    item["metier"] = metier
+                if _detect_opportunity(item.get("text")):
+                    item["opportunity"] = True
+                perma = item.get("permalink") or ""
+                author = (item.get("author") or "")
+                published = item.get("published_at") or ""
+                text = (item.get("text") or "")
+                if perma:
+                    key = f"perma|{perma}"
+                elif author and published:
+                    key = f"authdate|{author}|{published}"
+                else:
+                    key = f"authtext|{author}|{text[:80]}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(item)
+            rows = deduped
+    except Exception:
+        pass
     return rows
 
 
@@ -484,6 +777,7 @@ async def dashboard(
             "total_pages": total_pages,
             "q": _sanitize_query(q) or "",
             "autonomous_interval": ctx.settings.autonomous_worker_interval_seconds,
+            "login_initial_wait_seconds": ctx.settings.login_initial_wait_seconds,
             "sort_by": (sort_by or "collected_at"),
             "sort_dir": (sort_dir or "desc"),
             "mock_mode": ctx.settings.playwright_mock_mode,
@@ -523,12 +817,15 @@ async def export_excel(
             "Keyword": post.get("keyword", ""),
             "Auteur": post.get("author", ""),
             "Entreprise": post.get("company") or "",
+            "Statut": post.get("status") or "",
+            "Métier": post.get("metier") or "",
+            "Opportunité": "Oui" if post.get("opportunity") else "",
             "Texte": post.get("text") or "",
             "Publié le": _format_iso_for_export(post.get("published_at")),
             "Collecté le": _format_iso_for_export(post.get("collected_at")),
             "Lien": post.get("permalink") or "",
         })
-    columns = ["Keyword", "Auteur", "Entreprise", "Texte", "Publié le", "Collecté le", "Lien"]
+    columns = ["Keyword", "Auteur", "Entreprise", "Statut", "Métier", "Opportunité", "Texte", "Publié le", "Collecté le", "Lien"]
     df = pd.DataFrame(rows, columns=columns)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
@@ -626,7 +923,6 @@ async def api_posts(
     ctx=Depends(get_auth_context),
     # min_score removed
     _auth=Depends(require_auth),
-    _ls=Depends(require_linkedin_session),
 ):
     skip = (page - 1) * limit
     posts = await fetch_posts(ctx, skip=skip, limit=limit, q=q, sort_by=sort_by, sort_dir=sort_dir)
@@ -639,7 +935,6 @@ async def api_toggle_favorite(
     payload: dict[str, Any] = Body(...),
     ctx=Depends(get_auth_context),
     _auth=Depends(require_auth),
-    _ls=Depends(require_linkedin_session),
 ):
     favorite = bool(payload.get("favorite", True))
     flags = _update_post_flags(ctx, post_id, favorite=favorite)
@@ -652,7 +947,6 @@ async def api_delete_post(
     payload: Optional[dict[str, Any]] = Body(None),
     ctx=Depends(get_auth_context),
     _auth=Depends(require_auth),
-    _ls=Depends(require_linkedin_session),
 ):
     mark_deleted = True if payload is None else bool(payload.get("delete", True))
     flags = _update_post_flags(ctx, post_id, deleted=mark_deleted)
@@ -668,7 +962,6 @@ async def api_restore_post(
     post_id: str,
     ctx=Depends(get_auth_context),
     _auth=Depends(require_auth),
-    _ls=Depends(require_linkedin_session),
 ):
     flags = _update_post_flags(ctx, post_id, deleted=False)
     return {
@@ -682,7 +975,6 @@ async def api_restore_post(
 async def api_trash_count(
     ctx=Depends(get_auth_context),
     _auth=Depends(require_auth),
-    _ls=Depends(require_linkedin_session),
 ):
     return {"count": _count_deleted(ctx)}
 
@@ -738,6 +1030,31 @@ async def health(ctx=Depends(get_auth_context)):
                 dt = datetime.fromisoformat(lr.replace("Z", "+00:00"))
                 age = datetime.now(timezone.utc) - dt
                 data["last_run_age_seconds"] = int(age.total_seconds())
+            except Exception:
+                pass
+        # If no last_run from Mongo meta and SQLite is used, derive from latest collected_at
+        if not data.get("last_run") and ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
+            try:
+                conn = sqlite3.connect(ctx.settings.sqlite_path)
+                with conn:
+                    # Exclude deleted posts if flags table exists
+                    # We do a LEFT JOIN and allow missing flags table by try/except
+                    try:
+                        conn.execute("SELECT 1 FROM post_flags LIMIT 1")
+                        row = conn.execute(
+                            "SELECT MAX(p.collected_at) FROM posts p LEFT JOIN post_flags f ON f.post_id = p.id WHERE COALESCE(f.is_deleted,0) = 0"
+                        ).fetchone()
+                    except Exception:
+                        row = conn.execute("SELECT MAX(collected_at) FROM posts").fetchone()
+                latest = row[0] if row else None
+                if latest:
+                    data["last_run"] = latest
+                    try:
+                        dt = datetime.fromisoformat(str(latest).replace("Z", "+00:00"))
+                        age = datetime.now(timezone.utc) - dt
+                        data["last_run_age_seconds"] = int(age.total_seconds())
+                    except Exception:
+                        pass
             except Exception:
                 pass
     except Exception:  # pragma: no cover
