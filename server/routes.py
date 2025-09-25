@@ -1169,9 +1169,10 @@ async def login_page(
     ctx=Depends(get_auth_context),
 ):
     st = await session_status(ctx)
+    # Intentionally do not surface any banner/message on the login page
+    # even when redirected with a reason (e.g., session_expired).
+    # This keeps the UI cleaner per request.
     message = None
-    if reason == "session_expired":
-        message = "Le scraper est arrêté car la session LinkedIn a expiré. Veuillez vous reconnecter."
     return templates.TemplateResponse(
         "login.html",
         {

@@ -72,17 +72,12 @@
         <input type="hidden" name="sort_by" value="{{ sort_by }}" />
         <input type="hidden" name="sort_dir" value="{{ sort_dir }}" />
         <input type="hidden" name="page" value="1" />
-        <input type="hidden" name="limit" value="1000" />
-        <button type="submit" class="btn-outline">Exporter au format Excel (≤ 1000 lignes)</button>
+  <button type="submit" class="btn-outline">Exporter au format Excel</button>
       </form>
       <button id="logoutBtn" type="button" class="btn-outline">Se déconnecter</button>
     </div>
   </div>
-  {% if mock_mode %}
-  <div style="margin:.5rem 0 0.75rem 0; padding:.6rem .8rem; border-radius:6px; background:#fff7ed; color:#9a3412; border:1px solid #fdba74; font-size:.9rem;">
-    Mode démonstration actif (PLAYWRIGHT_MOCK_MODE=1) — les posts affichés sont synthétiques. Désactivez le mode mock pour scraper des posts réels.
-  </div>
-  {% endif %}
+
   <div id="statusContainer" data-interval="{{ autonomous_interval or 0 }}" data-init-wait="{{ login_initial_wait_seconds or 120 }}" style="margin-top:0.75rem; font-size:0.9rem; display:flex; align-items:center; gap:.75rem;">
     <div id="statusHint" class="status-hint status-hint-wait" aria-live="polite">Scraper démarre, merci de patienter ~2 min</div>
   </div>

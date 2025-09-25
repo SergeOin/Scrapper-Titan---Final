@@ -67,13 +67,7 @@ function Invoke-Task {
       python scripts/backfill_search_norm.py --db .\fallback.sqlite3
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       Write-Host "Vacuuming SQLite..." -ForegroundColor Cyan
-      python - << 'PY'
-import sqlite3
-conn = sqlite3.connect('fallback.sqlite3')
-with conn:
-    conn.execute('VACUUM')
-print('vacuum_done')
-PY
+      python -c "import sqlite3; conn = sqlite3.connect('fallback.sqlite3');\nwith conn:\n    conn.execute('VACUUM');\nprint('vacuum_done')"
     }
     'compose-up' {
       docker compose up -d --build
