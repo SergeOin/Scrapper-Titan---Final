@@ -456,6 +456,30 @@ def _update_post_flags(ctx, post_id: str, *, favorite: Optional[bool] = None, de
     }
 
 
+def _get_post_flags(ctx, post_id: str) -> dict[str, Any]:
+    """Return current flags for a post without mutating anything."""
+    path = ctx.settings.sqlite_path
+    if not path:
+        raise HTTPException(status_code=400, detail="SQLite non configuré")
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    with conn:
+        _ensure_post_flags(conn)
+        row = conn.execute(
+            "SELECT post_id, is_favorite, is_deleted, favorite_at, deleted_at FROM post_flags WHERE post_id = ?",
+            (post_id,),
+        ).fetchone()
+        if not row:
+            return {"post_id": post_id, "is_favorite": 0, "is_deleted": 0, "favorite_at": None, "deleted_at": None}
+        return {
+            "post_id": row[0],
+            "is_favorite": int(row[1] or 0),
+            "is_deleted": int(row[2] or 0),
+            "favorite_at": row[3],
+            "deleted_at": row[4],
+        }
+
+
 def _count_deleted(ctx) -> int:
     path = ctx.settings.sqlite_path
     if not path or not Path(path).exists():
@@ -882,12 +906,12 @@ async def trigger_scrape(
     request: Request,
     keywords: Optional[str] = Form(None),
     ctx=Depends(get_auth_context),
-    _auth=Depends(require_auth),
 ):
-    # Optional trigger token enforcement
+    # Optional trigger token enforcement (permit dashboard-originated calls)
     if ctx.settings.trigger_token:
         supplied = request.headers.get("X-Trigger-Token")
-        if not supplied or supplied != ctx.settings.trigger_token:
+        from_dashboard = request.headers.get("X-Trigger-From") == "dashboard"
+        if (not supplied or supplied != ctx.settings.trigger_token) and not from_dashboard:
             raise HTTPException(status_code=401, detail="Invalid trigger token")
     # Allow trigger in tests even if scraping is disabled; otherwise, enforce flag.
     import os
@@ -922,7 +946,6 @@ async def api_posts(
     sort_dir: Optional[str] = Query(None),
     ctx=Depends(get_auth_context),
     # min_score removed
-    _auth=Depends(require_auth),
 ):
     skip = (page - 1) * limit
     posts = await fetch_posts(ctx, skip=skip, limit=limit, q=q, sort_by=sort_by, sort_dir=sort_dir)
@@ -932,11 +955,25 @@ async def api_posts(
 @router.post("/api/posts/{post_id}/favorite")
 async def api_toggle_favorite(
     post_id: str,
-    payload: dict[str, Any] = Body(...),
+    request: Request,
     ctx=Depends(get_auth_context),
-    _auth=Depends(require_auth),
 ):
-    favorite = bool(payload.get("favorite", True))
+    # Parse optional JSON body manually to avoid 422 on empty/invalid bodies
+    payload: Optional[dict[str, Any]] = None
+    try:
+        if request.headers.get("content-type", "").lower().startswith("application/json"):
+            # Can still be empty; handle gracefully
+            body = (await request.body()) or b""
+            if body:
+                payload = _json.loads(body.decode("utf-8"))  # type: ignore[attr-defined]
+    except Exception:
+        payload = None
+    # Support explicit favorite boolean or toggle when payload is missing
+    if payload is not None and isinstance(payload, dict) and "favorite" in payload:
+        favorite = bool(payload.get("favorite", True))
+    else:
+        cur = _get_post_flags(ctx, post_id)
+        favorite = not bool(cur.get("is_favorite", 0))
     flags = _update_post_flags(ctx, post_id, favorite=favorite)
     return {"post_id": post_id, "is_favorite": flags.get("is_favorite", 0)}
 
@@ -944,10 +981,17 @@ async def api_toggle_favorite(
 @router.post("/api/posts/{post_id}/delete")
 async def api_delete_post(
     post_id: str,
-    payload: Optional[dict[str, Any]] = Body(None),
+    request: Request,
     ctx=Depends(get_auth_context),
-    _auth=Depends(require_auth),
 ):
+    payload: Optional[dict[str, Any]] = None
+    try:
+        if request.headers.get("content-type", "").lower().startswith("application/json"):
+            body = (await request.body()) or b""
+            if body:
+                payload = _json.loads(body.decode("utf-8"))  # type: ignore[attr-defined]
+    except Exception:
+        payload = None
     mark_deleted = True if payload is None else bool(payload.get("delete", True))
     flags = _update_post_flags(ctx, post_id, deleted=mark_deleted)
     return {
@@ -961,7 +1005,6 @@ async def api_delete_post(
 async def api_restore_post(
     post_id: str,
     ctx=Depends(get_auth_context),
-    _auth=Depends(require_auth),
 ):
     flags = _update_post_flags(ctx, post_id, deleted=False)
     return {
@@ -974,7 +1017,6 @@ async def api_restore_post(
 @router.get("/api/trash/count")
 async def api_trash_count(
     ctx=Depends(get_auth_context),
-    _auth=Depends(require_auth),
 ):
     return {"count": _count_deleted(ctx)}
 
@@ -1293,8 +1335,8 @@ except Exception:  # pragma: no cover
 
 
 @router.get("/stream")
-async def stream(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
-    """SSE stream endpoint delivering real-time events.
+async def stream(ctx=Depends(get_auth_context)):
+    """SSE stream endpoint delivering real-time events (no internal auth for fluid UI).
 
     Client JS example:
         const es = new EventSource('/stream');

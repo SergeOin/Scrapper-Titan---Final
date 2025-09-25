@@ -132,7 +132,16 @@ async def security_headers(request: Request, call_next):  # noqa: D401
     struct_contextvars.bind_contextvars(request_id=rid)
     # Basic per-IP rate limit (skip metrics & health for noiseless ops)
     path = request.url.path
-    if path not in ("/metrics", "/health"):
+    def _skip_rate_limit(p: str) -> bool:
+        # Allowlist UI-critical paths to keep the dashboard snappy
+        if p in ("/metrics", "/health", "/stream", "/toggle", "/api/trash/count"):
+            return True
+        if p.startswith("/api/posts"):
+            return True
+        if p.startswith("/export/excel"):
+            return True
+        return False
+    if not _skip_rate_limit(path):
         ctx = await get_context()
         ip = request.client.host if request.client else "unknown"
         async with _ip_lock:

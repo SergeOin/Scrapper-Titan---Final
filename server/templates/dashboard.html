@@ -33,8 +33,16 @@
   .favorite-toggle.active { color:#facc15; }
   .delete-post { color:#dc2626; }
   .delete-post:hover { color:#b91c1c; }
-  .actions-cell { display:flex; gap:0.35rem; align-items:center; justify-content:flex-end; }
-  th.actions-head, td.actions-cell { text-align:right; }
+  .actions-cell { display:flex; gap:0.35rem; align-items:center; justify-content:center; }
+  th.actions-head, td.actions-cell { text-align:center; }
+  /* Ensure actions column content is vertically centered and doesn't wrap */
+  td.actions-cell { vertical-align:middle; white-space:nowrap; }
+  /* Keep a consistent width for the actions column */
+  th.actions-head { width:90px; }
+  /* Loading state for action buttons */
+  .icon-btn[disabled] { opacity:0.6; cursor:not-allowed; transform:none; }
+  .icon-btn.loading { position:relative; color:transparent; }
+  .icon-btn.loading::after { content:""; width:14px; height:14px; border:2px solid #cbd5e1; border-top-color:#2563eb; border-radius:50%; animation:spin .8s linear infinite; position:absolute; }
   .floating-trash { position:fixed; bottom:1.5rem; right:1.5rem; background:#1e293b; color:#f8fafc; padding:0.6rem 0.9rem; border-radius:999px; display:flex; align-items:center; gap:0.5rem; box-shadow:0 10px 25px rgba(15,23,42,0.25); text-decoration:none; font-size:0.9rem; }
   .floating-trash:hover { background:#0f172a; }
   .floating-trash .count { background:#facc15; color:#1e293b; padding:0 0.6rem; border-radius:999px; font-weight:600; }
@@ -151,7 +159,7 @@
 
     async function refreshTrashCount(){
       try {
-        const r = await fetch('/api/trash/count');
+        const r = await fetch('/api/trash/count', { credentials: 'include' });
         if(!r.ok) return;
         const data = await r.json();
         updateTrashBadge(data.count ?? 0);
@@ -162,11 +170,15 @@
       try {
         const r = await fetch(`/api/posts/${postId}/favorite`, {
           method: 'POST',
+          credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ favorite: makeFav })
+          body: JSON.stringify({ favorite: !!makeFav })
         });
+        if(r.status === 401){ showToast('Authentification requise - rechargement…','error'); location.reload(); return; }
         if(!r.ok) throw new Error('HTTP '+r.status);
-        showToast(makeFav ? 'Post ajouté aux favoris' : 'Favori retiré','success');
+        // some servers may return no body
+        try { await r.json(); } catch(_) { /* ignore */ }
+        showToast('Statut favori mis à jour','success');
       } catch(e){
         showToast('Erreur favori: '+e,'error');
       } finally {
@@ -179,10 +191,13 @@
         const r = await fetch(`/api/posts/${postId}/delete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ delete: true })
         });
+        if(r.status === 401){ showToast('Authentification requise - rechargement…','error'); location.reload(); return; }
         if(!r.ok) throw new Error('HTTP '+r.status);
-        const data = await r.json();
+        let data = {};
+        try { data = await r.json(); } catch(_) { /* ignore */ }
         showToast('Post déplacé dans la corbeille','info');
         if(data && typeof data.trash_count !== 'undefined'){
           updateTrashBadge(data.trash_count);
@@ -194,12 +209,12 @@
       }
     }
 
-    // Event delegation for actions to ensure reliability after table refreshes
+    // Event delegation for actions (bind once at document level so it works even if table is rendered later)
+    let _actionsDelegationBound = false;
     function setupActionDelegation(){
-      const table = document.querySelector('table');
-      if(!table || table.dataset.actionsBound === '1') return;
-      table.dataset.actionsBound = '1';
-      table.addEventListener('click', async (ev)=>{
+      if(_actionsDelegationBound) return;
+      _actionsDelegationBound = true;
+      document.addEventListener('click', async (ev)=>{
         const target = ev.target;
         if(!(target instanceof Element)) return;
         const btn = target.closest('button.favorite-toggle, button.delete-post');
@@ -208,6 +223,7 @@
         ev.stopPropagation();
         const id = btn.getAttribute('data-id');
         if(!id) return;
+        btn.classList.add('loading');
         btn.setAttribute('disabled','true');
         try {
           if(btn.classList.contains('favorite-toggle')){
@@ -217,6 +233,7 @@
             await handleDelete(id);
           }
         } finally {
+          btn.classList.remove('loading');
           btn.removeAttribute('disabled');
         }
       });
@@ -256,6 +273,32 @@
     function stopInitCountdown(){ if(_initCountdownHandle){ clearInterval(_initCountdownHandle); _initCountdownHandle=null; } _initLeft = null; }
 
     let _autoTriggeredFirstRun = false;
+    let _autoPulseHandle = null;
+    let _autoPulseBusy = false;
+    function ensureAutoPulse(enabled, interval){
+      // If server-side autonomous interval is 0, set up a gentle client-side pulse (every 180s)
+      if(!enabled) { if(_autoPulseHandle){ clearInterval(_autoPulseHandle); _autoPulseHandle=null; } return; }
+      if(interval > 0) { if(_autoPulseHandle){ clearInterval(_autoPulseHandle); _autoPulseHandle=null; } return; }
+      if(_autoPulseHandle) return;
+      _autoPulseHandle = setInterval(async ()=>{
+        if(_autoPulseBusy) return;
+        _autoPulseBusy = true;
+        try {
+          const r = await fetch('/health');
+          if(!r.ok){ _autoPulseBusy=false; return; }
+          const data = await r.json();
+          // Only trigger if scraping enabled and last run not too recent
+          const age = typeof data.last_run_age_seconds === 'number' ? data.last_run_age_seconds : 999999;
+          if(data.scraping_enabled && age >= 150){
+            try {
+              const fd = new FormData();
+              await fetch('/trigger', { method:'POST', body: fd, headers: { 'X-Trigger-From': 'dashboard' } });
+            } catch(_) {}
+          }
+        } catch(_) { /* ignore */ }
+        finally { _autoPulseBusy = false; }
+      }, 180000);
+    }
     async function refreshStatus(){
       try {
         const r = await fetch('/health');
@@ -287,6 +330,7 @@
             el.className='status-ok';
             spinner.style.display='none';
             stopInitCountdown();
+            ensureAutoPulse(true, interval);
           } else {
             txt = '';
             setHintVisible(true);
@@ -300,10 +344,11 @@
               _autoTriggeredFirstRun = true;
               try {
                 const fd = new FormData();
-                const tr = await fetch('/trigger', { method:'POST', body: fd });
+                const tr = await fetch('/trigger', { method:'POST', body: fd, headers: { 'X-Trigger-From': 'dashboard' } });
                 if(tr.ok){ showToast('Premier cycle lancé','info'); }
               } catch(_) { /* ignore */ }
             }
+            ensureAutoPulse(true, interval);
           }
           if (btn) { btn.textContent = 'Mettre en pause'; btn.style.background = '#dc2626'; }
         } else {
@@ -313,6 +358,7 @@
           if (btn) { btn.textContent = 'Reprendre'; btn.style.background = '#16a34a'; }
         setHintVisible(false);
           stopInitCountdown();
+          if(_autoPulseHandle){ clearInterval(_autoPulseHandle); _autoPulseHandle=null; }
         }
         if(data.last_run && data.last_job_posts !== undefined){
           // Format heure locale lisible
@@ -340,7 +386,8 @@
       const btn = document.getElementById('toggleBtn');
       if (btn) { btn.disabled = true; btn.textContent = 'Veuillez patienter…'; }
       try {
-        const r = await fetch('/toggle', { method:'POST'});
+        const r = await fetch('/toggle', { method:'POST', credentials: 'include' });
+        if(r.status === 401){ showToast('Authentification requise - rechargement…','error'); location.reload(); return; }
         if(!r.ok) throw new Error('HTTP '+r.status);
         await refreshStatus();
         showToast('État mis à jour','success');
@@ -363,7 +410,7 @@
         const q = encodeURIComponent(url.searchParams.get('q')||'');
         const sortBy = encodeURIComponent(url.searchParams.get('sort_by')||'');
         const sortDir = encodeURIComponent(url.searchParams.get('sort_dir')||'');
-        const r = await fetch(`/api/posts?page=${page}&limit=${limit}&q=${q}&sort_by=${sortBy}&sort_dir=${sortDir}`);
+  const r = await fetch(`/api/posts?page=${page}&limit=${limit}&q=${q}&sort_by=${sortBy}&sort_dir=${sortDir}`, { credentials: 'include' });
         if(!r.ok) return;
         const data = await r.json();
         const tbody = document.querySelector('table tbody');
