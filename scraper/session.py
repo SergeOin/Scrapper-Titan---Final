@@ -7,6 +7,15 @@ from dataclasses import dataclass
 import contextlib
 from pathlib import Path
 from typing import Any, Optional
+import sys
+import asyncio as _asyncio
+
+# Ensure Windows uses Selector event loop policy at import time (affects new loops in any thread)
+if sys.platform.startswith("win"):
+    try:
+        _asyncio.set_event_loop_policy(_asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
 
 import structlog
 
@@ -14,6 +23,11 @@ try:
     from playwright.async_api import async_playwright
 except Exception:  # pragma: no cover
     async_playwright = None  # type: ignore
+
+try:
+    from playwright.sync_api import sync_playwright
+except Exception:  # pragma: no cover
+    sync_playwright = None  # type: ignore
 
 try:
     import browser_cookie3 as bc3  # type: ignore
@@ -154,9 +168,78 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
     if async_playwright is None:
         return False, {"error": "playwright not installed"}
     diag: dict[str, Any] = {}
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=False)  # login visible by design
-        page = await browser.new_page()
+    # For login specifically, default to a visible window to allow MFA/CAPTCHA interactions.
+    # Users can force headless via PLAYWRIGHT_HEADLESS=1
+    def _login_headless() -> bool:
+        try:
+            v = os.environ.get("PLAYWRIGHT_HEADLESS")
+            if v is None or v == "":
+                return False  # default: visible window for login
+            return str(v).lower() in ("1", "true", "yes", "on")
+        except Exception:
+            return False
+    _headless = _login_headless()
+    # On Windows, prefer sync Playwright executed in a worker thread to avoid asyncio subprocess limitations
+    if sys.platform.startswith("win") and sync_playwright is not None:
+        def _sync_login_impl() -> tuple[bool, dict[str, Any]]:
+            try:
+                # Re-assert Windows Proactor policy in this worker thread (needed for asyncio subprocess)
+                try:
+                    _asyncio.set_event_loop_policy(_asyncio.WindowsProactorEventLoopPolicy())
+                except Exception:
+                    pass
+                with sync_playwright() as spw:
+                    browser = spw.chromium.launch(headless=_headless)
+                    page = browser.new_page()
+                    try:
+                        page.goto("https://www.linkedin.com/login", timeout=ctx.settings.playwright_login_timeout_ms)
+                        page.fill("input#username", email)
+                        page.fill("input#password", password)
+                        page.click("button[type=submit]")
+                        if mfa_code:
+                            try:
+                                page.wait_for_selector("input[name=pin]", timeout=20000)
+                                page.fill("input[name=pin]", mfa_code)
+                                page.click("button[type=submit]")
+                            except Exception:
+                                pass
+                        total_wait = 0
+                        step = 2000
+                        has_li_at = False
+                        while total_wait < ctx.settings.captcha_max_wait_ms:
+                            try:
+                                cookies = page.context.cookies()
+                                has_li_at = any(c.get("name") == "li_at" for c in cookies)
+                                if has_li_at:
+                                    break
+                                if page.url.startswith("https://www.linkedin.com/feed"):
+                                    break
+                            except Exception:
+                                pass
+                            page.wait_for_timeout(step)
+                            total_wait += step
+                        if has_li_at or page.url.startswith("https://www.linkedin.com/feed"):
+                            page.context.storage_state(path=ctx.settings.storage_state)
+                            _save_session_store(ctx, {"source": "playwright_sync", "has_li_at": has_li_at})
+                            browser.close()
+                            return True, {"has_li_at": has_li_at}
+                        browser.close()
+                        return False, {"error": "timeout or captcha/mfa not completed"}
+                    except Exception as _e:
+                        try:
+                            browser.close()
+                        except Exception:
+                            pass
+                        msg = str(_e) or _e.__class__.__name__
+                        return False, {"error": msg}
+            except Exception as _outer:
+                msg = str(_outer) or _outer.__class__.__name__
+                return False, {"error": msg}
+        return await _asyncio.to_thread(_sync_login_impl)
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=_headless)  # login visible by default unless overridden
+            page = await browser.new_page()
         try:
             await page.goto("https://www.linkedin.com/login", timeout=ctx.settings.playwright_login_timeout_ms)
             await page.fill("input#username", email)
@@ -204,4 +287,63 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
         except Exception as e:
             with contextlib.suppress(Exception):  # type: ignore
                 await browser.close()
-            return False, {"error": str(e)}
+            msg = str(e) or e.__class__.__name__
+            return False, {"error": msg}
+    except NotImplementedError as e:
+        # Typical on Windows if ProactorEventLoop is active. Fallback to sync Playwright in a worker thread.
+        if sync_playwright is None:
+            return False, {
+                "error": "playwright_subprocess_not_supported",
+                "message": "Sous-processus asyncio non supporté (Windows).",
+                "hint": "Essayez via scripts/run_server.py (policy WindowsSelector) et installez Chromium: python -m playwright install chromium",
+                "exception": str(e),
+            }
+        def _sync_login_impl() -> tuple[bool, dict[str, Any]]:
+            try:
+                with sync_playwright() as spw:
+                    browser = spw.chromium.launch(headless=_headless)
+                    page = browser.new_page()
+                    try:
+                        page.goto("https://www.linkedin.com/login", timeout=ctx.settings.playwright_login_timeout_ms)
+                        page.fill("input#username", email)
+                        page.fill("input#password", password)
+                        page.click("button[type=submit]")
+                        if mfa_code:
+                            try:
+                                page.wait_for_selector("input[name=pin]", timeout=20000)
+                                page.fill("input[name=pin]", mfa_code)
+                                page.click("button[type=submit]")
+                            except Exception:
+                                pass
+                        total_wait = 0
+                        step = 2000
+                        has_li_at = False
+                        while total_wait < ctx.settings.captcha_max_wait_ms:
+                            try:
+                                cookies = page.context.cookies()
+                                has_li_at = any(c.get("name") == "li_at" for c in cookies)
+                                if has_li_at:
+                                    break
+                                if page.url.startswith("https://www.linkedin.com/feed"):
+                                    break
+                            except Exception:
+                                pass
+                            page.wait_for_timeout(step)
+                            total_wait += step
+                        if has_li_at or page.url.startswith("https://www.linkedin.com/feed"):
+                            page.context.storage_state(path=ctx.settings.storage_state)
+                            _save_session_store(ctx, {"source": "playwright_sync", "has_li_at": has_li_at})
+                            browser.close()
+                            return True, {"has_li_at": has_li_at}
+                        browser.close()
+                        return False, {"error": "timeout or captcha/mfa not completed"}
+                    except Exception as _e:
+                        try:
+                            browser.close()
+                        except Exception:
+                            pass
+                        return False, {"error": str(_e)}
+            except Exception as _outer:
+                msg = str(_outer) or _outer.__class__.__name__
+                return False, {"error": msg}
+        return await _asyncio.to_thread(_sync_login_impl)

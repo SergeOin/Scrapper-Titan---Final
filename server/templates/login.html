@@ -22,6 +22,55 @@
       @keyframes spin { to { transform: rotate(360deg); } }
   </style>
   <script>
+    function b64e(str){ try { return btoa(unescape(encodeURIComponent(str))); } catch(_) { try { return btoa(str); } catch{ return str; } } }
+    function b64d(str){ try { return decodeURIComponent(escape(atob(str))); } catch(_) { try { return atob(str); } catch { return str; } } }
+    function loadStoredCreds(){
+      try {
+        const email = localStorage.getItem('li_email');
+        const pwdEnc = localStorage.getItem('li_pwd');
+        const emailEl = document.getElementById('loginEmail');
+        const pwdEl = document.getElementById('loginPassword');
+        const chkEmail = document.getElementById('rememberEmail');
+        const chkPwd = document.getElementById('rememberPwd');
+        if(email && emailEl){ emailEl.value = email; if(chkEmail) chkEmail.checked = true; }
+        if(pwdEnc && pwdEl){ pwdEl.value = b64d(pwdEnc); if(chkPwd) chkPwd.checked = true; }
+      } catch { /* ignore */ }
+    }
+    async function tryStoreWithCredentialsAPI(email, password){
+      try {
+        if (window.PasswordCredential && navigator.credentials) {
+          const cred = new PasswordCredential({ id: email, password, name: 'LinkedIn' });
+          await navigator.credentials.store(cred);
+          return true;
+        }
+      } catch { /* ignore */ }
+      return false;
+    }
+    async function saveCredentials(){
+      const emailEl = document.getElementById('loginEmail');
+      const pwdEl = document.getElementById('loginPassword');
+      const chkEmail = document.getElementById('rememberEmail');
+      const chkPwd = document.getElementById('rememberPwd');
+      const email = (emailEl?.value || '').trim();
+      const pwd = pwdEl?.value || '';
+      if(!email){ alert('Veuillez saisir votre email.'); return; }
+      try {
+        if(chkEmail?.checked){ localStorage.setItem('li_email', email); } else { localStorage.removeItem('li_email'); }
+        if(chkPwd?.checked && pwd){ localStorage.setItem('li_pwd', b64e(pwd)); } else { localStorage.removeItem('li_pwd'); }
+        if(chkPwd?.checked && pwd){ await tryStoreWithCredentialsAPI(email, pwd); }
+        // Silent success
+      } catch(e){ /* ignore */ }
+    }
+    function clearCredentials(){
+      try {
+        localStorage.removeItem('li_email');
+        localStorage.removeItem('li_pwd');
+        const chkEmail = document.getElementById('rememberEmail');
+        const chkPwd = document.getElementById('rememberPwd');
+        if(chkEmail) chkEmail.checked = false;
+        if(chkPwd) chkPwd.checked = false;
+      } catch { /* ignore */ }
+    }
     async function doLogin(ev) {
       ev.preventDefault();
       const fd = new FormData(ev.target);
@@ -30,17 +79,26 @@
         overlay.style.display = 'flex';
         const btn = ev.target.querySelector('button[type="submit"]');
         if (btn) { btn.disabled = true; btn.textContent = 'Connexion en cours…'; }
-      const res = await fetch('/api/session/login', { method:'POST', body: fd });
+        const res = await fetch('/api/session/login', { method:'POST', body: fd });
       if (res.ok) {
+        // Persist creds locally if user opted in
+        try { await saveCredentials(); } catch { }
         alert('Connexion réussie.');
         location.href = '/';
       } else {
-        let msg = 'Connexion impossible.';
-        try {
-          const j = await res.json();
-          if (j && (j.detail || j.message)) { msg = String(j.detail || j.message); }
-        } catch {}
-          alert('Échec de la connexion. ' + msg);
+          let msg = 'Connexion impossible.';
+          try {
+            const j = await res.json();
+            let d = (j && (j.detail !== undefined ? j.detail : j)) ?? null;
+            if (typeof d === 'object' && d !== null) {
+              msg = d.message || d.error || d.hint || d.detail || JSON.stringify(d);
+            } else if (d !== null) {
+              msg = String(d);
+            }
+          } catch(_) { /* ignore */ }
+          const errBox = document.getElementById('loginError');
+          if (errBox) { errBox.textContent = 'Échec de la connexion. ' + msg; errBox.style.display = 'block'; }
+          else { alert('Échec de la connexion. ' + msg); }
           overlay.style.display = 'none';
           if (btn) { btn.disabled = false; btn.textContent = 'Se connecter'; }
       }
@@ -58,13 +116,30 @@
       <p class="ok">Une session semble valide. <a href="/">Aller au tableau de bord</a></p>
     {% else %}
         <p class="muted">Connectez-vous via Playwright. Une fenêtre LinkedIn va s'ouvrir — merci de patienter et complétez les étapes directement sur LinkedIn (MFA/CAPTCHA le cas échéant).</p>
+        <div id="loginError" class="banner" style="display:none;background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;"></div>
         <h3>Connexion via Playwright</h3>
-      <form onsubmit="doLogin(event)">
+      <form onsubmit="doLogin(event)" autocomplete="on">
         <div class="row">
-          <input id="loginEmail" name="email" type="email" placeholder="Email" required />
-          <input name="password" type="password" placeholder="Mot de passe" required />
+          <input id="loginEmail" name="email" type="email" placeholder="Email" required autocomplete="username email" />
+          <input id="loginPassword" name="password" type="password" placeholder="Mot de passe" required autocomplete="current-password" />
         </div>
-        <button type="submit" style="margin-top: .8rem">Se connecter</button>
+        <div style="margin-top:.6rem; display:flex; gap:1rem; align-items:center; flex-wrap:wrap;">
+          <label style="display:flex; align-items:center; gap:.4rem;">
+            <input id="rememberEmail" type="checkbox" checked />
+            <span>Se souvenir de l'e‑mail</span>
+          </label>
+          <label style="display:flex; align-items:center; gap:.4rem;">
+            <input id="rememberPwd" type="checkbox" />
+            <span>Se souvenir du mot de passe (local)</span>
+          </label>
+        </div>
+        <div class="muted" style="margin-top:.25rem;">
+          Les identifiants peuvent être mémorisés localement dans ce navigateur (localStorage). Ils ne sont pas envoyés au serveur.
+          Pour plus de sécurité, privilégiez le gestionnaire de mots de passe du navigateur.
+        </div>
+        <div style="margin-top:.8rem; display:flex; gap:.5rem; flex-wrap:wrap;">
+          <button type="submit">Se connecter</button>
+        </div>
       </form>
     {% endif %}
   </div>
@@ -78,4 +153,14 @@
       </div>
     </div>
 </body>
+<script>
+  try { loadStoredCreds(); } catch {}
+  // Autofocus email if empty, otherwise password
+  (function(){
+    const emailEl = document.getElementById('loginEmail');
+    const pwdEl = document.getElementById('loginPassword');
+    if(emailEl && !emailEl.value) emailEl.focus();
+    else if(pwdEl) pwdEl.focus();
+  })();
+</script>
 </html>

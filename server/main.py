@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 import contextlib
 from typing import AsyncIterator
 import asyncio
+import sys
 
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -110,6 +111,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
 
 
 app = FastAPI(title="LinkedIn Scraper Dashboard", version="0.1.0", lifespan=lifespan)
+
+# On Windows, ensure asyncio subprocess support by using the Selector event loop policy
+if sys.platform.startswith("win"):
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
 
 # Configure CORS if public dashboard
 import os

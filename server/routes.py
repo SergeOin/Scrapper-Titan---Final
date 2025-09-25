@@ -1195,6 +1195,9 @@ async def api_session_status(ctx=Depends(get_auth_context)):
 async def api_session_login(email: str = Form(...), password: str = Form(...), mfa_code: str | None = Form(None), ctx=Depends(get_auth_context)):
     ok, diag = await login_via_playwright(ctx, email=email, password=password, mfa_code=mfa_code)
     if not ok:
+        # Ensure error text is meaningful
+        if isinstance(diag, dict) and (not diag.get("error")):
+            diag["error"] = diag.get("message") or diag.get("hint") or "login_failed"
         raise HTTPException(status_code=400, detail=diag)
     return {"ok": True, **diag}
 

@@ -1,4 +1,4 @@
 {
-  "source": "playwright",
+  "source": "playwright_sync",
   "has_li_at": true
 }
