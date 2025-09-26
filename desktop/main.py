@@ -369,11 +369,50 @@ def main():
     _ensure_event_loop_policy()
     log = logging.getLogger("desktop")
 
+    # Diagnostic: log PID & PPID early
+    try:
+        ppid = os.getppid()
+    except Exception:
+        ppid = -1
+    log.info("process_start pid=%s ppid=%s", os.getpid(), ppid)
+
+    # Launch storm guard: prevent runaway spawning (e.g. if a shortcut triggers loops)
+    try:
+        storm_file = user_base / "launch_storm.json"
+        now = time.time()
+        launches = []
+        if storm_file.exists():
+            try:
+                launches = json.loads(storm_file.read_text(encoding="utf-8"))
+            except Exception:
+                launches = []
+        # Keep only last 30s
+        launches = [t for t in launches if (now - float(t)) <= 30.0]
+        launches.append(now)
+        storm_file.write_text(json.dumps(launches), encoding="utf-8")
+        if len(launches) > 8:  # >8 launches inside 30s -> abort to stop explosion
+            log.error("launch_storm_abort count=%s window=30s", len(launches))
+            _message_box(
+                "Titan Scraper",
+                "Trop de tentatives de lancement en moins de 30 secondes (boucle détectée). L'application s'arrête pour protection.",
+            )
+            return
+    except Exception:
+        log.warning("launch_storm_guard_failed", exc_info=True)
+
     # Hard single-instance guard using a Windows named mutex (prevents burst multi-launch)
     _mutex_handle = _acquire_windows_mutex()
     if _mutex_handle is None and _is_windows():
-        # Don't exit immediately; rely on TCP port lock + health probe to avoid false positives
-        log.warning("win_named_mutex_denied_continue_with_port_lock")
+        # Exit: definitive other instance (or stale system object we can't reclaim). Prevent mass spawning.
+        log.warning("win_named_mutex_denied_exit pid=%s", os.getpid())
+        _message_box(
+            "Titan Scraper",
+            (
+                "Une autre instance de TitanScraper semble déjà être en cours d'exécution.\n\n"
+                "Si ce message apparaît alors qu'aucune fenêtre n'est ouverte, ouvrez le Gestionnaire des tâches et terminez les processus TitanScraper.exe, puis relancez."
+            ),
+        )
+        return
 
     # Desktop defaults (can be overridden by env)
     os.environ.setdefault("APP_HOST", "127.0.0.1")
