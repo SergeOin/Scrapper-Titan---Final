@@ -43,6 +43,9 @@
   .icon-btn[disabled] { opacity:0.6; cursor:not-allowed; transform:none; }
   .icon-btn.loading { position:relative; color:transparent; }
   .icon-btn.loading::after { content:""; width:14px; height:14px; border:2px solid #cbd5e1; border-top-color:#2563eb; border-radius:50%; animation:spin .8s linear infinite; position:absolute; }
+  /* Inline spinner for status banner */
+  .inline-spinner { width:14px; height:14px; border:2px solid #86efac; border-top-color:#166534; border-radius:50%; display:inline-block; animation:spin .8s linear infinite; margin-right:6px; vertical-align:middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .floating-trash { position:fixed; bottom:1.5rem; right:1.5rem; background:#1e293b; color:#f8fafc; padding:0.6rem 0.9rem; border-radius:999px; display:flex; align-items:center; gap:0.5rem; box-shadow:0 10px 25px rgba(15,23,42,0.25); text-decoration:none; font-size:0.9rem; }
   .floating-trash:hover { background:#0f172a; }
   .floating-trash .count { background:#facc15; color:#1e293b; padding:0 0.6rem; border-radius:999px; font-weight:600; }
@@ -79,7 +82,7 @@
   </div>
 
   <div id="statusContainer" data-interval="{{ autonomous_interval or 0 }}" data-init-wait="{{ login_initial_wait_seconds or 120 }}" style="margin-top:0.75rem; font-size:0.9rem; display:flex; align-items:center; gap:.75rem;">
-    <div id="statusHint" class="status-hint status-hint-wait" aria-live="polite">Scraper démarre, merci de patienter ~2 min</div>
+  <div id="statusHint" class="status-hint status-hint-wait" aria-live="polite"><span class="inline-spinner" aria-hidden="true"></span>Démarrage du premier cycle…</div>
   </div>
   <style>
   /* Status line removed; only hint banner remains */
@@ -125,7 +128,13 @@
     const hintEl = document.getElementById('statusHint');
     function setHint(text, variant='status-hint-wait'){
       if(!hintEl) return;
+      // Plain text (no spinner)
       hintEl.textContent = text;
+      hintEl.className = 'status-hint ' + variant;
+    }
+    function setHintHTML(html, variant='status-hint-wait'){
+      if(!hintEl) return;
+      hintEl.innerHTML = html;
       hintEl.className = 'status-hint ' + variant;
     }
     function setHintVisible(visible){
@@ -228,35 +237,8 @@
 
     let _initCountdownHandle = null;
     let _initLeft = null;
-    function startInitCountdown(){
-      const cont = document.getElementById('statusContainer');
-      if(!cont) return;
-      const target = Number(cont.dataset.initWait || 120);
-      if(_initCountdownHandle) return; // already running
-      if(_initLeft === null){ _initLeft = Math.floor(target); }
-      const update = ()=>{
-        const left = Math.max(_initLeft ?? 0, 0);
-        const m = Math.floor(left/60);
-        const s = left%60;
-        const parts = [];
-        if(m>0) parts.push(m+" min");
-        parts.push(s.toString().padStart(2,'0')+" s");
-        setHintAppend(`Scraper démarre, merci de patienter ~${parts.join(' ')}`);
-        if(left<=0){
-          clearInterval(_initCountdownHandle);
-          _initCountdownHandle=null;
-          // Countdown finished but first run may still be in progress
-          setHint('Premier cycle en cours…', 'status-hint-wait');
-          setHintVisible(true);
-          // Try a status refresh shortly after to flip to actif when available
-          setTimeout(()=>{ try { refreshStatus(); } catch(_){} }, 1500);
-          return;
-        }
-        _initLeft = left - 1;
-      };
-      update();
-      _initCountdownHandle = setInterval(update, 1000);
-    }
+    // Countdown removed: immediate trigger + spinner feedback instead
+    function startInitCountdown(){}
     function stopInitCountdown(){ if(_initCountdownHandle){ clearInterval(_initCountdownHandle); _initCountdownHandle=null; } _initLeft = null; }
 
     let _autoTriggeredFirstRun = false;
@@ -294,33 +276,29 @@
         const btn = document.getElementById('toggleBtn');
         const enabled = data.scraping_enabled;
         const interval = Number(document.getElementById('statusContainer').dataset.interval || 0);
-        const base = "Scraper actif - Laissez l'application ouverte pour collecter automatiquement de nouveaux posts.";
-        let txt = '';
+        const baseText = "Scraper actif - Laissez l'application ouverte pour collecter automatiquement de nouveaux posts.";
+        const spinner = '<span class="inline-spinner" aria-hidden="true"></span>';
+        let html = '';
         if (enabled) {
           if (data.last_run_age_seconds !== undefined) {
             if (interval > 0) {
               const eta = Math.max(interval - (data.last_run_age_seconds % interval), 1);
               const perMinPosts = (typeof data.last_job_posts === 'number' && data.last_job_posts >= 0) ? (data.last_job_posts * 60 / interval) : null;
               if (perMinPosts !== null) {
-                // Simplified banner: show avg posts/min only
-                txt = `${base} · ~${perMinPosts.toFixed(1)} posts/min`;
+                html = `${spinner}${baseText} · ~${perMinPosts.toFixed(1)} posts/min`;
               } else {
-                // If no perMinPosts metric, keep base only (suppress cycles/min + countdown)
-                txt = base;
+                html = `${spinner}${baseText}`;
               }
             } else {
-              // Active, no server-side interval -> keep guidance banner visible
-              txt = base;
+              html = `${spinner}${baseText}`;
             }
-            stopInitCountdown();
             ensureAutoPulse(true, interval);
-            setHint(txt, 'status-hint-ok');
+            setHintHTML(html, 'status-hint-ok');
             setHintVisible(true);
           } else {
-            // Initialisation: show countdown and keep hint visible
-            setHint('Scraper démarre, merci de patienter…', 'status-hint-wait');
+            // Initial: immediate launch message with spinner (no artificial wait)
+            setHintHTML(`${spinner}Premier cycle en cours…`, 'status-hint-wait');
             setHintVisible(true);
-            startInitCountdown();
             if (!_autoTriggeredFirstRun) {
               _autoTriggeredFirstRun = true;
               try {
@@ -337,24 +315,24 @@
           setHint('Scraper en pause', 'status-hint-wait');
           setHintVisible(true);
           if (btn) { btn.textContent = 'Reprendre'; btn.style.background = '#16a34a'; }
-          stopInitCountdown();
           if (_autoPulseHandle) { clearInterval(_autoPulseHandle); _autoPulseHandle = null; }
         }
-        // Append last run info to the hint if available
-        if (data.last_run && data.last_job_posts !== undefined) {
+        // Append last run info (preserve spinner if present)
+        if (enabled && data.last_run && data.last_job_posts !== undefined) {
           try {
             const d = new Date(data.last_run);
             const localeStr = d.toLocaleString('fr-FR', { dateStyle:'short', timeStyle:'short' });
-            setHintAppend(`${hintEl.innerText || hintEl.textContent} · dernier run: ${localeStr} (${data.last_job_posts} posts)`);
+            const current = hintEl.innerHTML;
+            setHintHTML(`${current} · dernier run: ${localeStr} (${data.last_job_posts} posts)`, hintEl.className.replace('status-hint ','').trim());
           } catch(_) {
-            setHintAppend(`${hintEl.innerText || hintEl.textContent} · dernier run: ${data.last_run} (${data.last_job_posts} posts)`);
+            const current = hintEl.innerHTML;
+            setHintHTML(`${current} · dernier run: ${data.last_run} (${data.last_job_posts} posts)`, hintEl.className.replace('status-hint ','').trim());
           }
         }
       } catch(e){
         // Health unavailable -> show error banner only
         setHint('Statut indisponible – vérifiez les logs', 'status-hint-error');
         setHintVisible(true);
-        stopInitCountdown();
       }
     }
     async function toggleScraping(){

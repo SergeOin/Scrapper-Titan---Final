@@ -54,7 +54,12 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _acquire_windows_mutex(name: str = "Local\\TitanScraperMutex_v2"):
+APP_INTERNAL_NAME = "TitanScraper"  # stable internal identifier for dirs / files
+APP_DISPLAY_NAME = "Titan Scraper"  # user-facing name
+APP_MUTEX_NAME = "Local\\TitanScraperMutex_v2"
+
+
+def _acquire_windows_mutex(name: str = APP_MUTEX_NAME):
     """Acquire a named OS mutex on Windows to enforce single instance early.
 
     Returns a handle if acquired, or None if another instance holds it.
@@ -85,7 +90,7 @@ def _acquire_windows_mutex(name: str = "Local\\TitanScraperMutex_v2"):
         return None
 
 
-def _user_data_dir(app_name: str = "TitanScraper") -> Path:
+def _user_data_dir(app_name: str = APP_INTERNAL_NAME) -> Path:
     """Return a per-user writable data directory for runtime artifacts.
 
     - Windows: %LOCALAPPDATA%/TitanScraper
@@ -109,6 +114,19 @@ if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     _rt = Path(sys._MEIPASS)  # type: ignore[attr-defined]
     if str(_rt) not in sys.path:
         sys.path.append(str(_rt))
+    # Ensure current working directory is the executable directory so relative paths (e.g. server/templates)
+    # continue to function even if the process was launched with a different CWD (common for MSI shortcuts).
+    try:
+        os.chdir(Path(sys.executable).parent)
+    except Exception:
+        pass
+else:
+    # In dev mode, also normalize CWD to project root if run from elsewhere
+    try:
+        if Path.cwd() != ROOT:
+            os.chdir(ROOT)
+    except Exception:
+        pass
 
 
 def _ensure_event_loop_policy():
@@ -172,21 +190,139 @@ def _write_last_server_info(base: Path, host: str, port: int) -> None:
         pass
 
 
-def _try_playwright_install():
+def _try_playwright_install(user_base: Path):
     """Best-effort ensure Chromium is available for Playwright.
 
-    This runs quickly if already installed (checks cache). Safe to skip on CI.
+    We direct Playwright to install browsers into a user-writable persistent folder inside
+    the desktop data directory so that PyInstaller's ephemeral _MEIPASS path isn't used.
+    Avoids re-download on every launch.
     """
+    log = logging.getLogger("desktop")
     try:
-        # Do a very fast smoke import; if playwright is missing, packaging is wrong.
+        import importlib
+        # Ensure env path stable & writable
+        browsers_dir = user_base / "pw-browsers"
+        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(browsers_dir))
+        def _chromium_ready(path: Path) -> bool:
+            try:
+                rev_dir = next((p for p in path.iterdir() if p.is_dir() and p.name.startswith("chromium-")), None)
+                if not rev_dir:
+                    return False
+                exe = rev_dir / "chrome-win" / "chrome.exe" if _is_windows() else rev_dir / "chrome-linux" / "chrome"
+                return exe.exists()
+            except Exception:
+                return False
+
+        if browsers_dir.exists() and _chromium_ready(browsers_dir):
+            log.info("playwright_browsers_present skip_install path=%s", browsers_dir)
+            return
+        # If prebaked browsers shipped inside the bundle (pw-browsers) copy them first.
+        try:
+            bundle_pw = (Path(sys.executable).parent if getattr(sys, "frozen", False) else _project_root()) / 'pw-browsers'
+            if bundle_pw.exists() and not browsers_dir.exists():
+                import shutil
+                shutil.copytree(bundle_pw, browsers_dir)
+                if _chromium_ready(browsers_dir):
+                    log.info("playwright_browsers_copied_from_bundle path=%s", browsers_dir)
+                    return
+        except Exception:
+            log.warning("playwright_copy_bundle_failed", exc_info=True)
+        # Trigger install only if playwright package importable
         import playwright  # noqa: F401
         from subprocess import run
-
-        # Use module invocation to install Chromium only. Quiet output.
+        log.info("playwright_install_start target=%s", browsers_dir)
+        browsers_dir.mkdir(parents=True, exist_ok=True)
         run([sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"], check=False)
+        # Post-check
+        if _chromium_ready(browsers_dir):
+            log.info("playwright_install_complete")
+        else:
+            log.warning("playwright_install_incomplete path=%s triggering_second_attempt", browsers_dir)
+            try:
+                from subprocess import run as _run
+                _run([sys.executable, "-m", "playwright", "install", "chromium"], check=False)
+                if _chromium_ready(browsers_dir):
+                    log.info("playwright_second_attempt_success")
+                else:
+                    log.error("playwright_second_attempt_failed path=%s", browsers_dir)
+            except Exception:
+                log.exception("playwright_second_attempt_exception")
+
+        # Fallback HTTP downloader (Windows-focused) if still not ready
+        if not _chromium_ready(browsers_dir):
+            try:
+                log.warning("playwright_http_fallback_start path=%s", browsers_dir)
+                import re, zipfile, tempfile, urllib.request, shutil
+
+                # Derive revision: existing incomplete dir name OR mapping by playwright version
+                rev = None
+                try:
+                    existing = [p for p in browsers_dir.iterdir() if p.is_dir() and p.name.startswith("chromium-")]
+                    if existing:
+                        # pick the first; expect format chromium-1129
+                        m = re.match(r"chromium-(\d+)", existing[0].name)
+                        if m:
+                            rev = m.group(1)
+                except Exception:
+                    pass
+                if not rev:
+                    # Fallback mapping for known Playwright versions (best-effort)
+                    from importlib.metadata import version as _ver
+                    try:
+                        pv = _ver("playwright")
+                    except Exception:
+                        pv = "1.46.0"
+                    major_minor = ".".join(pv.split(".")[:2])
+                    default_map = {"1.46": "1129"}
+                    rev = default_map.get(major_minor, "1129")
+
+                if _is_windows():
+                    zip_name = "chromium-win64.zip"
+                    inner_folder = "chrome-win"  # expected inside zip
+                elif _is_macos():
+                    # Not fully tested; choose x64 vs arm64 simple heuristic
+                    is_arm = ("arm" in platform.machine().lower())  # type: ignore
+                    zip_name = "chromium-mac-arm64.zip" if is_arm else "chromium-mac.zip"
+                    inner_folder = "chrome-mac"
+                else:
+                    zip_name = "chromium-linux.zip"
+                    inner_folder = "chrome-linux"
+
+                url = f"https://playwright.azureedge.net/builds/chromium/{rev}/{zip_name}"
+                log.info("playwright_http_fallback_download url=%s rev=%s", url, rev)
+                target_rev_dir = browsers_dir / f"chromium-{rev}"
+                if target_rev_dir.exists():
+                    # If incomplete remove to avoid mixing
+                    try:
+                        shutil.rmtree(target_rev_dir)
+                    except Exception:
+                        pass
+                target_rev_dir.mkdir(parents=True, exist_ok=True)
+
+                with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                    tmp_path = Path(tmp.name)
+                try:
+                    with urllib.request.urlopen(url) as resp, open(tmp_path, "wb") as out:
+                        shutil.copyfileobj(resp, out)
+                    # Extract
+                    with zipfile.ZipFile(tmp_path, 'r') as zf:
+                        zf.extractall(target_rev_dir)
+                    # Normal shape: target_rev_dir/inner_folder/chrome.exe
+                    chrome_exe = target_rev_dir / inner_folder / ("chrome.exe" if _is_windows() else "chrome")
+                    if chrome_exe.exists():
+                        log.info("playwright_http_fallback_success exe=%s", chrome_exe)
+                    else:
+                        log.error("playwright_http_fallback_missing_exe path=%s", chrome_exe)
+                finally:
+                    try:
+                        if tmp_path.exists():
+                            tmp_path.unlink()
+                    except Exception:
+                        pass
+            except Exception:
+                log.exception("playwright_http_fallback_failed")
     except Exception:
-        # Non-fatal for starting the app; the login flow will fail until installed.
-        logging.getLogger("desktop").warning("Playwright install check failed or skipped", exc_info=True)
+        log.warning("playwright_install_failed", exc_info=True)
 
 
 @dataclass
@@ -322,59 +458,143 @@ def _webview2_runtime_installed() -> bool:
     return False
 
 
-def _install_webview2_if_missing(base: Path) -> None:
+def _install_webview2_if_missing(exe_base: Path, user_base: Path) -> None:
+    """Install WebView2 runtime (Windows) if absent, with a small progress window and caching.
+
+    Creates a marker file in user data dir after a successful install attempt to avoid spamming
+    multiple runs if detection is flaky. We still re-check registry each launch; marker only
+    suppresses repeated installer execution within 24h if runtime still missing.
+    """
     if not _is_windows():
         return
     if _webview2_runtime_installed():
         return
+    log = logging.getLogger("desktop")
+    marker = user_base / "webview2_install_marker.json"
+    if marker.exists():
+        try:
+            import json as _json
+            data = _json.loads(marker.read_text(encoding="utf-8"))
+            ts = float(data.get("ts", 0))
+            if time.time() - ts < 24 * 3600:  # less than 24h ago
+                log.info("webview2_recent_attempt_skip")
+                return
+        except Exception:
+            pass
+
     try:
-        # Try multiple locations depending on PyInstaller layout
         candidates: list[Path] = []
-        exe_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else _project_root()
-        meipass = Path(getattr(sys, "_MEIPASS", exe_dir))  # type: ignore[attr-defined]
-        # PyInstaller one-folder puts datas under _internal
-        candidates.append(exe_dir / "_internal" / "MicrosoftEdgeWebView2Setup.exe")
-        # Some layouts may place it next to the exe
-        candidates.append(exe_dir / "MicrosoftEdgeWebView2Setup.exe")
-        # Direct MEIPASS
+        meipass = Path(getattr(sys, "_MEIPASS", exe_base))  # type: ignore[attr-defined]
+        candidates.append(exe_base / "_internal" / "MicrosoftEdgeWebView2Setup.exe")
+        candidates.append(exe_base / "MicrosoftEdgeWebView2Setup.exe")
         candidates.append(meipass / "MicrosoftEdgeWebView2Setup.exe")
-        # Dev build path
         candidates.append(_project_root() / "build" / "MicrosoftEdgeWebView2Setup.exe")
         setup = next((p for p in candidates if p.exists()), None)
-        if setup and setup.exists():
-            # Minimal pseudo progress dialog using a temporary console-less loop via MessageBox updates would flicker;
-            # Instead we show one info box then perform silent install with a spinner in log.
+        if not setup:
             _message_box(
-                "Titan Scraper",
-                (
-                    "Installation du composant Microsoft Edge WebView2 requise.\n"
-                    "Veuillez patienter quelques secondes..."
-                ),
-            )
-            import subprocess
-            import threading
-
-            def _run_install():
-                subprocess.run([str(setup), "/silent", "/install"], check=False)
-            t = threading.Thread(target=_run_install, daemon=True)
-            t.start()
-            # Poll up to ~25s for runtime to appear
-            for _ in range(50):
-                if _webview2_runtime_installed():
-                    break
-                time.sleep(0.5)
-            # No second pop-up to avoid spam; log outcome instead
-            logging.getLogger("desktop").info("webview2_install_complete present=%s", _webview2_runtime_installed())
-        else:
-            _message_box(
-                "Titan Scraper",
+                APP_DISPLAY_NAME,
                 (
                     "Composant Microsoft Edge WebView2 manquant et installateur introuvable.\n"
                     "Veuillez installer manuellement 'Microsoft Edge WebView2 Runtime' puis relancer l'application."
                 ),
             )
+            return
+
+        # Progress window (Tkinter) -----------------------------------------------------------
+        progress_close: callable | None = None
+        progress_root = None  # type: ignore
+        progress_var = None   # will hold tk.IntVar
+        try:
+            import tkinter as tk
+            from tkinter import ttk
+
+            def _open_progress():  # pragma: no cover (UI helper)
+                root = tk.Tk()
+                root.title(f"{APP_DISPLAY_NAME} - WebView2")
+                root.geometry("420x140")
+                root.resizable(False, False)
+                lbl = ttk.Label(root, text="Installation de WebView2 en cours...", anchor="center", wraplength=400)
+                lbl.pack(pady=12)
+                # Pseudo progress: determinate bar increments while polling; switches to full at success
+                local_var = tk.IntVar(value=0)
+                pb = ttk.Progressbar(root, mode="determinate", maximum=100, variable=local_var)
+                pb.pack(fill="x", padx=16, pady=8)
+                note = ttk.Label(root, text="Une seule fois. Merci de patienter.", foreground="#555")
+                note.pack(pady=(0, 8))
+                root.update_idletasks()
+                return root, local_var
+
+            _progress_root, progress_var = _open_progress()
+            progress_root = _progress_root
+
+            def _close():
+                try:
+                    _progress_root.destroy()
+                except Exception:
+                    pass
+            progress_close = _close
+        except Exception:
+            progress_close = None  # fallback to no progress window
+
+        # Run installer in thread
+        import subprocess
+        import threading as _th
+
+        done_flag = {"done": False}
+
+        def _run_install():
+            try:
+                subprocess.run([str(setup), "/silent", "/install"], check=False)
+            finally:
+                done_flag["done"] = True
+
+        t = _th.Thread(target=_run_install, daemon=True)
+        t.start()
+
+        # Poll with UI updates up to 90s
+        start = time.time()
+        tick = 0
+        while time.time() - start < 90:
+            if _webview2_runtime_installed():
+                break
+            if done_flag["done"]:
+                # If installer finished but runtime still not detected, wait a bit more
+                time.sleep(2)
+                if _webview2_runtime_installed():
+                    break
+            # Keep UI responsive
+            try:
+                if progress_root is not None:
+                    tick += 1
+                    # Increment progress up to 95% while waiting
+                    if progress_var is not None:
+                        cur = progress_var.get()
+                        if cur < 95:
+                            progress_var.set(min(95, cur + 1))
+                    progress_root.update()
+            except Exception:
+                # Window probably closed by user; stop updating
+                progress_root = None
+            time.sleep(0.4)
+
+        if progress_close:
+            try:
+                if progress_var is not None and progress_root is not None:
+                    progress_var.set(100)
+                    progress_root.update()
+                progress_close()
+            except Exception:
+                pass
+
+        # Record attempt time
+        try:
+            marker.write_text('{"ts": %f}' % time.time(), encoding="utf-8")
+        except Exception:
+            pass
+
+        log.info("webview2_install_complete present=%s", _webview2_runtime_installed())
     except Exception:
-        logging.getLogger("desktop").exception("Failed to install WebView2")
+        log.exception("Failed to install WebView2")
 
 
 def main():
@@ -408,7 +628,7 @@ def main():
         if len(launches) > 8:  # >8 launches inside 30s -> abort to stop explosion
             log.error("launch_storm_abort count=%s window=30s", len(launches))
             _message_box(
-                "Titan Scraper",
+                APP_DISPLAY_NAME,
                 "Trop de tentatives de lancement en moins de 30 secondes (boucle détectée). L'application s'arrête pour protection.",
             )
             return
@@ -418,15 +638,8 @@ def main():
     # Hard single-instance guard using a Windows named mutex (prevents burst multi-launch)
     _mutex_handle = _acquire_windows_mutex()
     if _mutex_handle is None and _is_windows():
-        # Exit: definitive other instance (or stale system object we can't reclaim). Prevent mass spawning.
-        log.warning("win_named_mutex_denied_exit pid=%s", os.getpid())
-        _message_box(
-            "Titan Scraper",
-            (
-                "Une autre instance de TitanScraper semble déjà être en cours d'exécution.\n\n"
-                "Si ce message apparaît alors qu'aucune fenêtre n'est ouverte, ouvrez le Gestionnaire des tâches et terminez les processus TitanScraper.exe, puis relancez."
-            ),
-        )
+        # Silent exit: another instance already holds the mutex.
+        log.warning("win_named_mutex_denied_exit pid=%s silent_exit", os.getpid())
         return
 
     # Desktop defaults (can be overridden by env)
@@ -440,15 +653,27 @@ def main():
     os.environ.setdefault("INPROCESS_AUTONOMOUS", "1")
     # Keep dashboard private by default in desktop mode
     os.environ.setdefault("DASHBOARD_PUBLIC", "0")
+    # Speed optimizations: disable remote backends by default in packaged desktop (avoid 5s connection timeouts)
+    os.environ.setdefault("DISABLE_MONGO", "1")
+    os.environ.setdefault("DISABLE_REDIS", "1")
+    # Lower Mongo connect timeout further if user re-enables it
+    os.environ.setdefault("MONGO_CONNECT_TIMEOUT_MS", "1200")
 
     # Point runtime artifacts to user-writable locations
     os.environ.setdefault("SCREENSHOT_DIR", str(user_base / "screenshots"))
     os.environ.setdefault("TRACE_DIR", str(user_base / "traces"))
     os.environ.setdefault("CSV_FALLBACK_FILE", str(user_base / "exports" / "fallback_posts.csv"))
     os.environ.setdefault("LOG_FILE", str(user_base / "logs" / "server.log"))
+    # Launch Playwright dependency installation in background to avoid blocking UI (perceived faster startup)
+    def _bg_playwright():  # pragma: no cover (background helper)
+        try:
+            _try_playwright_install(user_base)
+        except Exception:
+            logging.getLogger("desktop").exception("playwright_background_install_failed")
+    threading.Thread(target=_bg_playwright, name="playwright-install", daemon=True).start()
 
-    _try_playwright_install()
-    _install_webview2_if_missing(Path(sys.executable).parent if getattr(sys, "frozen", False) else _project_root())
+    exe_base = Path(sys.executable).parent if getattr(sys, "frozen", False) else _project_root()
+    _install_webview2_if_missing(exe_base, user_base)
 
     # Preflight import of the FastAPI app. If a heavy dependency (numpy/pandas) fails, we still try to start;
     # the export route will handle missing pandas gracefully.
@@ -459,17 +684,17 @@ def main():
         log.error("preflight_import_server_main_failed: %s\nSYS_PATH=%s\nROOT=%s", msg, sys.path, ROOT)
         if ("numpy" in msg.lower()) or ("pandas" in msg.lower()):
             _message_box(
-                "Titan Scraper",
+                APP_DISPLAY_NAME,
                 (
                     "Alerte: numpy/pandas introuvable. L'application démarre, mais l'export Excel peut être indisponible."
                 ),
             )
         else:
             _message_box(
-                "Titan Scraper",
+                APP_DISPLAY_NAME,
                 (
                     "Erreur au chargement du module 'server.main'.\n"
-                    "Veuillez consulter le journal dans %LOCALAPPDATA%/TitanScraper/logs/desktop.log et réinstaller si besoin."
+                    f"Veuillez consulter le journal dans %LOCALAPPDATA%/{APP_INTERNAL_NAME}/logs/desktop.log et réinstaller si besoin."
                 ),
             )
             return
@@ -485,11 +710,7 @@ def main():
         except Exception:
             lp = None  # type: ignore
         if lp and _probe_health(h, lp, timeout=0.8):
-            log.info(f"single_instance_reuse_existing host={h} port={lp}")
-            _message_box(
-                "Titan Scraper",
-                "L'application est déjà ouverte. Si la fenêtre n'est pas visible, vérifiez la barre des tâches.",
-            )
+            log.info(f"single_instance_reuse_existing host={h} port={lp} silent_exit")
             return
 
     _lock_sock = _acquire_single_instance_lock()
@@ -504,47 +725,51 @@ def main():
             except Exception:
                 lp = None  # type: ignore
             if lp and _probe_health(h, lp, timeout=0.8):
-                log.info(f"single_instance_existing_ok host={h} port={lp}")
-                _message_box(
-                    "Titan Scraper",
-                    "L'application est déjà ouverte. Si la fenêtre n'est pas visible, vérifiez la barre des tâches.",
-                )
+                log.info(f"single_instance_existing_ok host={h} port={lp} silent_exit")
                 return
         # 2) Probe common ports
         for p in [8000, 8001, 8002, 8003, 8004]:
             if _probe_health(host, p, timeout=0.4):
-                log.info(f"single_instance_probe_success host={host} port={p}")
-                _message_box(
-                    "Titan Scraper",
-                    "L'application est déjà ouverte. Si la fenêtre n'est pas visible, vérifiez la barre des tâches.",
-                )
+                log.info(f"single_instance_probe_success host={host} port={p} silent_exit")
                 return
         # 3) As a last resort, inform the user and exit
-        log.error("single_instance_not_found_but_lock_busy")
-        _message_box(
-            "Titan Scraper",
-            (
-                "Une autre instance de TitanScraper semble déjà être en cours d'exécution.\n\n"
-                "La fenêtre/le navigateur devrait déjà être ouvert. Si besoin, fermez l'ancienne instance via le Gestionnaire des tâches."
-            ),
-        )
+        log.error("single_instance_not_found_but_lock_busy silent_exit")
         return
 
     base_url = f"http://{host}:{port}"
 
-    # Start server in a background thread
+    # Start server in a background thread (non-blocking for UI)
     srv = _start_server_thread(host, port)
-    log.info("single_instance_lock_acquired port_lock=True")
+    log.info("single_instance_lock_acquired port_lock=True fast_start_mode=True")
     _write_last_server_info(user_base, host, port)
 
-    # Wait up to a few seconds for readiness before showing the window
-    if not _wait_for_server(base_url, timeout=30.0):
-        logging.getLogger("desktop").warning("Server did not report ready within timeout; continuing")
-
-    # Create the desktop window pointing to the dashboard
-    title = "Titan Scraper"
-
-    # We rely on the finally block below to request a graceful shutdown when the window closes.
+    # Prepare immediate window with lightweight loading HTML; will switch to real dashboard when ready.
+    title = APP_DISPLAY_NAME
+    LOADING_HTML = (
+        """
+        <html lang='fr'>
+        <head><meta charset='utf-8'><title>Titan Scraper</title>
+        <style>
+            body { font-family: system-ui,-apple-system,Segoe UI,Roboto,sans-serif; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; margin:0; background:#0f1115; color:#eee; }
+            h1 { font-size:1.5rem; margin:0 0 1rem; }
+            .spinner { width:54px; height:54px; border:6px solid #2e3238; border-top-color:#4fa3ff; border-radius:50%; animation:spin 0.9s linear infinite; margin-bottom:18px; }
+            p { margin:0.2rem 0; font-size:0.9rem; opacity:0.85; }
+            @keyframes spin { to { transform:rotate(360deg);} }
+            .sub { font-size:0.75rem; opacity:0.55; margin-top:1rem; }
+        </style></head>
+        <body>
+          <div class='spinner'></div>
+          <h1>Démarrage...</h1>
+          <p>Initialisation du serveur local</p>
+          <p id='phase'>Préparation des composants</p>
+          <script>
+            let dots=0; setInterval(()=>{dots=(dots+1)%4;document.getElementById('phase').textContent='Préparation des composants'+'.'.repeat(dots);},450);
+          </script>
+          <div class='sub'>Titan Scraper</div>
+        </body>
+        </html>
+        """
+    )
 
     # Health watchdog: if /health stops responding for a sustained period, inform user & exit gracefully.
     _watchdog_stop = _threading.Event()
@@ -560,7 +785,7 @@ def main():
                 if consecutive >= 20:  # ~20 * 3s sleep ~= 60s degraded
                     logging.getLogger("desktop").error("health_watchdog_triggered")
                     _message_box(
-                        "Titan Scraper",
+                        APP_DISPLAY_NAME,
                         (
                             "Le serveur interne ne répond plus depuis ~1 minute.\n"
                             "L'application va se fermer. Relancez-la."
@@ -573,31 +798,52 @@ def main():
 
     try:
         import webview  # type: ignore
-        window = webview.create_window(title, url=base_url + "/", width=1200, height=800, resizable=True)
+        window = webview.create_window(title, html=LOADING_HTML, width=1200, height=800, resizable=True, minimized=False)
+
+        def _after_start():  # pragma: no cover (GUI callback)
+            # Wait for server readiness then load real dashboard
+            try:
+                ok = _wait_for_server(base_url, timeout=25.0)
+                if ok:
+                    window.load_url(base_url + "/")
+                    try:
+                        window.restore()
+                        window.show()
+                        window.focus()
+                    except Exception:
+                        pass
+                else:
+                    # Show a simple retry message inside the loading window
+                    window.load_html("<h2 style='font-family:system-ui'>Serveur lent à démarrer – nouvelle tentative...</h2>")
+                    again = _wait_for_server(base_url, timeout=15.0)
+                    if again:
+                        window.load_url(base_url + "/")
+            except Exception:
+                logging.getLogger("desktop").exception("post_start_load_failed")
+
         try:
-            # Prefer Edge WebView2 on Windows, fall back to MSHTML if unavailable
             if _is_windows():
                 try:
-                    webview.start(gui="edgechromium", http_server=False, debug=False)
+                    webview.start(_after_start, gui="edgechromium", http_server=False, debug=False)
                 except Exception as e1:
                     logging.getLogger("desktop").warning("WebView2 backend failed, trying MSHTML: %s", e1)
-                    webview.start(gui="mshtml", http_server=False, debug=False)
+                    webview.start(_after_start, gui="mshtml", http_server=False, debug=False)
             else:
-                webview.start(gui=None, http_server=False, debug=False)
+                webview.start(_after_start, gui=None, http_server=False, debug=False)
         except Exception:
             logging.getLogger("desktop").exception("Failed to start webview UI; attempting WebView2 install and retry")
             if _is_windows():
-                _install_webview2_if_missing(Path(sys.executable).parent if getattr(sys, "frozen", False) else _project_root())
-                # Retry once after short backoff
-                time.sleep(5)
+                retry_exe_base = Path(sys.executable).parent if getattr(sys, "frozen", False) else _project_root()
+                _install_webview2_if_missing(retry_exe_base, user_base)
+                time.sleep(3)
                 try:
                     if _webview2_runtime_installed():
-                        webview.start(gui="edgechromium", http_server=False, debug=False)
+                        webview.start(_after_start, gui="edgechromium", http_server=False, debug=False)
                         return
                 except Exception:
                     logging.getLogger("desktop").warning("Retry after WebView2 install failed; will not open external browser")
                 _message_box(
-                    "Titan Scraper",
+                    APP_DISPLAY_NAME,
                     (
                         "Impossible d'ouvrir la fenêtre intégrée.\n\n"
                         "Veuillez installer (ou réinstaller) 'Microsoft Edge WebView2 Runtime' puis relancer l'application.\n"
@@ -608,7 +854,7 @@ def main():
             else:
                 # Non-Windows fallback shouldn't use external browser per requirement; just inform.
                 _message_box(
-                    "Titan Scraper",
+                    APP_DISPLAY_NAME,
                     "Impossible d'ouvrir la fenêtre intégrée. Veuillez relancer l'application.",
                 )
                 return

@@ -199,6 +199,8 @@ class Settings(BaseSettings):
 
     # Quiet startup logs (suppresses info-level boot messages)
     quiet_startup: bool = Field(False, alias="QUIET_STARTUP")
+    # Fast first cycle (desktop UX): temporarily lower scroll steps & posts per keyword on very first run
+    fast_first_cycle: bool = Field(True, alias="FAST_FIRST_CYCLE")
 
     @field_validator("scrape_keywords_raw")
     @classmethod

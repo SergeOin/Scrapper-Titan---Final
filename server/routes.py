@@ -47,7 +47,16 @@ except Exception:  # pragma: no cover
     _desktop_ipc = None  # type: ignore
 
 # Jinja templates setup (single dashboard page)
-templates = Jinja2Templates(directory="server/templates")
+# Robust path resolution: when packaged (PyInstaller) the working directory may not be
+# the project root, so using a relative string like "server/templates" can break and
+# produce a 500 on first page load. We resolve relative to this file's location.
+_THIS_DIR = Path(__file__).resolve().parent
+_TEMPLATE_DIR = _THIS_DIR / "templates"
+if not _TEMPLATE_DIR.exists():  # Fallback: try current working directory as last resort
+    alt = Path.cwd() / "server" / "templates"
+    if alt.exists():
+        _TEMPLATE_DIR = alt
+templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 
 # Register custom Jinja filters
 def _fmt_date(value: Optional[str]):  # value expected ISO string

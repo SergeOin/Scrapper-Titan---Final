@@ -1140,6 +1140,19 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
     iterable_keywords = key_list
     try:
         with SCRAPE_DURATION_SECONDS.time():  # histogram timing
+            # Fast first cycle optimization: provide user with quick initial results then restore full settings
+            fast_cycle_applied = False
+            original_max_posts = ctx.settings.max_posts_per_keyword
+            original_scroll_steps = ctx.settings.max_scroll_steps
+            if getattr(ctx.settings, 'fast_first_cycle', False) and not getattr(ctx, '_fast_cycle_done', False) and not ctx.settings.playwright_mock_mode:
+                # Apply conservative lightweight values to reduce initial latency (avoid long scrolling on first launch)
+                try:
+                    ctx.settings.max_posts_per_keyword = max(5, min(12, ctx.settings.max_posts_per_keyword))  # cap first fetch
+                    ctx.settings.max_scroll_steps = max(2, min(3, ctx.settings.max_scroll_steps))
+                    fast_cycle_applied = True
+                    ctx.logger.debug("fast_first_cycle_applied", max_posts=ctx.settings.max_posts_per_keyword, scroll_steps=ctx.settings.max_scroll_steps)
+                except Exception:
+                    pass
             if ctx.settings.playwright_mock_mode:
                 for idx, kw in enumerate(iterable_keywords):
                     if idx > 0 and ctx.settings.per_keyword_delay_ms > 0:
@@ -1149,6 +1162,15 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
             else:
                 real_posts = await process_keywords_batched(iterable_keywords, ctx)
                 all_new.extend(real_posts)
+            # Restore original settings after lightweight first cycle
+            if fast_cycle_applied:
+                try:
+                    ctx.settings.max_posts_per_keyword = original_max_posts
+                    ctx.settings.max_scroll_steps = original_scroll_steps
+                    setattr(ctx, '_fast_cycle_done', True)
+                    ctx.logger.debug("fast_first_cycle_restored", max_posts=original_max_posts, scroll_steps=original_scroll_steps)
+                except Exception:
+                    pass
             # Cross-keyword deduplication: prefer permalink; else author+published_at; else author+text snippet
             deduped: list[Post] = []
             seen_keys: set[str] = set()
