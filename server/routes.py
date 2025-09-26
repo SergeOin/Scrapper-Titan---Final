@@ -39,6 +39,12 @@ from fastapi.responses import RedirectResponse
 
 router = APIRouter()
 
+# Attempt optional desktop IPC import (safe if not present)
+try:  # pragma: no cover - dynamic environment
+    from desktop import ipc as _desktop_ipc  # type: ignore
+except Exception:  # pragma: no cover
+    _desktop_ipc = None  # type: ignore
+
 # Jinja templates setup (single dashboard page)
 templates = Jinja2Templates(directory="server/templates")
 
@@ -1132,6 +1138,21 @@ async def health(ctx=Depends(get_auth_context)):
         except Exception:
             pass
     return data
+
+
+@router.get("/focus")
+async def focus_window():  # noqa: D401
+    """Desktop only: bring existing window to foreground.
+
+    Returns 200 with {focused: bool}. Always 200 to keep client simple.
+    """
+    focused = False
+    if _desktop_ipc is not None:
+        try:
+            focused = bool(_desktop_ipc.focus_window())  # type: ignore[attr-defined]
+        except Exception:
+            focused = False
+    return {"focused": focused}
 
 
 @router.post("/shutdown")

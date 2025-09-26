@@ -20,6 +20,8 @@ if(!(Test-Path $SourceDir)){
 if(-not $Version -or $Version -eq ''){
   if($env:BUILD_VERSION){
     $Version = $env:BUILD_VERSION
+  } elseif (Test-Path (Join-Path (Join-Path $PSScriptRoot '..') 'VERSION')) {
+    try { $Version = (Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'VERSION') -Raw).Trim() } catch { }
   } elseif (Test-Path (Join-Path (Join-Path $PSScriptRoot '..') 'package.json')){
     try{
       $pkg = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'package.json') -Raw | ConvertFrom-Json

@@ -23,6 +23,7 @@ import ctypes
 import ctypes.wintypes as wintypes  # type: ignore[attr-defined]
 from pathlib import Path
 import json
+import threading as _threading
 
 import asyncio
 from typing import Any
@@ -341,15 +342,29 @@ def _install_webview2_if_missing(base: Path) -> None:
         candidates.append(_project_root() / "build" / "MicrosoftEdgeWebView2Setup.exe")
         setup = next((p for p in candidates if p.exists()), None)
         if setup and setup.exists():
+            # Minimal pseudo progress dialog using a temporary console-less loop via MessageBox updates would flicker;
+            # Instead we show one info box then perform silent install with a spinner in log.
             _message_box(
                 "Titan Scraper",
-                "Installation du composant Microsoft Edge WebView2 requise. Une installation va démarrer."
+                (
+                    "Installation du composant Microsoft Edge WebView2 requise.\n"
+                    "Veuillez patienter quelques secondes..."
+                ),
             )
-            # Silent install; bootstrapper handles per-machine/per-user detection
             import subprocess
-            subprocess.run([str(setup), "/silent", "/install"], check=False)
-            # Small backoff to let installation complete
-            time.sleep(2)
+            import threading
+
+            def _run_install():
+                subprocess.run([str(setup), "/silent", "/install"], check=False)
+            t = threading.Thread(target=_run_install, daemon=True)
+            t.start()
+            # Poll up to ~25s for runtime to appear
+            for _ in range(50):
+                if _webview2_runtime_installed():
+                    break
+                time.sleep(0.5)
+            # No second pop-up to avoid spam; log outcome instead
+            logging.getLogger("desktop").info("webview2_install_complete present=%s", _webview2_runtime_installed())
         else:
             _message_box(
                 "Titan Scraper",
@@ -531,6 +546,31 @@ def main():
 
     # We rely on the finally block below to request a graceful shutdown when the window closes.
 
+    # Health watchdog: if /health stops responding for a sustained period, inform user & exit gracefully.
+    _watchdog_stop = _threading.Event()
+
+    def _health_watchdog():  # pragma: no cover (runtime behavior)
+        consecutive = 0
+        while not _watchdog_stop.is_set():
+            ok = _probe_health(host, port, timeout=1.5)
+            if ok:
+                consecutive = 0
+            else:
+                consecutive += 1
+                if consecutive >= 20:  # ~20 * 3s sleep ~= 60s degraded
+                    logging.getLogger("desktop").error("health_watchdog_triggered")
+                    _message_box(
+                        "Titan Scraper",
+                        (
+                            "Le serveur interne ne répond plus depuis ~1 minute.\n"
+                            "L'application va se fermer. Relancez-la."
+                        ),
+                    )
+                    os._exit(1)  # Hard exit to avoid zombie window
+            time.sleep(3)
+
+    _threading.Thread(target=_health_watchdog, name="health-watchdog", daemon=True).start()
+
     try:
         import webview  # type: ignore
         window = webview.create_window(title, url=base_url + "/", width=1200, height=800, resizable=True)
@@ -576,6 +616,10 @@ def main():
         logging.getLogger("desktop").exception("Unexpected failure creating the UI window")
     finally:
         # Graceful shutdown on process exit (e.g., if UI closed)
+        try:
+            _watchdog_stop.set()
+        except Exception:
+            pass
         try:
             srv.server.should_exit = True
         except Exception:

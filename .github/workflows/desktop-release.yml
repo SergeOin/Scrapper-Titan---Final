@@ -1,0 +1,66 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+            python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt', 'desktop/requirements-desktop.txt') }}
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r desktop/requirements-desktop.txt
+          pip install pyinstaller==6.10.0 pillow==10.4.0
+
+      - name: Set version from tag
+        run: |
+          $tag = '${{ github.ref_name }}'
+          # Expect tag like v1.2.3
+            if($tag -match '^v(\d+\.\d+\.\d+)$') {
+              ($Matches[1]) | Out-File -FilePath VERSION -Encoding utf8
+            } else {
+              Write-Host "Tag format not semantic; keeping existing VERSION file"
+            }
+
+      - name: Build Windows App
+        shell: pwsh
+        run: .\build_windows.ps1
+
+      - name: Build MSI
+        shell: pwsh
+        run: .\scripts\build_msi_folder.ps1
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dist
+          path: |
+            dist/TitanScraper/**
+            dist/msi/**
+            VERSION
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/msi/*.msi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
