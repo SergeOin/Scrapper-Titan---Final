@@ -1,0 +1,105 @@
+name: Desktop Builds
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (overrides package.json)"
+        required: false
+        type: string
+  push:
+    branches: [ main ]
+    paths:
+      - 'desktop/**'
+      - 'scripts/**'
+      - 'server/**'
+      - 'scraper/**'
+      - 'requirements.txt'
+      - 'desktop/requirements-desktop.txt'
+      - 'build_windows.ps1'
+      - 'build_mac.sh'
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Resolve version
+        shell: pwsh
+        run: |
+          $ver = ''
+          if ($env:BUILD_VERSION) { $ver = $env:BUILD_VERSION }
+          elseif ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.version }}') { $ver = '${{ inputs.version }}' }
+          else {
+            try { $pkg = Get-Content package.json -Raw | ConvertFrom-Json; $ver = [string]$pkg.version } catch { $ver = '' }
+          }
+          if (-not $ver) { $ver = '1.0.0' }
+          "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Install deps and build
+        shell: pwsh
+        run: |
+          .\build_windows.ps1
+      - name: Install WiX Toolset
+        shell: pwsh
+        run: |
+          choco install wixtoolset --version=3.14.1 -y
+      - name: Build MSI (WiX)
+        shell: pwsh
+        run: |
+          $sig = $false
+          $pfx = ''
+          $pwd = ''
+          if ($env:WINDOWS_CERT_PFX -and $env:WINDOWS_CERT_PASSWORD) {
+            # Write PFX to a temp file
+            $pfxPath = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+            $pfx = $pfxPath
+            $pwd = $env:WINDOWS_CERT_PASSWORD
+            $sig = $true
+          }
+          $ver = if ($env:VERSION) { $env:VERSION } else { '1.0.0' }
+          $cmd = ".\\scripts\\build_msi_folder.ps1 -Version $ver"
+          if($sig){ $cmd += " -Sign -CertPfxPath `"$pfx`" -CertPfxPassword `"$pwd`"" }
+          Write-Host "Running: $cmd"
+          pwsh -NoProfile -ExecutionPolicy Bypass -Command $cmd
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TitanScraper-windows-${{ env.VERSION }}
+          path: |
+            dist/**
+            dist/msi/**
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Resolve version
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${BUILD_VERSION:-}"
+          if [ -z "$ver" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.version }}" ]; then ver="${{ inputs.version }}"; fi
+          if [ -z "$ver" ]; then ver=$(python3 -c "import json,io; print(json.load(io.open('package.json','r',encoding='utf-8')).get('version',''))" 2>/dev/null || true); fi
+          if [ -z "$ver" ]; then ver="1.0.0"; fi
+          echo "VERSION=$ver" >> $GITHUB_ENV
+      - name: Make build script executable
+        run: chmod +x build_mac.sh
+      - name: Install deps and build
+        run: ./build_mac.sh
+      - name: Build DMG
+        run: |
+          chmod +x scripts/build_dmg.sh
+          ./scripts/build_dmg.sh "$VERSION"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TitanScraper-macos-${{ env.VERSION }}
+          path: |
+            dist/**

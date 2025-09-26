@@ -20,8 +20,6 @@ import sqlite3
 import json as _json
 from datetime import datetime, timezone
 
-import pandas as pd
-
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Form, Query, Body
 from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
@@ -831,6 +829,18 @@ async def export_excel(
     _auth=Depends(require_auth),
     _ls=Depends(require_linkedin_session),
 ):
+    # Lazy import pandas to avoid failing app startup if numpy/pandas cannot load in frozen builds
+    try:
+        import pandas as pd  # type: ignore
+    except Exception as e:  # pragma: no cover
+        try:
+            ctx.logger.error("export_excel_pandas_unavailable", error=str(e))
+        except Exception:
+            pass
+        return PlainTextResponse(
+            "Export Excel indisponible: dépendance pandas/numpy introuvable. Réinstallez l'application.",
+            status_code=500,
+        )
     # Clamp limit defensively
     limit = min(limit, 5000)
     skip = (page - 1) * limit

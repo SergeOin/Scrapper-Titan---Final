@@ -1,3 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# PyInstaller / build
+build/
+dist/
+*.spec
+
+# Local data / artifacts
+exports/
+screenshots/
+*.sqlite3
+storage_state.json
+session_store.json
+
+# OS files
+.DS_Store
+Thumbs.db
 # =============================
 # Python / Virtual Env
 # =============================

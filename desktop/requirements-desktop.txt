@@ -1,0 +1,3 @@
+# Additional packages required to run the desktop wrapper
+pywebview==4.4.1
+requests>=2.31.0,<3

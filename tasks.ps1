@@ -1,3 +1,12 @@
+# Convenience tasks for Windows devs
+
+task Desktop:Run {
+    if (-not (Test-Path .venv)) { py -3 -m venv .venv }
+    . .\.venv\Scripts\Activate.ps1
+    pip install -r requirements.txt -q
+    pip install -r .\desktop\requirements-desktop.txt -q
+    python .\desktop\main.py
+}
 <#
 .SYNOPSIS
   Script d'aide pour automatiser les tâches de développement.
