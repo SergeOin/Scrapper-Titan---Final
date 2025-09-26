@@ -71,7 +71,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
     #  - If no Redis is configured, we always start the in-process worker so the dashboard alone is sufficient.
     #  - If Redis exists (typical multi-process deploy), we keep opt-in via INPROCESS_AUTONOMOUS to avoid duplicate workers.
     interval = ctx.settings.autonomous_worker_interval_seconds
-    want_inprocess = (ctx.redis is None) or (os.environ.get("INPROCESS_AUTONOMOUS", "0").lower() in ("1", "true", "yes"))
+    # Decide whether to launch an in-process autonomous worker.
+    # Previous behavior: always enabled when Redis was absent, causing duplication when an external
+    # supervisor (e.g. scripts/run_all.py) also launched a worker. We now allow explicit disabling
+    # by setting INPROCESS_AUTONOMOUS=0 even if Redis is None.
+    flag = os.environ.get("INPROCESS_AUTONOMOUS")
+    if ctx.redis is None:
+        # Default ON unless explicitly disabled
+        want_inprocess = flag is None or flag.lower() not in ("0", "false", "no")
+    else:
+        # With Redis present it's opt-in only
+        want_inprocess = flag is not None and flag.lower() in ("1", "true", "yes")
+
     if want_inprocess:
         if interval > 0:
             async def _periodic():

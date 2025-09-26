@@ -31,6 +31,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from scraper.bootstrap import get_context
 from scraper.utils import normalize_for_search as _normalize_for_search  # type: ignore
+from scraper import utils as _scrape_utils  # unified opportunity logic
 from scraper.session import session_status, login_via_playwright  # type: ignore
 from scraper.bootstrap import _save_runtime_state  # type: ignore
 from scraper.bootstrap import API_RATE_LIMIT_REJECTIONS
@@ -73,6 +74,13 @@ def _dedupe_person_name(name: Optional[str]) -> str:
         if tokens[:half] == tokens[half:]:
             return " ".join(tokens[:half])
     return s
+
+def _looks_like_followers(segment: str) -> bool:
+    import re
+    seg = segment.strip().lower()
+    seg = seg.replace("\u00a0", " ").replace("\u202f", " ")
+    # Accept forms: 12 345 abonnés, 12k abonnés, 1.2m followers, 123 abonnés (singular/plural tolerant)
+    return re.search(r"\b\d[\d\s\.,]*\s*(k|m)?\s*(abonn[eé]s?|followers)\b", seg, flags=re.IGNORECASE) is not None
 
 def _derive_company(author: str, author_profile: Optional[str], text: Optional[str]) -> Optional[str]:
     """Best-effort company derivation from profile/text.
@@ -156,6 +164,25 @@ def _derive_company(author: str, author_profile: Optional[str], text: Optional[s
         cand = m.group(1).strip()
         if 2 <= len(cand) <= 80 and cand.lower() != norm_author:
             return cand
+    # Last resort: inspect author string itself for patterns "Nom Prénom • Entreprise" or "Nom chez Entreprise"
+    author_clean = (author or "").strip()
+    if author_clean:
+        lc = author_clean.lower()
+        for marker in [" chez ", " at "]:
+            if marker in lc:
+                tail = author_clean[lc.index(marker)+len(marker):].strip()
+                for stop in [" |", " -", ",", " •", " ·", " —", " –", " (", "  "]:
+                    if stop in tail:
+                        tail = tail.split(stop, 1)[0].strip()
+                if 2 <= len(tail) <= 80 and tail.lower() != norm_author and not looks_like_role(tail):
+                    return tail
+        for sep in [" • ", " – ", " — ", " | ", " - "]:
+            if sep in author_clean:
+                parts = [p.strip() for p in author_clean.split(sep) if p.strip()]
+                if len(parts) >= 2:
+                    cand2 = parts[-1]
+                    if 2 <= len(cand2) <= 80 and cand2.lower() != norm_author and not looks_like_role(cand2):
+                        return cand2
     return None
 
 def _sanitize_company(company: Optional[str]) -> Optional[str]:
@@ -175,30 +202,25 @@ def _sanitize_company(company: Optional[str]) -> Optional[str]:
     s = s.strip("-•|·—,;: ")
     return s or None
 
-def _looks_like_followers(segment: str) -> bool:
-    import re
-    seg = segment.strip().lower()
-    # Normalize nbsp/thin spaces
-    seg = seg.replace("\u00a0", " ").replace("\u202f", " ")
-    # e.g., "12 345 abonnés", "12k abonnés", "1.2m followers"
-    return re.search(r"\b\d[\d\s\.,]*\s*(k|m)?\s*(abonn[eé]s|followers)\b", seg) is not None
-
 def _strip_followers_suffix(value: Optional[str]) -> Optional[str]:
     import re
     s = (value or "").strip()
     if not s:
         return None
-    original = s
-    # Remove parenthesized followers e.g., "(12 345 abonnés)"
-    s = re.sub(r"\(\s*\d[\d\s\.,\u202f\u00a0]*\s*(?:k|m)?\s*(?:abonn[eé]s|followers)\s*\)", "", s, flags=re.IGNORECASE)
-    # Remove trailing segments like " | 12k abonnés", " · 1 234 followers", " - 2 345 abonnés"
+    # Remove parenthesized follower counts
+    s = re.sub(r"\(\s*\d[\d\s\.,\u202f\u00a0]*\s*(?:k|m)?\s*(?:abonn[eé]s?|followers)\s*\)", "", s, flags=re.IGNORECASE)
+    # Remove trailing segments separated by common separators
     for sep in [" | ", " · ", " - ", " — ", " – "]:
         parts = [p.strip() for p in s.split(sep) if p is not None]
         if len(parts) >= 2 and _looks_like_followers(parts[-1]):
             s = sep.join(parts[:-1])
-    # Remove simple terminal follower phrase if present at the end
-    s = re.sub(r"[\s\-•|·—,;:]*\d[\d\s\.,\u202f\u00a0]*\s*(?:k|m)?\s*(?:abonn[eé]s|followers)\s*$", "", s, flags=re.IGNORECASE)
-    # Cleanup whitespace/separators
+    # Terminal follower phrase
+    s = re.sub(r"[\s\-•|·—,;:]*\d[\d\s\.,\u202f\u00a0]*\s*(?:k|m)?\s*(?:abonn[eé]s?|followers)\s*$", "", s, flags=re.IGNORECASE)
+    # Leading follower phrase like "12 345 abonnés • Company"
+    if " • " in s:
+        head, tail = s.split(" • ", 1)
+        if _looks_like_followers(head):
+            s = tail.strip()
     s = " ".join(s.split())
     s = s.strip("-•|·—,;: ")
     return s or None
@@ -292,19 +314,6 @@ def _extract_metier(text: Optional[str]) -> Optional[str]:
     # Preserve pattern order; cap to 3 labels to keep UI compact
     return ", ".join(hits[:3])
 
-def _detect_opportunity(text: Optional[str]) -> bool:
-    """Detect recruitment signals in post text (FR/EN)."""
-    t = (text or "").lower()
-    if not t:
-        return False
-    signals = [
-        # FR
-        " recrute", "nous recrutons", "on recrute", "recrutement", "poste a pourvoir", "poste à pourvoir",
-        "offre d'emploi", "offre d’emploi", "candidature", "postulez", "envoyez votre cv", "cv@", "joignez votre cv",
-        # EN
-        "hiring", "we're hiring", "we are hiring", "join our team", "apply now", "apply here",
-    ]
-    return any(s in t for s in signals)
 
 # ------------------------------------------------------------
 # Optional internal auth dependency
@@ -343,9 +352,15 @@ async def require_auth(request: Request, ctx=Depends(get_auth_context)):
 # LinkedIn session requirement for protected views
 # ------------------------------------------------------------
 async def require_linkedin_session(ctx=Depends(get_auth_context)):
+    # En mode mock on autorise l'accès sans session LinkedIn réelle
+    try:
+        if ctx.settings.playwright_mock_mode:  # type: ignore[attr-defined]
+            return
+    except Exception:
+        pass
     st = await session_status(ctx)
     if not st.valid:
-        # Not logged-in: redirect to login page with an explicit reason
+        # Pas authentifié : redirige vers login
         raise HTTPException(status_code=302, headers={"Location": "/login?reason=session_expired"})
     return
 
@@ -522,7 +537,7 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
     if ctx.mongo_client:
         try:
             coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            # Always exclude legacy demo content
+            # Toujours exclure contenu de démonstration
             mf: dict[str, Any] = {"author": {"$ne": "demo_recruteur"}, "keyword": {"$ne": "demo_recruteur"}}
             if q:
                 mf["$or"] = [
@@ -555,8 +570,12 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
                     "FROM posts p LEFT JOIN post_flags f ON f.post_id = p.id"
                 )
                 params: list[Any] = []
-                # Base WHERE to exclude demo rows
-                where_clauses = ["LOWER(p.author) <> 'demo_recruteur'", "LOWER(p.keyword) <> 'demo_recruteur'", "COALESCE(f.is_deleted,0) = 0"]
+                # Base WHERE pour exclure posts démo + corbeille
+                where_clauses = [
+                    "LOWER(p.author) <> 'demo_recruteur'",
+                    "LOWER(p.keyword) <> 'demo_recruteur'",
+                    "COALESCE(f.is_deleted,0) = 0"
+                ]
                 if q:
                     # Prefer accent-insensitive search if search_norm exists
                     try:
@@ -623,16 +642,49 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
         if rows:
             seen: set[str] = set()
             deduped: list[dict[str, Any]] = []
+            # 7-day window dedup memory (per request) to suppress older duplicates in last week
+            from datetime import datetime, timezone, timedelta
+            now = datetime.now(timezone.utc)
+            week_ago = now - timedelta(days=7)
+            recent_keys: dict[str, datetime] = {}
+            # Optional: attempt to fetch content_hash for rows coming from SQLite path (only if available)
+            content_hash_map: dict[str, str] = {}
+            try:
+                # Only build map if sqlite file exists and ids present
+                if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
+                    conn = sqlite3.connect(ctx.settings.sqlite_path)
+                    conn.row_factory = sqlite3.Row
+                    with conn:
+                        ids = [itm.get("_id") for itm in rows if itm.get("_id")]
+                        if ids:
+                            placeholders = ",".join(["?"]*len(ids))
+                            for r in conn.execute(f"SELECT id, content_hash, permalink FROM posts WHERE id IN ({placeholders})", ids):
+                                if r[1]:
+                                    content_hash_map[str(r[0])] = str(r[1])
+            except Exception:
+                content_hash_map = {}
             for item in rows:
                 # Sanitize author duplication in display
                 item_author = _dedupe_person_name(item.get("author"))
                 item_author = _strip_followers_suffix(item_author)
+                # Extra hardening: if author still matches follower pattern alone, blank it -> 'Unknown'
+                try:
+                    if item_author and _looks_like_followers(item_author):
+                        item_author = "Unknown"
+                except Exception:
+                    pass
                 if item_author:
                     item["author"] = item_author
-                # Fix company if missing or same as author
+                # Fix / enhance company
                 comp = item.get("company")
                 if not comp or str(comp).strip().lower() == str(item.get("author") or "").strip().lower():
-                    derived = _derive_company(item.get("author") or "", item.get("author_profile"), item.get("text"))
+                    # Prefer author_profile first if present
+                    prof = item.get("author_profile")
+                    derived = None
+                    if prof:
+                        derived = _derive_company(item.get("author") or "", prof, item.get("text"))
+                    if not derived:
+                        derived = _derive_company(item.get("author") or "", item.get("author_profile"), item.get("text"))
                     if derived:
                         item["company"] = derived
                 # Sanitize company and ensure we don't show author as company
@@ -649,20 +701,62 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
                 metier = _extract_metier(item.get("text"))
                 if metier:
                     item["metier"] = metier
-                if _detect_opportunity(item.get("text")):
-                    item["opportunity"] = True
+                try:
+                    if _scrape_utils.is_opportunity(item.get("text"), threshold=ctx.settings.recruitment_signal_threshold):
+                        item["opportunity"] = True
+                except Exception:
+                    pass
+                perma_raw = item.get("permalink") or ""
+                if perma_raw:
+                    # Canonicalise: drop trailing slash & unify activity id pattern
+                    perma_norm = perma_raw.split('?',1)[0].split('#',1)[0].rstrip('/')
+                    # Convert various forms to standard activity URL if activity id present
+                    import re as _re
+                    m = _re.search(r"(urn:li:activity:(\d+))|(activity/(\d+))", perma_norm)
+                    if m:
+                        act = m.group(2) or m.group(4)
+                        if act:
+                            perma_norm = f"https://www.linkedin.com/feed/update/urn:li:activity:{act}"
+                    if perma_norm != perma_raw:
+                        item["permalink"] = perma_norm
                 perma = item.get("permalink") or ""
                 author = (item.get("author") or "")
                 published = item.get("published_at") or ""
                 text = (item.get("text") or "")
+                # Prefer permalink; fallback author+published; then content_hash if available; else text snippet hash
                 if perma:
                     key = f"perma|{perma}"
                 elif author and published:
                     key = f"authdate|{author}|{published}"
                 else:
-                    key = f"authtext|{author}|{text[:80]}"
+                    ch = None
+                    pid = item.get("_id")
+                    if pid and pid in content_hash_map:
+                        ch = content_hash_map[pid]
+                    if not ch:
+                        import hashlib
+                        snippet = text[:220]
+                        reduced = __import__('re').sub(r"\d{2,}", "#", __import__('re').sub(r"\s+", " ", snippet))
+                        ch = hashlib.sha1(reduced.encode('utf-8', errors='ignore')).hexdigest()[:12]
+                    key = f"authtext|{author}|{ch}"
                 if key in seen:
-                    continue
+                    # Secondary suppression: if duplicate within 7-day window, skip older one
+                    try:
+                        ts_raw = item.get("published_at") or item.get("collected_at")
+                        ts = datetime.fromisoformat(str(ts_raw).replace("Z","+00:00")) if ts_raw else None
+                        if key in recent_keys and ts and ts < recent_keys[key] and ts > week_ago:
+                            continue
+                    except Exception:
+                        continue
+                else:
+                    # Record first timestamp for window logic
+                    try:
+                        ts_raw = item.get("published_at") or item.get("collected_at")
+                        ts = datetime.fromisoformat(str(ts_raw).replace("Z","+00:00")) if ts_raw else None
+                        if ts:
+                            recent_keys[key] = ts
+                    except Exception:
+                        pass
                 seen.add(key)
                 deduped.append(item)
             rows = deduped
@@ -789,6 +883,52 @@ async def dashboard(
     meta = await fetch_meta(ctx)
     trash_count = _count_deleted(ctx)
     # Compute naive total pages if meta count known
+    if _sanitize_query(q):
+        total = await count_posts(ctx, q)
+    else:
+        total = meta.get("posts_count", 0) or 0
+    total_pages = max(1, (total // limit) + (1 if total % limit else 0)) if total else page
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {
+            "request": request,
+            "posts": posts,
+            "meta": meta,
+            "page": page,
+            "limit": limit,
+            "total_pages": total_pages,
+            "q": _sanitize_query(q) or "",
+            "autonomous_interval": ctx.settings.autonomous_worker_interval_seconds,
+            "login_initial_wait_seconds": ctx.settings.login_initial_wait_seconds,
+            "sort_by": (sort_by or "collected_at"),
+            "sort_dir": (sort_dir or "desc"),
+            "mock_mode": ctx.settings.playwright_mock_mode,
+            "trash_count": trash_count,
+        },
+    )
+
+# Variante sans exigence de session LinkedIn quand mock actif (accès /demo)
+@router.get("/demo", response_class=HTMLResponse)
+async def dashboard_demo(
+    request: Request,
+    page: int = Query(1, ge=1),
+    limit: int = Query(default_factory=_default_limit, ge=1, le=200),
+    q: Optional[str] = Query(None),
+    sort_by: Optional[str] = Query(None),
+    sort_dir: Optional[str] = Query(None),
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    # Si on n'est pas en mock rediriger vers route normale (qui appliquera la vérification de session)
+    try:
+        if not ctx.settings.playwright_mock_mode:  # type: ignore[attr-defined]
+            return RedirectResponse("/", status_code=302)
+    except Exception:
+        return RedirectResponse("/", status_code=302)
+    skip = (page - 1) * limit
+    posts = await fetch_posts(ctx, skip=skip, limit=limit, q=q, sort_by=sort_by, sort_dir=sort_dir)
+    meta = await fetch_meta(ctx)
+    trash_count = _count_deleted(ctx)
     if _sanitize_query(q):
         total = await count_posts(ctx, q)
     else:
@@ -1126,6 +1266,20 @@ async def health(ctx=Depends(get_auth_context)):
             data["queue_depth"] = None
     # Autonomous worker indicator
     data["autonomous_worker"] = ctx.settings.autonomous_worker_interval_seconds > 0
+    # Quota progression (in-memory)
+    try:
+        target = ctx.settings.daily_post_target
+        soft = getattr(ctx.settings, 'daily_post_soft_target', max(1, int(target*0.8)))
+        collected = getattr(ctx, 'daily_post_count', 0)
+        data["daily_post_target"] = target
+        data["daily_post_soft_target"] = soft
+        data["daily_post_collected"] = collected
+        data["daily_remaining_soft"] = max(0, soft - collected)
+        data["daily_remaining_hard"] = max(0, target - collected)
+        pacing = "cooldown" if collected >= target else ("accelerated" if collected < soft else "normal")
+        data["pacing_mode"] = pacing
+    except Exception:
+        pass
     # Augmented meta stats: last job unknown author metrics if present
     if ctx.mongo_client:
         try:
@@ -1138,6 +1292,82 @@ async def health(ctx=Depends(get_auth_context)):
         except Exception:
             pass
     return data
+
+
+@router.get("/api/daily_summary")
+async def api_daily_summary(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Return aggregated statistics for the current (local) day.
+
+    Stats include: total posts today, opportunities detected, favorites auto vs manual,
+    top companies, contract status distribution.
+    """
+    from datetime import date
+    today_prefix = date.today().isoformat()  # match on collected_at starting with date
+    path = ctx.settings.sqlite_path
+    summary = {
+        "date": today_prefix,
+        "total": 0,
+        "opportunities": 0,
+        "favorites": 0,
+        "favorites_manual": 0,
+        "favorites_auto": 0,
+        "companies_top": [],
+        "status_distribution": {},
+    }
+    if not path or not Path(path).exists():
+        return summary
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    with conn:
+        try:
+            # base select for today (excluding deleted)
+            conn.execute("CREATE TABLE IF NOT EXISTS post_flags (post_id TEXT PRIMARY KEY, is_favorite INTEGER, is_deleted INTEGER, favorite_at TEXT, deleted_at TEXT)")
+        except Exception:
+            pass
+        rows = conn.execute(
+            "SELECT p.id, p.text, p.company, p.collected_at, p.published_at, f.is_favorite, f.is_deleted, f.favorite_at FROM posts p LEFT JOIN post_flags f ON f.post_id=p.id WHERE p.collected_at LIKE ? AND COALESCE(f.is_deleted,0)=0",
+            (f"{today_prefix}%",),
+        ).fetchall()
+        summary["total"] = len(rows)
+        comp_counter: dict[str,int] = {}
+        status_counter: dict[str,int] = {}
+        opp = 0
+        fav = 0
+        fav_auto = 0
+        fav_manual = 0
+        for r in rows:
+            txt = r["text"] or ""
+            if _scrape_utils.is_opportunity(txt, threshold=ctx.settings.recruitment_signal_threshold):
+                opp += 1
+            if r["is_favorite"]:
+                fav += 1
+                # Heuristic: if favorite_at is within 3 seconds of collected_at -> auto
+                try:
+                    import datetime as _dt
+                    fav_at = _dt.datetime.fromisoformat(str(r["favorite_at"]).replace("Z","+00:00")) if r["favorite_at"] else None
+                    coll_at = _dt.datetime.fromisoformat(str(r["collected_at"]).replace("Z","+00:00")) if r["collected_at"] else None
+                    if fav_at and coll_at and abs((fav_at - coll_at).total_seconds()) <= 3:
+                        fav_auto += 1
+                    else:
+                        fav_manual += 1
+                except Exception:
+                    fav_manual += 1
+            comp = (r["company"] or "").strip()
+            if comp:
+                comp_counter[comp] = comp_counter.get(comp,0)+1
+            # Status derivation reused (contract keywords) simplistic
+            from .routes import _extract_contract_status  # type: ignore
+            st = _extract_contract_status(txt)
+            if st:
+                for token in [s.strip() for s in st.split(',') if s.strip()]:
+                    status_counter[token] = status_counter.get(token,0)+1
+        summary["opportunities"] = opp
+        summary["favorites"] = fav
+        summary["favorites_manual"] = fav_manual
+        summary["favorites_auto"] = fav_auto
+        summary["companies_top"] = sorted([{ "company": c, "count": n } for c,n in comp_counter.items()], key=lambda x: x["count"], reverse=True)[:5]
+        summary["status_distribution"] = status_counter
+    return summary
 
 
 @router.get("/focus")
@@ -1446,3 +1676,69 @@ async def api_version(ctx=Depends(get_auth_context), _auth=Depends(require_auth)
         "build_timestamp": ts,
         "playwright_mock_mode": ctx.settings.playwright_mock_mode,
     }
+
+
+# ------------------------------------------------------------
+# Admin: purge all posts (Mongo + SQLite + CSV fallback)
+# ------------------------------------------------------------
+@router.post("/api/admin/purge_posts")
+async def api_admin_purge_posts(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Erase all stored posts and related flags, returning counts removed.
+
+    This mirrors scripts/purge_data.py but exposes a protected HTTP endpoint for
+    convenience from the dashboard. Authentication (basic) is required if enabled.
+    """
+    removed_sqlite = 0
+    removed_mongo = 0
+    # Mongo purge
+    if ctx.mongo_client:
+        try:
+            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
+            res = await coll.delete_many({})
+            removed_mongo = getattr(res, 'deleted_count', 0) or 0
+            # Reset meta doc counters
+            mcoll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_meta]
+            await mcoll.update_one({"_id": "global"}, {"$set": {"posts_count": 0, "last_run": None}}, upsert=True)
+        except Exception as exc:  # pragma: no cover
+            ctx.logger.error("api_purge_mongo_failed", error=str(exc))
+    # SQLite purge
+    import sqlite3 as _sqlite
+    from pathlib import Path as _P
+    if ctx.settings.sqlite_path and _P(ctx.settings.sqlite_path).exists():
+        try:
+            conn = _sqlite.connect(ctx.settings.sqlite_path)
+            with conn:
+                try:
+                    cur = conn.execute("SELECT COUNT(*) FROM posts")
+                    removed_sqlite = int(cur.fetchone()[0] or 0)
+                except Exception:
+                    removed_sqlite = 0
+                try:
+                    conn.execute("DELETE FROM post_flags")
+                except Exception:
+                    pass
+                conn.execute("DELETE FROM posts")
+                try:
+                    conn.execute("VACUUM")
+                except Exception:
+                    pass
+        except Exception as exc:  # pragma: no cover
+            ctx.logger.error("api_purge_sqlite_failed", error=str(exc))
+    # CSV fallback file
+    try:
+        csv_path = _P(ctx.settings.csv_fallback_file)
+        if csv_path.exists():
+            csv_path.unlink()
+    except Exception:
+        pass
+    # Reset in-memory daily counter
+    try:
+        ctx.daily_post_count = 0  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    # Broadcast a lightweight event so UI can react (reuse toggle type or define new?)
+    try:
+        await broadcast({"type": "purge", "removed_sqlite": removed_sqlite, "removed_mongo": removed_mongo})
+    except Exception:
+        pass
+    return {"ok": True, "removed_sqlite": removed_sqlite, "removed_mongo": removed_mongo}

@@ -180,6 +180,22 @@ class Settings(BaseSettings):
     human_night_pause_min_seconds: int = Field(1800, alias="HUMAN_NIGHT_PAUSE_MIN_SECONDS")
     human_night_pause_max_seconds: int = Field(3600, alias="HUMAN_NIGHT_PAUSE_MAX_SECONDS")
     human_max_cycles_per_hour: int = Field(6, alias="HUMAN_MAX_CYCLES_PER_HOUR")
+    # Daily quota objective (e.g. ensure at least X posts collected per active day)
+    daily_post_target: int = Field(50, alias="DAILY_POST_TARGET")
+    daily_post_soft_target: int = Field(40, alias="DAILY_POST_SOFT_TARGET")
+
+    # Risk & pacing heuristics (anti-ban)
+    risk_auth_suspect_threshold: int = Field(2, alias="RISK_AUTH_SUSPECT_THRESHOLD")
+    risk_empty_keywords_threshold: int = Field(3, alias="RISK_EMPTY_KEYWORDS_THRESHOLD")
+    risk_cooldown_min_seconds: int = Field(120, alias="RISK_COOLDOWN_MIN_SECONDS")
+    risk_cooldown_max_seconds: int = Field(300, alias="RISK_COOLDOWN_MAX_SECONDS")
+    human_jitter_min_ms: int = Field(800, alias="HUMAN_JITTER_MIN_MS")
+    human_jitter_max_ms: int = Field(2500, alias="HUMAN_JITTER_MAX_MS")
+    adaptive_scroll_enabled: bool = Field(True, alias="ADAPTIVE_SCROLL")
+    adaptive_scroll_min: int = Field(2, alias="ADAPTIVE_SCROLL_MIN")
+    adaptive_scroll_max: int = Field(7, alias="ADAPTIVE_SCROLL_MAX")
+    # Number of keywords window to compute moving average posts
+    adaptive_scroll_window: int = Field(5, alias="ADAPTIVE_SCROLL_WINDOW")
 
     # Quiet startup logs (suppresses info-level boot messages)
     quiet_startup: bool = Field(False, alias="QUIET_STARTUP")
@@ -354,6 +370,12 @@ class AppContext:
     mongo_client: Optional[Any] = None
     redis: Optional[Any] = None
     token_bucket: Optional["TokenBucket"] = None
+    # Risk counters (anti-ban heuristics)
+    _risk_auth_suspect: int = 0
+    _risk_empty_runs: int = 0
+    # Daily quota tracking
+    daily_post_count: int = 0
+    daily_post_date: Optional[str] = None
     # quick helper
     def has_valid_session(self) -> bool:
         try:
@@ -508,6 +530,12 @@ async def bootstrap(force: bool = False) -> AppContext:
             redis=redis_client,
             token_bucket=token_bucket,
         )
+        # Pre-initialize risk counters (avoid attribute errors in early worker loop)
+        try:
+            setattr(ctx, "_risk_auth_suspect", 0)
+            setattr(ctx, "_risk_empty_runs", 0)
+        except Exception:
+            pass
         log_method = logger.debug if settings.quiet_startup else logger.info
         log_method(
             "bootstrap_complete",

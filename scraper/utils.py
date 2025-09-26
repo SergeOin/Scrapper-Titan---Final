@@ -308,6 +308,7 @@ __all__ = [
     "keyword_density",
     "compute_score",
     "compute_recruitment_signal",
+    "is_opportunity",
     "make_post_id",
     "retryable",
     "TransientScrapeError",
@@ -353,6 +354,30 @@ def compute_recruitment_signal(text: str) -> float:
     norm = raw / (len(low) / 60.0 + 1.0)
     score = min(1.0, math.log1p(norm) / math.log1p(10))
     return max(0.0, score)
+
+
+def is_opportunity(text: str | None, *, threshold: float = 0.05) -> bool:
+    """Unified opportunity / recruitment signal predicate.
+
+    A post is considered an "opportunity" if its recruitment signal score
+    (compute_recruitment_signal) is above the configured threshold OR it contains
+    high-salience imperative phrases frequently used in hiring posts.
+
+    Centralising this logic prevents divergence between auto-favorite, UI badges
+    and API summarisation.
+    """
+    if not text:
+        return False
+    score = compute_recruitment_signal(text)
+    if score >= threshold:
+        return True
+    low = text.lower()
+    phrase_hits = [
+        "nous recrutons", "on recrute", "je recrute", "recrutement en cours",
+        "poste a pourvoir", "poste à pourvoir", "apply now", "we are hiring",
+        "we're hiring", "join our team", "envoyez votre cv", "postulez" ,
+    ]
+    return any(p in low for p in phrase_hits)
 
 
 # ---------------------------------------------------------------------------

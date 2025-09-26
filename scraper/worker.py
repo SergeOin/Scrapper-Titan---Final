@@ -24,6 +24,7 @@ import contextlib
 import json
 import os
 import sqlite3
+import re as _re  # local lightweight regex (avoid repeated imports)
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -377,7 +378,8 @@ def _store_sqlite(path: str, posts: list[Post]) -> None:
             published_at TEXT,
             collected_at TEXT,
             raw_json TEXT,
-            search_norm TEXT
+            search_norm TEXT,
+            content_hash TEXT
             )"""
         )
         # Detect legacy columns
@@ -386,13 +388,19 @@ def _store_sqlite(path: str, posts: list[Post]) -> None:
             cols = [r[1] for r in cur.fetchall()]
             if "score" in cols or "recruitment_score" in cols:
                 # Perform lightweight migration: create temp, copy subset, drop old, rename
-                conn.execute("CREATE TABLE IF NOT EXISTS posts_new (id TEXT PRIMARY KEY, keyword TEXT, author TEXT, author_profile TEXT, company TEXT, permalink TEXT, text TEXT, language TEXT, published_at TEXT, collected_at TEXT, raw_json TEXT, search_norm TEXT)")
+                conn.execute("CREATE TABLE IF NOT EXISTS posts_new (id TEXT PRIMARY KEY, keyword TEXT, author TEXT, author_profile TEXT, company TEXT, permalink TEXT, text TEXT, language TEXT, published_at TEXT, collected_at TEXT, raw_json TEXT, search_norm TEXT, content_hash TEXT)")
                 # Copy only needed columns if they exist
-                copy_cols_src = [c for c in ["id","keyword","author","author_profile","company","permalink","text","language","published_at","collected_at","raw_json","search_norm"] if c in cols]
-                copy_cols_dst = ["id","keyword","author","author_profile","company","permalink","text","language","published_at","collected_at","raw_json","search_norm"]
+                copy_cols_src = [c for c in ["id","keyword","author","author_profile","company","permalink","text","language","published_at","collected_at","raw_json","search_norm","content_hash"] if c in cols]
+                copy_cols_dst = ["id","keyword","author","author_profile","company","permalink","text","language","published_at","collected_at","raw_json","search_norm","content_hash"]
                 conn.execute(f"INSERT OR IGNORE INTO posts_new ({','.join(copy_cols_dst)}) SELECT {','.join(copy_cols_src)} FROM posts")
                 conn.execute("DROP TABLE posts")
                 conn.execute("ALTER TABLE posts_new RENAME TO posts")
+            # Add content_hash column if missing (after migration path)
+            if "content_hash" not in cols:
+                try:
+                    conn.execute("ALTER TABLE posts ADD COLUMN content_hash TEXT")
+                except Exception:
+                    pass
             # Create a unique index on permalink to avoid duplicate rows for the same LinkedIn post
             try:
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uniq_posts_permalink ON posts(permalink) WHERE permalink IS NOT NULL")
@@ -403,6 +411,11 @@ def _store_sqlite(path: str, posts: list[Post]) -> None:
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uniq_posts_author_published ON posts(author, published_at) WHERE author IS NOT NULL AND published_at IS NOT NULL")
             except Exception:
                 pass
+            # Tertiary unique index on content_hash when no permalink/date
+            try:
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uniq_posts_content_hash ON posts(content_hash) WHERE content_hash IS NOT NULL")
+            except Exception:
+                pass
         except Exception:
             pass
         rows = []
@@ -411,6 +424,10 @@ def _store_sqlite(path: str, posts: list[Post]) -> None:
                 s_norm = utils.build_search_norm(p.text, p.author, getattr(p, 'company', None), p.keyword)
             except Exception:
                 s_norm = None
+            try:
+                chash = _compute_content_hash(p.author, p.text)
+            except Exception:
+                chash = None
             rows.append((
                 p.id,
                 p.keyword,
@@ -424,8 +441,37 @@ def _store_sqlite(path: str, posts: list[Post]) -> None:
                 p.collected_at,
                 json.dumps(p.raw, ensure_ascii=False),
                 s_norm,
+                chash,
             ))
-        conn.executemany("INSERT OR IGNORE INTO posts VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        conn.executemany("INSERT OR IGNORE INTO posts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+    # Auto-favorite opportunity posts (unified predicate utils.is_opportunity)
+        try:
+            conn.execute("""CREATE TABLE IF NOT EXISTS post_flags (
+                post_id TEXT PRIMARY KEY,
+                is_favorite INTEGER NOT NULL DEFAULT 0,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                favorite_at TEXT,
+                deleted_at TEXT
+            )""")
+        except Exception:
+            pass
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            now_iso = _dt.now(_tz.utc).isoformat()
+            fav_rows = []
+            for p in posts:
+                try:
+                    threshold = 0.05
+                    if p.raw and isinstance(p.raw, dict):  # type: ignore[truthy-bool]
+                        threshold = p.raw.get('recruitment_threshold', threshold)  # type: ignore[arg-type]
+                    if utils.is_opportunity(p.text, threshold=threshold):
+                        fav_rows.append((p.id, 1, 0, now_iso, None))
+                except Exception:
+                    continue
+            if fav_rows:
+                conn.executemany("INSERT INTO post_flags(post_id,is_favorite,is_deleted,favorite_at,deleted_at) VALUES(?,?,?,?,?) ON CONFLICT(post_id) DO UPDATE SET is_favorite=excluded.is_favorite, favorite_at=excluded.favorite_at WHERE excluded.is_favorite=1", fav_rows)
+        except Exception:
+            pass
 
 
 def _store_csv(csv_path: Path, posts: list[Post]) -> None:
@@ -535,6 +581,89 @@ COMPANY_SELECTORS = [
     "span.update-components-actor__description",
 ]
 
+# ------------------------------------------------------------
+# Follower count cleaning (company pages sometimes appear as author)
+# ------------------------------------------------------------
+import re
+_FOLLOWER_SEG_PATTERN = re.compile(r"\b\d[\d\s\.,]*\s*(k|m)?\s*(abonn[eé]s?|followers)\b", re.IGNORECASE)
+_FOLLOWER_FULL_PATTERN = re.compile(r"^\s*\d[\d\s\.,]*\s*(k|m)?\s*(abonn[eé]s?|followers)\s*$", re.IGNORECASE)
+
+# ------------------------------------------------------------
+# Permalink canonicalisation & content hash helpers
+# ------------------------------------------------------------
+_ACTIVITY_ID_PATTERNS = [
+    re.compile(r"urn:li:activity:(\d+)", re.IGNORECASE),
+    re.compile(r"/activity/(\d+)", re.IGNORECASE),
+    # posts slug sometimes ends with -<digits>
+    re.compile(r"-(\d{8,})$"),
+]
+
+def _canonicalize_permalink(url: str | None) -> str | None:
+    if not url:
+        return url
+    # Drop query, fragment, trailing slash
+    base = url.split('?', 1)[0].split('#', 1)[0].rstrip('/')
+    for pat in _ACTIVITY_ID_PATTERNS:
+        m = pat.search(base)
+        if m:
+            act = m.group(1)
+            return f"https://www.linkedin.com/feed/update/urn:li:activity:{act}"
+    return base
+
+def _compute_content_hash(author: str | None, text: str | None) -> str:
+    import hashlib
+    a = (author or '').strip().lower()
+    t = (text or '')
+    # Normalise whitespace & case
+    t = _re.sub(r"\s+", " ", t).strip().lower()
+    # Collapse long digit sequences to # to stabilise minor counters (views, likes)
+    t = _re.sub(r"\d{2,}", "#", t)
+    blob = f"{a}||{t}".encode('utf-8', errors='ignore')
+    return hashlib.sha1(blob).hexdigest()[:20]
+
+def _dedupe_repeated_author(name: str) -> str:
+    if not name:
+        return name
+    toks = name.split()
+    if len(toks) % 2 == 0 and len(toks) >= 4:
+        half = len(toks)//2
+        if toks[:half] == toks[half:]:
+            return " ".join(toks[:half])
+    # Remove network level markers like "3e et +"
+    name = _re.sub(r"\b\d+e?\s+et\s*\+\b", "", name, flags=re.IGNORECASE)
+    # Remove residual double spaces
+    name = _re.sub(r"\s+", " ", name).strip()
+    return name
+
+def _strip_follower_segment(value: str) -> str:
+    """Remove follower count fragments from an extracted string.
+
+    Examples:
+        "Entreprise • 32 474 abonnés" -> "Entreprise"
+        "32 474 abonnés" -> "" (will become Unknown for author)
+    """
+    if not value:
+        return value
+    raw = value.strip()
+    # Split on separators and remove pure follower tokens
+    seps = [" • ", " · ", " | ", " - ", " – ", " — "]
+    changed = False
+    for sep in seps:
+        if sep in raw:
+            parts = [p.strip() for p in raw.split(sep) if p.strip()]
+            filtered = [p for p in parts if not _FOLLOWER_FULL_PATTERN.match(p)]
+            if filtered and len(filtered) != len(parts):
+                raw = sep.join(filtered)
+                changed = True
+    # If entire string is a follower pattern -> blank
+    if _FOLLOWER_FULL_PATTERN.match(raw):
+        return ""
+    # Remove inline follower segment at end (no separator case)
+    if _FOLLOWER_SEG_PATTERN.search(raw):
+        # Only strip if pattern appears after some non-digit letters (avoid killing company names with digits inside intentionally)
+        raw = _FOLLOWER_SEG_PATTERN.sub("", raw).strip()
+    return raw.strip()
+
 
 async def _scroll_and_wait(page: Any, ctx: AppContext) -> None:
     """Perform one scroll iteration and wait for lazy content.
@@ -568,7 +697,21 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
     except Exception:
         pass
 
-    for step in range(ctx.settings.max_scroll_steps + 1):
+    # Adaptive scroll: decide dynamic max based on recent productivity
+    dynamic_max_scroll = ctx.settings.max_scroll_steps
+    try:
+        if ctx.settings.adaptive_scroll_enabled and hasattr(ctx, "_recent_density"):
+            dens = getattr(ctx, "_recent_density") or []
+            if dens:
+                avg = sum(dens)/len(dens)
+                # If average posts per scroll low -> increase depth, else reduce
+                if avg < 1.5:
+                    dynamic_max_scroll = min(ctx.settings.adaptive_scroll_max, ctx.settings.max_scroll_steps + 2)
+                elif avg > 3:
+                    dynamic_max_scroll = max(ctx.settings.adaptive_scroll_min, ctx.settings.max_scroll_steps - 1)
+    except Exception:
+        pass
+    for step in range(dynamic_max_scroll + 1):
         elements: list[Any] = []
         for selector in POST_CONTAINER_SELECTORS:
             try:
@@ -605,6 +748,9 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                     except Exception:
                         continue
 
+                # ---------------------------
+                # AUTHOR & COMPANY BLOCK
+                # ---------------------------
                 author = (await author_el.inner_text()) if author_el else "Unknown"
                 if author:
                     author = utils.normalize_whitespace(author).strip()
@@ -613,6 +759,10 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                             author = author.split(sep, 1)[0].strip()
                     if author.endswith("Premium"):
                         author = author.replace("Premium", "").strip()
+                # Strip follower count segments wrongly captured as author (company pages)
+                if author and _FOLLOWER_SEG_PATTERN.search(author.lower()):
+                    cleaned = _strip_follower_segment(author)
+                    author = cleaned or "Unknown"
                 # Fallbacks for author when direct selector fails or yields generic text
                 if not author or author.lower() == "unknown":
                     try:
@@ -661,21 +811,31 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                                 if len(derived_company) > 2 and not derived_company.lower().startswith("chez "):
                                     company_val = derived_company
                                 break
+                # Strip follower counts from extracted company blocks
+                if company_val and _FOLLOWER_SEG_PATTERN.search(company_val.lower()):
+                    company_val = _strip_follower_segment(company_val) or None
+                # Capture actor description (often contains role + company) for later derivation
+                actor_description: Optional[str] = None
+                try:
+                    desc_el = await el.query_selector("span.update-components-actor__description")
+                    if desc_el:
+                        raw_desc = await desc_el.inner_text()
+                        if raw_desc:
+                            actor_description = utils.normalize_whitespace(raw_desc).strip()
+                except Exception:
+                    actor_description = None
+
                 # If still no company, try to parse from actor description/body using patterns like '@ Company' or 'chez Company' or ' at Company'
                 if not company_val:
-                    try:
-                        desc_el = await el.query_selector("span.update-components-actor__description")
-                        desc_txt = utils.normalize_whitespace(await desc_el.inner_text()) if desc_el else ""
-                    except Exception:
-                        desc_txt = ""
                     candidates = []
-                    if desc_txt:
-                        candidates.append(desc_txt)
-                    # text_norm is available after text extraction, but we can compute it now
-                    text_raw = (await text_el.inner_text()) if text_el else ""
-                    text_norm = utils.normalize_whitespace(text_raw)
-                    if text_norm:
-                        candidates.append(text_norm)
+                    if actor_description:
+                        candidates.append(actor_description)
+                    # text_norm available after text extraction below; we defer adding it until computed
+                text_raw = (await text_el.inner_text()) if text_el else ""
+                text_norm = utils.normalize_whitespace(text_raw)
+                if not company_val and text_norm:
+                    candidates.append(text_norm)
+                if not company_val and candidates:
                     comp = None
                     for blob in candidates:
                         for marker in ["@ ", "chez ", " at "]:
@@ -691,8 +851,6 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                             break
                     if comp:
                         company_val = comp
-                text_raw = (await text_el.inner_text()) if text_el else ""
-                text_norm = utils.normalize_whitespace(text_raw)
                 published_raw = (await date_el.get_attribute("datetime")) if date_el else None
                 published_iso = None
                 if published_raw:
@@ -780,16 +938,35 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                                 permalink_source = "constructed_activity_id"
                     except Exception:
                         pass
+                # 4. Last resort: scan inner HTML for any activity URN pattern if still missing
+                if not permalink:
+                    try:
+                        html_blob = await el.inner_html()
+                        if html_blob and "urn:li:activity:" in html_blob:
+                            import re as _re_local
+                            m_act = _re_local.search(r"urn:li:activity:(\d+)", html_blob)
+                            if m_act:
+                                activity_id = m_act.group(1)
+                                permalink = f"https://www.linkedin.com/feed/update/urn:li:activity:{activity_id}"
+                                permalink_source = "html_scan_activity_id"
+                    except Exception:
+                        pass
                 if permalink_source:
                     ctx.logger.debug("permalink_resolved", source=permalink_source)
                 if recruitment_score >= ctx.settings.recruitment_signal_threshold:
                     SCRAPE_RECRUITMENT_POSTS.inc()
+                # Normalize permalink (remove trailing slash) to avoid duplicate logical posts
+                if permalink:
+                    permalink = _canonicalize_permalink(permalink)
                 final_id = utils.make_post_id(permalink) if permalink else provisional_pid
+                # Final author cleanup (after potential permalink resolution for stability)
+                if author:
+                    author = _dedupe_repeated_author(author)
                 post = Post(
                     id=final_id,
                     keyword=keyword,
                     author=author,
-                    author_profile=None,
+                    author_profile=actor_description,
                     company=company_val,
                     text=text_norm,
                     language=language,
@@ -797,7 +974,7 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                     collected_at=datetime.now(timezone.utc).isoformat(),
                     # scores removed
                     permalink=permalink,
-                    raw={"published_raw": published_raw},
+                    raw={"published_raw": published_raw, "recruitment_threshold": ctx.settings.recruitment_signal_threshold},
                 )
                 # Enforce strict filters: language FR, recruitment intent, author/permalink presence
                 keep = True
@@ -821,10 +998,22 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
             # No growth after scroll beyond target
             break
         last_count = len(posts)
-        if step < ctx.settings.max_scroll_steps:
+        if step < dynamic_max_scroll:
             await _scroll_and_wait(page, ctx)
     if len(posts) < ctx.settings.min_posts_target:
         SCRAPE_EXTRACTION_INCOMPLETE.inc()
+    # Update moving density (posts per scroll step) for adaptive tuning
+    try:
+        if ctx.settings.adaptive_scroll_enabled:
+            dens_list = getattr(ctx, "_recent_density", [])
+            scrolls = max(1, min(dynamic_max_scroll, step + 1))
+            dens_list.append(len(posts)/scrolls)
+            win = ctx.settings.adaptive_scroll_window
+            if len(dens_list) > win:
+                dens_list = dens_list[-win:]
+            setattr(ctx, "_recent_density", dens_list)
+    except Exception:
+        pass
     return posts
 
 
@@ -964,12 +1153,15 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
             deduped: list[Post] = []
             seen_keys: set[str] = set()
             for p in all_new:
+                # Canonical permalink key first
                 if p.permalink:
-                    key = f"perma|{p.permalink}"
+                    key = f"perma|{_canonicalize_permalink(p.permalink)}"
                 elif p.published_at and p.author:
                     key = f"authdate|{p.author}|{p.published_at}"
                 else:
-                    key = f"authtext|{p.author}|{p.text[:80]}"
+                    # Use stable content hash (same logic as storage) to reduce dupes when date missing
+                    ch = _compute_content_hash(p.author, p.text)
+                    key = f"authtext|{p.author}|{ch}"
                 if key not in seen_keys:
                     seen_keys.add(key)
                     deduped.append(p)
@@ -982,6 +1174,18 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
 
         SCRAPE_JOBS_TOTAL.labels(status="success").inc()
         SCRAPE_POSTS_EXTRACTED.inc(len(all_new))
+        # -----------------------------
+        # Daily quota tracking logic
+        # -----------------------------
+        try:
+            from datetime import date
+            today = date.today().isoformat()
+            if ctx.daily_post_date != today:
+                ctx.daily_post_date = today
+                ctx.daily_post_count = 0
+            ctx.daily_post_count += len(all_new)
+        except Exception:
+            pass
         await update_meta(ctx, len(all_new))
         await update_meta_job_stats(ctx, len(all_new), unknown_count)
         if broadcast and EventType:  # best-effort SSE
@@ -991,6 +1195,20 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                     "posts": len(all_new),
                     "unknown_authors": unknown_count,
                 })
+                # Quota progression event
+                try:
+                    target = ctx.settings.daily_post_target
+                    soft = getattr(ctx.settings, 'daily_post_soft_target', max(1, int(target*0.8)))
+                    collected = getattr(ctx, 'daily_post_count', 0)
+                    await broadcast({
+                        "type": EventType.QUOTA,
+                        "collected": collected,
+                        "soft": soft,
+                        "target": target,
+                        "mode": "cooldown" if collected >= target else ("accelerated" if collected < soft else "normal"),
+                    })
+                except Exception:
+                    pass
             except Exception:
                 pass
         return len(all_new)
@@ -1043,6 +1261,44 @@ async def worker_loop() -> None:
     ctx = await get_context()
     logger = ctx.logger.bind(component="worker")
     logger.info("worker_started")
+    # Risk mitigation state
+    if not hasattr(ctx, "_risk_auth_suspect"):
+        setattr(ctx, "_risk_auth_suspect", 0)
+    if not hasattr(ctx, "_risk_empty_runs"):
+        setattr(ctx, "_risk_empty_runs", 0)
+
+    async def _post_cycle_risk_adjust(last_new: int, auth_suspect: bool):
+        try:
+            if auth_suspect:
+                ctx._risk_auth_suspect += 1  # type: ignore[attr-defined]
+            else:
+                ctx._risk_auth_suspect = max(0, ctx._risk_auth_suspect - 1)  # type: ignore[attr-defined]
+            if last_new == 0:
+                ctx._risk_empty_runs += 1  # type: ignore[attr-defined]
+            else:
+                ctx._risk_empty_runs = max(0, ctx._risk_empty_runs - 1)  # type: ignore[attr-defined]
+            # If thresholds exceeded -> cooldown pause
+            if (ctx._risk_auth_suspect >= ctx.settings.risk_auth_suspect_threshold or  # type: ignore[attr-defined]
+                ctx._risk_empty_runs >= ctx.settings.risk_empty_keywords_threshold):  # type: ignore[attr-defined]
+                import random
+                cooldown = random.randint(ctx.settings.risk_cooldown_min_seconds, ctx.settings.risk_cooldown_max_seconds)
+                logger.warning("risk_cooldown", seconds=cooldown, auth_suspect=ctx._risk_auth_suspect, empty_runs=ctx._risk_empty_runs)
+                # Broadcast risk cooldown event (non-blocking)
+                if broadcast and EventType:
+                    try:
+                        await broadcast({"type": EventType.RISK_COOLDOWN, "seconds": cooldown, "auth_suspect": ctx._risk_auth_suspect, "empty_runs": ctx._risk_empty_runs})  # type: ignore[arg-type]
+                    except Exception:
+                        pass
+                await asyncio.sleep(cooldown)
+        except Exception:
+            pass
+
+    def _recent_auth_suspect_flag() -> bool:
+        # Heuristic: if auth_suspect counter >0 treat as signal for now
+        try:
+            return getattr(ctx, "_risk_auth_suspect", 0) > 0
+        except Exception:
+            return False
 
     # If no redis available, single-run mode over configured keywords.
     if not ctx.redis:
@@ -1059,6 +1315,14 @@ async def worker_loop() -> None:
                     continue
                 local_hour = datetime.datetime.now().hour
                 in_active = ctx.settings.human_active_hours_start <= local_hour < ctx.settings.human_active_hours_end
+                # Soft reset daily quota at day boundary
+                try:
+                    today = datetime.date.today().isoformat()
+                    if ctx.daily_post_date != today:
+                        ctx.daily_post_date = today
+                        ctx.daily_post_count = 0
+                except Exception:
+                    pass
                 # run a cycle
                 async with run_with_lock(ctx):
                     try:
@@ -1080,13 +1344,41 @@ async def worker_loop() -> None:
                     await asyncio.sleep(extra)
                 # decide next pause
                 if in_active:
-                    # short random pause between cycles
-                    pause = random.randint(max(45, ctx.settings.human_min_cycle_pause_seconds), max(180, ctx.settings.human_max_cycle_pause_seconds))
-                    # occasionally take a longer break (like a meeting)
-                    if random.random() < ctx.settings.human_long_break_probability:
-                        pause = random.randint(ctx.settings.human_long_break_min_seconds, ctx.settings.human_long_break_max_seconds)
-                    logger.debug("human_pause", seconds=pause)
-                    await asyncio.sleep(pause)
+                    # Adaptive pacing relative to daily target within remaining active window
+                    try:
+                        target = ctx.settings.daily_post_target
+                        soft_target = getattr(ctx.settings, 'daily_post_soft_target', max(1, int(target*0.8)))
+                        collected = getattr(ctx, 'daily_post_count', 0)
+                        now = datetime.datetime.now()
+                        # Remaining active minutes today
+                        end_hour = ctx.settings.human_active_hours_end
+                        remaining_minutes = max(1, (end_hour - now.hour - (1 if now.minute>0 else 0)) * 60 + (60 - now.minute)) if now.hour < end_hour else 1
+                        remaining_needed = max(0, target - collected)
+                        # If already met target -> elongate pauses significantly (cooldown mode)
+                        if remaining_needed <= 0:
+                            pause = random.randint(900, 1500)  # 15–25 min
+                        elif collected < soft_target:
+                            # Below soft threshold: accelerate (shorter pauses)
+                            pause = random.randint(120, 300)
+                        else:
+                            # Desired cycles left = estimate posts per cycle (~avg) safeguard default 8
+                            avg_posts = max(4, min(20, int(collected / max(1, len(window))) if window else 8))
+                            cycles_needed = max(1, int(remaining_needed / avg_posts))
+                            # Spread cycles across remaining time (convert minutes to seconds)
+                            ideal_spacing = int((remaining_minutes * 60) / cycles_needed)
+                            # Clamp spacing bounds (anti-ban jitter integrated)
+                            base_min = max(60, ctx.settings.human_min_cycle_pause_seconds)
+                            base_max = max(240, ctx.settings.human_max_cycle_pause_seconds)
+                            # If we are behind (remaining_needed big vs time), reduce spacing; if ahead, increase
+                            pause = int(min(max(ideal_spacing + random.randint(-30, 45), base_min), max(base_max, ideal_spacing * 1.5)))
+                            # Random long break probability preserved when not behind schedule
+                            if remaining_needed < target * 0.4 and random.random() < ctx.settings.human_long_break_probability:
+                                pause = random.randint(ctx.settings.human_long_break_min_seconds, ctx.settings.human_long_break_max_seconds)
+                        logger.debug("adaptive_human_pause", seconds=pause, collected=collected, target=target, remaining_needed=remaining_needed)
+                        await asyncio.sleep(pause)
+                    except Exception:
+                        pause = random.randint(max(45, ctx.settings.human_min_cycle_pause_seconds), max(180, ctx.settings.human_max_cycle_pause_seconds))
+                        await asyncio.sleep(pause)
                 else:
                     # outside active hours: long cool-downs
                     if ctx.settings.human_night_mode:
@@ -1105,15 +1397,43 @@ async def worker_loop() -> None:
                             try:
                                 new = await process_job(ctx.settings.keywords, ctx)
                                 logger.info("autonomous_cycle_complete", new=new)
+                                await _post_cycle_risk_adjust(new, auth_suspect=False)
                             except Exception as exc:  # pragma: no cover
                                 logger.error("autonomous_cycle_failed", error=str(exc))
                     else:
                         logger.info("scraping_disabled_wait")
-                    await asyncio.sleep(ctx.settings.autonomous_worker_interval_seconds)
+                    # Adaptive interval shrink if far from daily target during active hours window 9-18 by default
+                    try:
+                        import datetime as _dt, random
+                        now = _dt.datetime.now()
+                        target = ctx.settings.daily_post_target
+                        soft_target = getattr(ctx.settings, 'daily_post_soft_target', max(1, int(target*0.8)))
+                        collected = getattr(ctx, 'daily_post_count', 0)
+                        active_start, active_end = 9, 18
+                        base_interval = ctx.settings.autonomous_worker_interval_seconds
+                        if active_start <= now.hour < active_end:
+                            remaining = max(1, target - collected)
+                            hours_left = max(0.25, active_end - now.hour - now.minute/60.0)
+                            # posts/hour needed
+                            pph_needed = remaining / hours_left if hours_left > 0 else remaining
+                            # Rough per-cycle yield guess (8) to derive desired interval
+                            est_per_cycle = 8
+                            if collected < soft_target:
+                                # Force more frequent cycles early in the day until soft target reached
+                                desired_interval = 300
+                            else:
+                                desired_interval = int(min(base_interval, max(300, (est_per_cycle / max(1, pph_needed)) * 3600))) if remaining > 0 else int(base_interval * random.uniform(1.2, 1.8))
+                            sleep_next = max(180, min(base_interval, desired_interval))
+                        else:
+                            sleep_next = int(base_interval * 1.5)
+                    except Exception:
+                        sleep_next = ctx.settings.autonomous_worker_interval_seconds
+                    await asyncio.sleep(sleep_next)
             else:
                 if ctx.settings.scraping_enabled:
                     async with run_with_lock(ctx):
-                        await process_job(ctx.settings.keywords, ctx)
+                        new = await process_job(ctx.settings.keywords, ctx)
+                        await _post_cycle_risk_adjust(new, auth_suspect=False)
                 else:
                     logger.info("scraping_disabled")
         return
@@ -1142,8 +1462,13 @@ async def worker_loop() -> None:
             continue
         job = await pop_job(ctx)
         if not job:
-            # Idle wait
-            await asyncio.sleep(ctx.settings.job_poll_interval)
+            # Idle wait with human jitter
+            try:
+                import random
+                jitter = random.randint(ctx.settings.human_jitter_min_ms, ctx.settings.human_jitter_max_ms)/1000.0
+            except Exception:
+                jitter = ctx.settings.job_poll_interval
+            await asyncio.sleep(max(jitter, ctx.settings.job_poll_interval))
             continue
         keywords = job.get("keywords") or ctx.settings.keywords
         if not isinstance(keywords, list):
@@ -1161,7 +1486,11 @@ async def worker_loop() -> None:
         active_tasks.add(t)
         t.add_done_callback(active_tasks.discard)
         # Small cooldown to avoid burst loops
-        await asyncio.sleep(1)
+        try:
+            import random
+            await asyncio.sleep(0.5 + random.random()*0.8)
+        except Exception:
+            await asyncio.sleep(1)
 
 
 # Entry point

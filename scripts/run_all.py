@@ -50,6 +50,8 @@ async def _run_server():
     await server.serve()
 
 async def main():
+    # Ensure the API does NOT spawn its own in-process autonomous worker; we supervise separately here.
+    os.environ.setdefault("INPROCESS_AUTONOMOUS", "0")
     # Run server and worker concurrently.
     server_task = asyncio.create_task(_run_server(), name="uvicorn_server")
     worker_task = asyncio.create_task(_supervise_worker(), name="scraper_worker_supervisor")

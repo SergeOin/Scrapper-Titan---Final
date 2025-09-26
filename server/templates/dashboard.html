@@ -5,7 +5,7 @@
   <title>LinkedIn Scraper - Dashboard</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif; margin: 1.5rem; background:#f7f9fb; color:#222; }
+  body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif; margin: 1.5rem; background:#f7f9fb; color:#222; }
     h1 { margin-top:0; font-size:1.4rem; }
     table { width:100%; border-collapse:collapse; margin-top:1rem; font-size:0.9rem; }
     th, td { padding:0.5rem 0.6rem; border-bottom:1px solid #ddd; vertical-align:top; }
@@ -302,10 +302,11 @@
               const eta = Math.max(interval - (data.last_run_age_seconds % interval), 1);
               const perMinPosts = (typeof data.last_job_posts === 'number' && data.last_job_posts >= 0) ? (data.last_job_posts * 60 / interval) : null;
               if (perMinPosts !== null) {
-                txt = `${base} · ~${perMinPosts.toFixed(1)} posts/min · prochain cycle dans ~${eta}s`;
+                // Simplified banner: show avg posts/min only
+                txt = `${base} · ~${perMinPosts.toFixed(1)} posts/min`;
               } else {
-                const perMin = (60 / interval).toFixed(2);
-                txt = `${base} · ~${perMin} cycles/min · prochain cycle dans ~${eta}s`;
+                // If no perMinPosts metric, keep base only (suppress cycles/min + countdown)
+                txt = base;
               }
             } else {
               // Active, no server-side interval -> keep guidance banner visible
@@ -399,7 +400,8 @@
           const dateVal = p.published_at || p.collected_at;
           let dateFmt = '';
           try { dateFmt = new Date(dateVal).toLocaleString('fr-FR',{dateStyle:'short', timeStyle:'short'});} catch(_) { dateFmt = dateVal||''; }
-          const permalink = p.permalink ? `<a href="${p.permalink}" target="_blank">ouvrir</a>` : '—';
+          const searchFallback = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent((txt||p.author||'').slice(0,80))}`;
+          const permalink = p.permalink ? `<a href="${p.permalink}" target="_blank">ouvrir</a>` : `<a href="${searchFallback}" target="_blank" title="Lien direct introuvable - recherche approximative">rechercher</a>`;
           const status = p.status || '—';
           const metierSub = p.metier ? `<div class="meta-sub" title="Métier détecté">${String(p.metier||'').replace(/</g,'&lt;')}</div>` : '';
           const oppBadge = p.opportunity ? '<span class="pill pill-opp" title="Signal de recrutement détecté">Opportunité</span> ' : '';
@@ -443,6 +445,10 @@
               showToast(payload.scraping_enabled ? 'Scraper repris' : 'Scraper en pause', payload.scraping_enabled ? 'success' : 'info');
             }
           } catch(e){ /* ignore JSON parse */ }
+          if(payload && payload.type === 'purge'){
+            await refreshPosts();
+            showToast('Base purgée ('+ (payload.removed_sqlite||0) +' supprimés)', 'success');
+          }
         };
         es.onerror = ()=>{
           // Fallback: restart after delay (will rely on polling if fails repeatedly)
@@ -534,7 +540,15 @@
   <td>{% if post.company and (post.company|lower) != (post.author|lower) %}{{ post.company }}{% else %}—{% endif %}</td>
         <td class="wrap">{% if post.opportunity %}<span class="pill pill-opp" title="Signal de recrutement détecté">Opportunité</span> {% endif %}{{ post.text[:500] }}{% if post.text|length > 500 %}…{% endif %}</td>
   <td>{{ (post.published_at or post.collected_at)|fmt_date }}</td>
-  <td>{% if post.permalink %}<a href="{{ post.permalink }}" target="_blank">ouvrir</a>{% else %}—{% endif %}</td>
+          <td>
+            {% if post.permalink %}
+              <a href="{{ post.permalink }}" target="_blank">ouvrir</a>
+            {% else %}
+              {# Fallback: LinkedIn search by truncated text/author to let user click anyway #}
+              {% set seed = (post.text or post.author or '')[:80] %}
+              <a href="https://www.linkedin.com/search/results/content/?keywords={{ seed | urlencode }}" target="_blank" title="Lien direct introuvable - recherche approximative">rechercher</a>
+            {% endif %}
+          </td>
   <td>{{ post.status or '—' }}</td>
         <td class="actions-cell">
           <button type="button" class="icon-btn favorite-toggle{% if post.is_favorite %} active{% endif %}" data-id="{{ post._id }}" title="Marquer en favori">★</button>
