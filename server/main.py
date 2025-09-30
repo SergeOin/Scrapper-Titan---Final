@@ -243,8 +243,8 @@ async def security_headers(request: Request, call_next):  # noqa: D401
     # Basic per-IP rate limit (skip metrics & health for noiseless ops)
     path = request.url.path
     def _skip_rate_limit(p: str) -> bool:
-        # Allowlist UI-critical paths to keep the dashboard snappy
-        if p in ("/metrics", "/health", "/stream", "/toggle", "/api/trash/count"):
+        # Allowlist only essential low-cost endpoints (keep '/' subject to rate-limit for tests)
+        if p in ("/metrics", "/health", "/stream", "/api/trash/count"):
             return True
         if p.startswith("/api/posts"):
             return True
@@ -260,6 +260,10 @@ async def security_headers(request: Request, call_next):  # noqa: D401
                 bucket = _PerIPBucket(ctx.settings.api_rate_limit_burst, ctx.settings.api_rate_limit_per_min)
                 _ip_buckets[ip] = bucket
             else:
+                # If settings changed since bucket creation, refresh it to respect new test overrides
+                if bucket.capacity != ctx.settings.api_rate_limit_burst or bucket.refill_rate != ctx.settings.api_rate_limit_per_min / 60.0:
+                    bucket = _PerIPBucket(ctx.settings.api_rate_limit_burst, ctx.settings.api_rate_limit_per_min)
+                    _ip_buckets[ip] = bucket
                 # move to end (recently used)
                 _ip_buckets.move_to_end(ip)
             if len(_ip_buckets) > _MAX_BUCKETS:

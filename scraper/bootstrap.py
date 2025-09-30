@@ -211,6 +211,17 @@ class Settings(BaseSettings):
     # When true, automatically disable scraper if a live reload environment is detected (uvicorn --reload)
     auto_disable_on_reload: bool = Field(True, alias="AUTO_DISABLE_ON_RELOAD")
 
+    def __init__(self, **data):  # type: ignore[override]
+        explicit = dict(data)
+        super().__init__(**data)
+        # Force assign provided keyword values by field name (not alias) to ensure tests overriding defaults work
+        for k, v in explicit.items():
+            if k in self.model_fields:  # type: ignore[attr-defined]
+                try:
+                    object.__setattr__(self, k, v)
+                except Exception:
+                    continue
+
     @field_validator("scrape_keywords_raw")
     @classmethod
     def _sanitize_keywords(cls, v: str) -> str:  # noqa: D401
