@@ -671,6 +671,30 @@ def main():
     # Persist browser session & lightweight session store in user-writable data dir (avoid read-only install dir)
     os.environ.setdefault("STORAGE_STATE", str(user_base / "storage_state.json"))
     os.environ.setdefault("SESSION_STORE_PATH", str(user_base / "session_store.json"))
+    # Early diagnostics: record the resolved template search root candidates and storage state existence.
+    try:
+        tmpl_candidates = []
+        exe_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else ROOT
+        tmpl_candidates.append(exe_dir / "server" / "templates")
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            tmpl_candidates.append(Path(getattr(sys, "_MEIPASS")) / "server" / "templates")  # type: ignore[attr-defined]
+        tmpl_candidates.append(Path.cwd() / "server" / "templates")
+        existing = [str(p) for p in tmpl_candidates if p.exists()]
+        missing = [str(p) for p in tmpl_candidates if not p.exists()]
+        storage_state_path = os.environ.get("STORAGE_STATE")
+        session_store_path = os.environ.get("SESSION_STORE_PATH")
+        log.info(
+            "startup_paths",
+            templates_existing=existing,
+            templates_missing=missing,
+            storage_state=storage_state_path,
+            storage_state_exists=bool(storage_state_path and Path(storage_state_path).exists()),
+            session_store=session_store_path,
+            session_store_exists=bool(session_store_path and Path(session_store_path).exists()),
+            cwd=str(Path.cwd()),
+        )
+    except Exception:
+        pass
     # Launch Playwright dependency installation in background to avoid blocking UI (perceived faster startup)
     def _bg_playwright():  # pragma: no cover (background helper)
         try:
@@ -678,6 +702,13 @@ def main():
         except Exception:
             logging.getLogger("desktop").exception("playwright_background_install_failed")
     threading.Thread(target=_bg_playwright, name="playwright-install", daemon=True).start()
+
+    # Proactive: verify pywebview import early so we can log a clear diagnostic if packaging missed it
+    try:  # pragma: no cover - diagnostic only
+        import webview  # type: ignore
+        log.info("pywebview_import_ok version=%s", getattr(webview, '__version__', 'unknown'))
+    except Exception as e:  # noqa: F841
+        log.error("pywebview_import_failed early_diagnostic error=%s", e)
 
     exe_base = Path(sys.executable).parent if getattr(sys, "frozen", False) else _project_root()
     _install_webview2_if_missing(exe_base, user_base)
@@ -749,6 +780,29 @@ def main():
     srv = _start_server_thread(host, port)
     log.info("single_instance_lock_acquired port_lock=True fast_start_mode=True")
     _write_last_server_info(user_base, host, port)
+
+    # After server thread start: attempt to hit new debug endpoint for template verification (non-blocking)
+    try:  # pragma: no cover - best effort
+        import requests
+        def _check_templates():
+            for _ in range(30):  # up to ~7.5s
+                try:
+                    r = requests.get(f"http://{host}:{port}/debug/templates", timeout=0.6)
+                    if r.status_code == 200:
+                        j = r.json()
+                        log.info(
+                            "templates_debug_probe",
+                            template_dir=j.get("template_dir"),
+                            dir_exists=j.get("dir_exists"),
+                            files=j.get("files"),
+                        )
+                        return
+                except Exception:
+                    pass
+                time.sleep(0.25)
+        threading.Thread(target=_check_templates, name="tmpl-probe", daemon=True).start()
+    except Exception:
+        pass
 
     # Prepare immediate window with lightweight loading HTML; will switch to real dashboard when ready.
     title = APP_DISPLAY_NAME

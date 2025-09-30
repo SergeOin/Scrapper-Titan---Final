@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Form, Query, Body
 from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
+from jinja2 import TemplateNotFound  # runtime safeguard for missing templates
 from passlib.hash import bcrypt
 import asyncio
 import signal
@@ -95,6 +96,18 @@ except Exception:
     pass
 
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
+
+# Additional explicit diagnostics for key template presence (login/dashboard) so desktop logs
+# clearly show root cause instead of only raising TemplateNotFound during first request.
+try:  # pragma: no cover - diagnostics only
+    import logging as _logging2
+    for _name in ["login.html", "dashboard.html", "trash.html"]:
+        _exists = (_TEMPLATE_DIR / _name).exists()
+        _logging2.getLogger("server").info(
+            "template_probe", name=_name, exists=_exists, dir=str(_TEMPLATE_DIR)
+        )
+except Exception:
+    pass
 
 # Register custom Jinja filters
 def _fmt_date(value: Optional[str]):  # value expected ISO string
@@ -1668,15 +1681,75 @@ async def login_page(
     # even when redirected with a reason (e.g., session_expired).
     # This keeps the UI cleaner per request.
     message = None
-    return templates.TemplateResponse(
-        "login.html",
-        {
-            "request": request,
-            "session": st.details,
-            "valid": st.valid,
-            "reason_message": message,
-        },
-    )
+    # If the template directory does not contain login.html (packaging issue),
+    # provide a minimal inline fallback so the application remains usable and
+    # the user gets a clear indication of the missing resource instead of a 500.
+    try:
+        if not (_TEMPLATE_DIR / "login.html").exists():
+            from fastapi.responses import HTMLResponse
+            html = (
+                "<html><head><title>Login (fallback)</title><style>body{font-family:system-ui;padding:2rem;background:#111;color:#eee}</style></head><body>"
+                "<h2>Login template manquante</h2>"
+                f"<p>Dossier templates: <code>{_TEMPLATE_DIR}</code></p>"
+                "<p>Le fichier <code>login.html</code> est introuvable dans le paquet installé. Recréez / re-emballez l'application avec le dossier <code>server/templates</code>.</p>"
+                "<p>Statut de session actuel: <strong>" + ("valide" if st.valid else "invalide") + "</strong></p>"
+                "</body></html>"
+            )
+            return HTMLResponse(html)
+    except Exception:
+        pass
+    try:
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "session": st.details,
+                "valid": st.valid,
+                "reason_message": message,
+            },
+        )
+    except TemplateNotFound as exc:  # pragma: no cover - defensive path
+        # Final safety net: even if the existence pre-check mis‑fired we still serve a fallback page.
+        from fastapi.responses import HTMLResponse
+        try:
+            import logging as _logging3
+            _logging3.getLogger("server").error(
+                "login_template_missing_after_check", error=str(exc), template_dir=str(_TEMPLATE_DIR)
+            )
+            listing = []
+            if _TEMPLATE_DIR.exists():
+                listing = [p.name for p in _TEMPLATE_DIR.glob("*.html")]
+        except Exception:
+            listing = []  # type: ignore
+        html = (
+            "<html><head><title>Login (fallback 2)</title><style>body{font-family:system-ui;padding:2rem;background:#111;color:#eee}</style></head><body>"
+            "<h2>Template de connexion introuvable (post-exception)</h2>"
+            f"<p>Dossier templates résolu: <code>{_TEMPLATE_DIR}</code></p>"
+            f"<p>Fichiers présents: <code>{', '.join(listing) or 'aucun'}</code></p>"
+            "<p>Veuillez réinstaller ou reconstruire l'application. Cette page est un repli.</p>"
+            f"<p>Statut session actuel: <strong>{'valide' if st.valid else 'invalide'}</strong></p>"
+            "</body></html>"
+        )
+        return HTMLResponse(html, status_code=200)
+
+
+@router.get("/debug/templates")
+async def debug_templates():  # pragma: no cover - diagnostic endpoint
+    """Return diagnostic information about the active Jinja2 template directory.
+
+    Provides: chosen directory, existence, listing of .html files (first 50), and cwd.
+    Useful to confirm packaging integrity on end‑user machines.
+    """
+    try:
+        files = sorted([p.name for p in _TEMPLATE_DIR.glob("*.html")])[:50]
+    except Exception:
+        files = []  # type: ignore
+    return {
+        "template_dir": str(_TEMPLATE_DIR),
+        "dir_exists": _TEMPLATE_DIR.exists(),
+        "files": files,
+        "cwd": str(Path.cwd()),
+    }
 
 
 @router.get("/api/session/status")
