@@ -155,6 +155,13 @@ async def process_keywords_single_session(keywords: list[str], ctx: AppContext) 
                 pass
     except NotImplementedError:
         logger.error("playwright_subprocess_unsupported", hint="Relancer sans reload: python scripts/run_server.py")
+        try:
+            # Switch to mock mode dynamically so autonomous loop can still function
+            if hasattr(ctx.settings, "playwright_mock_mode"):
+                setattr(ctx.settings, "playwright_mock_mode", True)
+            logger.warning("fallback_mock_mode_enabled")
+        except Exception:
+            pass
         return []
     return results
 
@@ -256,6 +263,12 @@ async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> 
                         await browser.close()
         except NotImplementedError:
             logger.error("playwright_subprocess_unsupported", hint="Relancer sans reload: python scripts/run_server.py")
+            try:
+                if hasattr(ctx.settings, "playwright_mock_mode"):
+                    setattr(ctx.settings, "playwright_mock_mode", True)
+                logger.warning("fallback_mock_mode_enabled")
+            except Exception:
+                pass
             break
         logger.info("batch_complete", batch=batch)
     return results
@@ -799,19 +812,26 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                                 author = utils.normalize_whitespace(txt).strip()
                     except Exception:
                         pass
-                # Heuristic: if no company identified via selectors, attempt to derive from author string patterns ("Nom • Entreprise" or "Nom - Entreprise")
+                # Heuristic: if no company identified via selectors, attempt to derive from author string patterns
+                # Patterns we encounter: "Nom • Rôle chez Entreprise", "Nom - Entreprise", "Nom | Entreprise"
                 if not company_val and author and author != "Unknown":
                     for sep in ["•", "-", "|", "·"]:
                         if sep in author:
                             parts = [p.strip() for p in author.split(sep) if p.strip()]
+                            # Remove trivial role-like suffixes (e.g. 'LL.M', 'PhD') before taking last
                             if len(parts) >= 2:
-                                # Assume first part is person name, last part company label
-                                # Keep full author as original; set company separately
                                 derived_company = parts[-1]
-                                # Avoid setting company if obviously a role rather than org (simple length/keyword heuristic)
-                                if len(derived_company) > 2 and not derived_company.lower().startswith("chez "):
+                                # Reject if identical to (cleaned) author name first token(s)
+                                base_name = parts[0].lower()
+                                if derived_company.lower() == base_name:
+                                    continue
+                                role_markers = ("juriste","avocat","counsel","lawyer","associate","stagiaire","intern","paralegal","legal","notaire")
+                                # If derived segment is just a role marker, skip
+                                if any(derived_company.lower().startswith(rm) for rm in role_markers):
+                                    continue
+                                if 2 < len(derived_company) <= 80 and not derived_company.lower().startswith("chez "):
                                     company_val = derived_company
-                                break
+                                    break
                 # Strip follower counts from extracted company blocks
                 if company_val and _FOLLOWER_SEG_PATTERN.search(company_val.lower()):
                     company_val = _strip_follower_segment(company_val) or None
@@ -839,9 +859,11 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                 if not company_val and candidates:
                     comp = None
                     for blob in candidates:
-                        for marker in ["@ ", "chez ", " at "]:
-                            if marker in blob:
-                                tail = blob.split(marker, 1)[1].strip()
+                        # Normalize blob for parsing
+                        blob_clean = blob.replace(" at ", " chez ")
+                        for marker in ["@ ", "chez "]:
+                            if marker in blob_clean:
+                                tail = blob_clean.split(marker, 1)[1].strip()
                                 for stop in [" |", " -", ",", " •", "  "]:
                                     if stop in tail:
                                         tail = tail.split(stop, 1)[0].strip()
@@ -851,7 +873,9 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                         if comp:
                             break
                     if comp:
-                        company_val = comp
+                        # Avoid author duplication
+                        if not author or comp.lower() != author.lower():
+                            company_val = comp
                 published_raw = (await date_el.get_attribute("datetime")) if date_el else None
                 published_iso = None
                 if published_raw:
@@ -983,6 +1007,14 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                 try:
                     if ctx.settings.filter_language_strict and language.lower() != (ctx.settings.default_lang or "fr").lower():
                         keep = False; reject_reason = "language"
+                    # Domain filter: require at least one legal keyword when enabled
+                    if keep and getattr(ctx.settings, 'filter_legal_domain_only', False):
+                        tl = (text_norm or "").lower()
+                        legal_markers = (
+                            "juriste","avocat","legal","counsel","paralegal","notaire","droit","fiscal","conformité","compliance","secrétaire général","secretaire general","contentieux","litige","corporate law","droit des affaires"
+                        )
+                        if not any(m in tl for m in legal_markers):
+                            keep = False; reject_reason = reject_reason or "non_domain"
                     if ctx.settings.filter_recruitment_only and recruitment_score < ctx.settings.recruitment_signal_threshold:
                         if keep: keep = False; reject_reason = reject_reason or "recruitment"
                     if ctx.settings.filter_require_author_and_permalink and (not post.author or post.author.lower() == "unknown" or not post.permalink):
@@ -1009,6 +1041,9 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                 except Exception:
                     pass
                 if keep:
+                    # Last sanitation: if company is identical to author, drop company to allow later normalization to fill
+                    if post.company and post.author and post.company.lower() == post.author.lower():
+                        post.company = None
                     posts.append(post)
                 else:
                     try:

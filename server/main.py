@@ -89,6 +89,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
             async def _periodic():
                 logger = ctx.logger.bind(component="inprocess_worker")
                 logger.info("inprocess_autonomous_started", interval=interval, mode=("no_redis" if ctx.redis is None else "env_opt_in"))
+                try:
+                    setattr(ctx, "_autonomous_worker_active", True)
+                except Exception:
+                    pass
                 while True:
                     try:
                         if ctx.settings.scraping_enabled:
@@ -202,6 +206,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
             bg_task.cancel()
             with contextlib.suppress(Exception):
                 await bg_task
+            try:
+                setattr(ctx, "_autonomous_worker_active", False)
+            except Exception:
+                pass
         if norm_task:
             norm_task.cancel()
             with contextlib.suppress(Exception):
@@ -214,10 +222,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
 
 app = FastAPI(title="LinkedIn Scraper Dashboard", version="0.1.0", lifespan=lifespan)
 
-# On Windows, ensure asyncio subprocess support by using the Selector event loop policy
+# On Windows allow selecting loop implementation; Selector loop tends to be more
+# stable for Playwright subprocess spawning under reload. Use WIN_LOOP env var
+# to override (values: 'selector' (default), 'proactor').
 if sys.platform.startswith("win"):
+    import os as _os
+    desired = _os.environ.get("WIN_LOOP", "selector").lower()
     try:
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        if desired.startswith("pro"):
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        else:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     except Exception:
         pass
 

@@ -158,6 +158,8 @@ class Settings(BaseSettings):
     filter_recruitment_only: bool = Field(True, alias="FILTER_RECRUITMENT_ONLY")
     # If true, discard posts missing author or permalink (quality gate)
     filter_require_author_and_permalink: bool = Field(True, alias="FILTER_REQUIRE_AUTHOR_AND_PERMALINK")
+    # Domain filtering (e.g., ensure post text contains at least one legal keyword)
+    filter_legal_domain_only: bool = Field(False, alias="FILTER_LEGAL_DOMAIN_ONLY")
     # Batch & resilience settings
     keywords_session_batch_size: int = Field(8, alias="KEYWORDS_SESSION_BATCH_SIZE")
     adaptive_pause_every: int = Field(0, alias="ADAPTIVE_PAUSE_EVERY")  # 0 = disabled

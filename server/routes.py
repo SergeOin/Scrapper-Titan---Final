@@ -1369,6 +1369,10 @@ async def health(ctx=Depends(get_auth_context)):
             data["queue_depth"] = None
     # Autonomous worker indicator
     data["autonomous_worker"] = ctx.settings.autonomous_worker_interval_seconds > 0
+    try:
+        data["autonomous_worker_active"] = bool(getattr(ctx, "_autonomous_worker_active", False))
+    except Exception:
+        data["autonomous_worker_active"] = False
     # Disabled flag propagated
     try:
         data["disabled_flag"] = bool(getattr(ctx.settings, 'disable_scraper', False))
