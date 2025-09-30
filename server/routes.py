@@ -1369,6 +1369,20 @@ async def health(ctx=Depends(get_auth_context)):
             data["queue_depth"] = None
     # Autonomous worker indicator
     data["autonomous_worker"] = ctx.settings.autonomous_worker_interval_seconds > 0
+    # Disabled flag propagated
+    try:
+        data["disabled_flag"] = bool(getattr(ctx.settings, 'disable_scraper', False))
+    except Exception:
+        data["disabled_flag"] = False
+    # Playwright availability shallow check (only if not disabled)
+    try:
+        if not data.get("disabled_flag"):
+            from playwright.async_api import async_playwright  # type: ignore
+            data["playwright_available"] = True
+        else:
+            data["playwright_available"] = False
+    except Exception:
+        data["playwright_available"] = False
     # Quota progression (in-memory)
     try:
         target = ctx.settings.daily_post_target
@@ -1395,6 +1409,81 @@ async def health(ctx=Depends(get_auth_context)):
         except Exception:
             pass
     return data
+
+
+@router.post("/api/admin/normalize_companies")
+async def admin_normalize_companies(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Manual trigger for company normalization (SQLite only).
+    Returns number of rows updated in this invocation.
+    """
+    import sqlite3, json, re
+    from pathlib import Path
+    if not ctx.settings.sqlite_path or not Path(ctx.settings.sqlite_path).exists():
+        raise HTTPException(status_code=400, detail="SQLite indisponible")
+    conn = sqlite3.connect(ctx.settings.sqlite_path)
+    conn.row_factory = sqlite3.Row
+    updated = 0; scanned = 0
+    # Lightweight derivation (reuse simplified subset identical to background job)
+    CAPITAL_RE = re.compile(r"(?:(?:[A-Z][A-Za-z&\-]{1,}\s){0,3}[A-Z][A-Za-z&\-]{1,})")
+    EXCLUDE = {"freelance","consultant","independant","indépendant","recruteur"}
+    def derive(author: str, company: str|None, profile: str|None, text: str|None):
+        try:
+            if company and company.strip() and company.strip().lower() != author.strip().lower():
+                return company
+            cand_blocks = []
+            if profile and profile.strip().startswith('{'):
+                try:
+                    pobj = json.loads(profile)
+                    for k in ("company","organization","org","headline","subtitle","occupation","title"):
+                        v = pobj.get(k)
+                        if isinstance(v,str): cand_blocks.append(v)
+                except Exception: pass
+            if text: cand_blocks.append(text[:240])
+            out_candidates = []
+            for raw in cand_blocks:
+                if not raw: continue
+                low = raw.lower()
+                for marker in ["chez "," at "," @"]:
+                    if marker in low:
+                        seg = raw[low.find(marker)+len(marker):]
+                        out_candidates.append(seg)
+                for part in re.split(r"\s[|·•-]\s|,", raw):
+                    out_candidates.append(part)
+                for m in CAPITAL_RE.findall(raw):
+                    out_candidates.append(m)
+            cleaned = []
+            for c in out_candidates:
+                c2 = c.strip().strip('-–|·•').strip()
+                if not c2 or len(c2)<2: continue
+                if c2.lower()==author.lower(): continue
+                if c2.lower() in EXCLUDE: continue
+                if not any(ch.isalpha() for ch in c2): continue
+                if author.lower() in c2.lower(): continue
+                cleaned.append(c2)
+            for c3 in cleaned:
+                return c3[:120]
+        except Exception:
+            return company
+        return company
+    with conn:
+        try: conn.execute("ALTER TABLE posts ADD COLUMN company_norm TEXT")
+        except Exception: pass
+        try: conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_company_norm ON posts(company_norm)")
+        except Exception: pass
+        cur = conn.execute("SELECT id, author, company, company_norm, author_profile, text FROM posts")
+        for r in cur.fetchall():
+            scanned += 1
+            author = r["author"] or ""
+            if not author: continue
+            comp_norm = r["company_norm"]
+            comp = r["company"]
+            if comp_norm and comp_norm.strip():
+                continue
+            derived = derive(author, comp, r["author_profile"], r["text"])
+            if derived and (not comp or comp.strip().lower()==author.strip().lower() or derived!=comp):
+                conn.execute("UPDATE posts SET company_norm=? WHERE id=?", (derived, r["id"]))
+                updated += 1
+    return {"updated": updated, "scanned": scanned}
 
 
 @router.get("/api/daily_summary")

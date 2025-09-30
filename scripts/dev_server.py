@@ -7,6 +7,12 @@ Sets INPROCESS_AUTONOMOUS=0 to prevent background worker when using reload.
 """
 from __future__ import annotations
 import os, sys, asyncio
+from pathlib import Path
+
+# Ensure project root on sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 if sys.platform.startswith("win"):
     try:

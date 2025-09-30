@@ -273,6 +273,16 @@
         const r = await fetch('/health');
         if(!r.ok) throw new Error('HTTP '+r.status);
         const data = await r.json();
+        // Disabled reasons: hard flag or reload auto-disable (health can expose later if added)
+        if(data.scraping_enabled === false && data.disabled_flag){
+          setHint('Scraper désactivé (mode maintenance)', 'status-hint-wait');
+          setHintVisible(true);
+          return;
+        }
+        if(data.playwright_available === false){
+          setHint('Mode lecture seule: Playwright indisponible', 'status-hint-error');
+          setHintVisible(true);
+        }
         const btn = document.getElementById('toggleBtn');
         const enabled = data.scraping_enabled;
         const interval = Number(document.getElementById('statusContainer').dataset.interval || 0);

@@ -48,6 +48,7 @@ from .bootstrap import (
     SCRAPE_SCROLL_ITERATIONS,
     SCRAPE_EXTRACTION_INCOMPLETE,
     SCRAPE_RECRUITMENT_POSTS,
+    SCRAPE_FILTERED_POSTS,
     get_context,
 )
 from . import utils
@@ -979,36 +980,42 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                 )
                 # Enforce strict filters: language FR, recruitment intent, author/permalink presence
                 keep = True
+                reject_reason = None
                 try:
                     if ctx.settings.filter_language_strict and language.lower() != (ctx.settings.default_lang or "fr").lower():
-                        keep = False
+                        keep = False; reject_reason = "language"
                     if ctx.settings.filter_recruitment_only and recruitment_score < ctx.settings.recruitment_signal_threshold:
-                        keep = False
+                        if keep: keep = False; reject_reason = reject_reason or "recruitment"
                     if ctx.settings.filter_require_author_and_permalink and (not post.author or post.author.lower() == "unknown" or not post.permalink):
-                        keep = False
-                        # Exclude job-seeker / availability self-promotion posts
-                        if keep and getattr(ctx.settings, 'filter_exclude_job_seekers', True):
-                            tl = (text_norm or "").lower()
-                            job_markers = (
-                                "recherche d'emploi", "recherche d\u2019emploi", "cherche un stage", "cherche un emploi",
-                                "à la recherche d'une opportunité", "a la recherche d'une opportunité",
-                                "disponible immédiatement", "disponible immediatement", "open to work", "#opentowork",
-                                "je suis à la recherche", "je suis a la recherche", "contactez-moi pour", "merci de me contacter",
-                                "mobilité géographique", "mobilite geographique", "reconversion professionnelle"
-                            )
-                            if any(m in tl for m in job_markers):
-                                keep = False
-                        # France-only heuristic: if foreign cues present without FR locality markers
-                        if keep and getattr(ctx.settings, 'filter_france_only', True):
-                            tl = (text_norm or "").lower()
-                            fr_positive = ("france","paris","idf","ile-de-france","lyon","marseille","bordeaux","lille","toulouse","nice","nantes","rennes")
-                            foreign_negative = ("hiring in uk","remote us","canada","usa","australia","dubai","switzerland","swiss","belgium","belgique","luxembourg","portugal","espagne","spain","germany","deutschland","italy","singapore")
-                            if any(f in tl for f in foreign_negative) and not any(p in tl for p in fr_positive):
-                                keep = False
+                        if keep: keep = False; reject_reason = reject_reason or "missing_core_fields"
+                    # Exclude job-seeker / availability self-promotion posts
+                    if keep and getattr(ctx.settings, 'filter_exclude_job_seekers', True):
+                        tl = (text_norm or "").lower()
+                        job_markers = (
+                            "recherche d'emploi", "recherche d\u2019emploi", "cherche un stage", "cherche un emploi",
+                            "à la recherche d'une opportunité", "a la recherche d'une opportunité",
+                            "disponible immédiatement", "disponible immediatement", "open to work", "#opentowork",
+                            "je suis à la recherche", "je suis a la recherche", "contactez-moi pour", "merci de me contacter",
+                            "mobilité géographique", "mobilite geographique", "reconversion professionnelle"
+                        )
+                        if any(m in tl for m in job_markers):
+                            keep = False; reject_reason = reject_reason or "job_seeker"
+                    # France-only heuristic
+                    if keep and getattr(ctx.settings, 'filter_france_only', True):
+                        tl = (text_norm or "").lower()
+                        fr_positive = ("france","paris","idf","ile-de-france","lyon","marseille","bordeaux","lille","toulouse","nice","nantes","rennes")
+                        foreign_negative = ("hiring in uk","remote us","canada","usa","australia","dubai","switzerland","swiss","belgium","belgique","luxembourg","portugal","espagne","spain","germany","deutschland","italy","singapore")
+                        if any(f in tl for f in foreign_negative) and not any(p in tl for p in fr_positive):
+                            keep = False; reject_reason = reject_reason or "not_fr"
                 except Exception:
                     pass
                 if keep:
                     posts.append(post)
+                else:
+                    try:
+                        SCRAPE_FILTERED_POSTS.labels(reject_reason or "other").inc()
+                    except Exception:
+                        pass
             except Exception as exc:  # pragma: no cover
                 ctx.logger.warning("extract_post_failed", error=str(exc))
         # Stopping conditions

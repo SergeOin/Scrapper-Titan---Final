@@ -206,6 +206,10 @@ class Settings(BaseSettings):
     # Content filters: exclude job-seeker posts, enforce France locale
     filter_exclude_job_seekers: bool = Field(True, alias="FILTER_EXCLUDE_JOB_SEEKERS")
     filter_france_only: bool = Field(True, alias="FILTER_FRANCE_ONLY")
+    # Hard disable flag (dev reload, maintenance). If true we never start scraping even if runtime toggle tries to enable it.
+    disable_scraper: bool = Field(False, alias="DISABLE_SCRAPER")
+    # When true, automatically disable scraper if a live reload environment is detected (uvicorn --reload)
+    auto_disable_on_reload: bool = Field(True, alias="AUTO_DISABLE_ON_RELOAD")
 
     @field_validator("scrape_keywords_raw")
     @classmethod
@@ -366,6 +370,11 @@ SCRAPE_RECRUITMENT_POSTS = Counter(
     "scrape_recruitment_posts_total", "Posts classified as recruitment-related (above threshold)"
 )
 
+# Filter reasons metrics (post-level rejections before persistence)
+SCRAPE_FILTERED_POSTS = Counter(
+    "scrape_filtered_posts_total", "Posts filtered out before persistence", labelnames=("reason",)
+)
+
 
 # ------------------------------------------------------------
 # Context dataclass
@@ -503,6 +512,16 @@ async def bootstrap(force: bool = False) -> AppContext:
         configure_logging(settings.log_level, settings)
         logger = structlog.get_logger().bind(component="bootstrap")
 
+        # Auto-disable logic in dev reload context (avoid Playwright subprocess issues on Windows)
+        try:
+            if settings.auto_disable_on_reload and not settings.disable_scraper:
+                # Common env vars when using uvicorn --reload
+                if os.environ.get("UVICORN_RELOAD") or os.environ.get("RUN_MAIN") == "true":
+                    settings.disable_scraper = True  # type: ignore[attr-defined]
+                    logger.info("scraper_auto_disabled_reload_detected")
+        except Exception:
+            pass
+
         # Ensure directories
         for d in (settings.screenshot_dir, settings.trace_dir, Path(settings.csv_fallback_file).parent):
             try:
@@ -551,6 +570,7 @@ async def bootstrap(force: bool = False) -> AppContext:
             elapsed=f"{elapsed:.3f}s",
             keywords=settings.keywords,
             scraping_enabled=settings.scraping_enabled,
+            disabled_flag=settings.disable_scraper,
         )
         _context_singleton = ctx
         return ctx
