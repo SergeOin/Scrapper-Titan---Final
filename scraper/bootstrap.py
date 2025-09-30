@@ -201,6 +201,8 @@ class Settings(BaseSettings):
     quiet_startup: bool = Field(False, alias="QUIET_STARTUP")
     # Fast first cycle (desktop UX): temporarily lower scroll steps & posts per keyword on very first run
     fast_first_cycle: bool = Field(True, alias="FAST_FIRST_CYCLE")
+    # Company normalization background interval (seconds). 0 disables.
+    company_norm_interval_seconds: int = Field(0, alias="COMPANY_NORM_INTERVAL_SECONDS")
 
     @field_validator("scrape_keywords_raw")
     @classmethod

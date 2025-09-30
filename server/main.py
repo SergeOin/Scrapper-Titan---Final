@@ -66,6 +66,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
     else:
         ctx.logger.info("api_startup")
     bg_task: asyncio.Task | None = None
+    norm_task: asyncio.Task | None = None
     # In-process autonomous worker
     # Behavior:
     #  - If no Redis is configured, we always start the in-process worker so the dashboard alone is sufficient.
@@ -102,6 +103,87 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
             bg_task = asyncio.create_task(_periodic())
         else:
             ctx.logger.info("inprocess_autonomous_disabled_interval_zero")
+    # Periodic company normalization (SQLite only, opt-in via COMPANY_NORM_INTERVAL_SECONDS)
+    norm_interval = getattr(ctx.settings, "company_norm_interval_seconds", 0)
+    if norm_interval and norm_interval > 0 and ctx.settings.sqlite_path:
+        async def _company_norm_loop():
+            logger = ctx.logger.bind(component="company_norm")
+            logger.info("company_norm_started", interval=norm_interval)
+            import sqlite3, json, re
+            from pathlib import Path
+            CAPITAL_RE = re.compile(r"(?:(?:[A-Z][A-Za-z&\-]{1,}\s){0,3}[A-Z][A-Za-z&\-]{1,})")
+            EXCLUDE = {"freelance","consultant","independant","indépendant","recruteur"}
+            def derive(author: str, company: str|None, profile: str|None, text: str|None):
+                try:
+                    if company and company.strip() and company.strip().lower() != author.strip().lower():
+                        return company
+                    cand_blocks = []
+                    if profile and profile.strip().startswith('{'):
+                        try:
+                            pobj = json.loads(profile)
+                            for k in ("company","organization","org","headline","subtitle","occupation","title"):
+                                v = pobj.get(k)
+                                if isinstance(v,str): cand_blocks.append(v)
+                        except Exception: pass
+                    if text: cand_blocks.append(text[:240])
+                    out_candidates = []
+                    for raw in cand_blocks:
+                        if not raw: continue
+                        low = raw.lower()
+                        for marker in ["chez "," at "," @"]:
+                            if marker in low:
+                                seg = raw[low.find(marker)+len(marker):]
+                                out_candidates.append(seg)
+                        for part in re.split(r"\s[|·•-]\s|,", raw):
+                            out_candidates.append(part)
+                        # Regex capital patterns
+                        for m in CAPITAL_RE.findall(raw):
+                            out_candidates.append(m)
+                    cleaned = []
+                    for c in out_candidates:
+                        c2 = c.strip().strip('-–|·•').strip()
+                        if not c2 or len(c2)<2: continue
+                        if c2.lower()==author.lower(): continue
+                        if c2.lower() in EXCLUDE: continue
+                        if not any(ch.isalpha() for ch in c2): continue
+                        if author.lower() in c2.lower(): continue
+                        cleaned.append(c2)
+                    for c3 in cleaned:
+                        return c3[:120]
+                except Exception:
+                    return company
+                return company
+            async def _loop():
+                while True:
+                    try:
+                        sp = ctx.settings.sqlite_path
+                        if sp and Path(sp).exists():
+                            conn = sqlite3.connect(sp)
+                            conn.row_factory = sqlite3.Row
+                            with conn:
+                                try: conn.execute("ALTER TABLE posts ADD COLUMN company_norm TEXT")
+                                except Exception: pass
+                                cur = conn.execute("SELECT id, author, company, company_norm, author_profile, text FROM posts")
+                                upd = 0; scanned = 0
+                                for r in cur.fetchall():
+                                    scanned += 1
+                                    author = r["author"] or ""
+                                    if not author: continue
+                                    comp = r["company"]
+                                    comp_norm = r["company_norm"]
+                                    prof = r["author_profile"]
+                                    txt = r["text"]
+                                    if comp_norm and comp_norm.strip():
+                                        continue
+                                    derived = derive(author, comp, prof, txt)
+                                    if derived and (not comp or comp.strip().lower()==author.strip().lower() or derived!=comp):
+                                        conn.execute("UPDATE posts SET company_norm=? WHERE id=?", (derived, r["id"]))
+                                        upd += 1
+                            logger.info("company_norm_cycle", updated=upd, scanned=scanned)
+                    except Exception as exc:  # pragma: no cover
+                        logger.error("company_norm_error", error=str(exc))
+                    await asyncio.sleep(norm_interval)
+            norm_task = asyncio.create_task(_loop())
     try:
         yield
     except asyncio.CancelledError:  # graceful shutdown triggered
@@ -115,6 +197,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
             bg_task.cancel()
             with contextlib.suppress(Exception):
                 await bg_task
+        if norm_task:
+            norm_task.cancel()
+            with contextlib.suppress(Exception):
+                await norm_task
         if getattr(ctx.settings, "quiet_startup", False):
             ctx.logger.debug("api_shutdown")
         else:

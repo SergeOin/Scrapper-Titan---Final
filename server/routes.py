@@ -703,6 +703,11 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
                     # Derive company if missing or equal to author
                     try:
                         item["company"] = _derive_company(str(item.get("author") or ""), item.get("company"), item.get("author_profile"), item.get("text")) or item.get("company")
+                        # Provide company_norm (non-persistent here; persisted by background task)
+                        if not item.get("company_norm"):
+                            cn = _derive_company(str(item.get("author") or ""), item.get("company"), item.get("author_profile"), item.get("text"))
+                            if cn:
+                                item["company_norm"] = cn
                     except Exception:
                         pass
                     rows.append(item)

@@ -515,7 +515,10 @@
       <tr data-post-id="{{ post._id }}">
         <td><code>{{ post.keyword }}</code></td>
         <td>{{ post.author }}{% if post.metier %}<div class="meta-sub" title="Métier détecté">{{ post.metier }}</div>{% endif %}</td>
-  <td>{% if post.company and (post.company|lower) != (post.author|lower) %}{{ post.company }}{% else %}—{% endif %}</td>
+  <td>
+    {% set cc = post.company_norm or post.company %}
+    {% if cc and (cc|lower) != (post.author|lower) %}{{ cc }}{% else %}—{% endif %}
+  </td>
         <td class="wrap">{% if post.opportunity %}<span class="pill pill-opp" title="Signal de recrutement détecté">Opportunité</span> {% endif %}{{ post.text[:500] }}{% if post.text|length > 500 %}…{% endif %}</td>
   <td>{{ (post.published_at or post.collected_at)|fmt_date }}</td>
           <td>
