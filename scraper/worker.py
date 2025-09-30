@@ -124,36 +124,37 @@ async def process_keywords_single_session(keywords: list[str], ctx: AppContext) 
         raise RuntimeError("Playwright not installed.")
     logger = ctx.logger.bind(component="single_session")
     results: list[Post] = []
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=ctx.settings.playwright_headless_scrape)
-        # IMPORTANT: storage_state must be applied on a BrowserContext, not directly on a Page
-        context = await browser.new_context(
-            storage_state=ctx.settings.storage_state if os.path.exists(ctx.settings.storage_state) else None
-        )
-        page = await context.new_page()
-        # Ensure authentication before iterating keywords
-        await _ensure_authenticated(page, ctx, logger)
-        for idx, keyword in enumerate(keywords):
-            if idx > 0 and ctx.settings.per_keyword_delay_ms > 0:
-                await asyncio.sleep(ctx.settings.per_keyword_delay_ms / 1000.0)
-            if ctx.token_bucket:
-                await ctx.token_bucket.consume(1)
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=ctx.settings.playwright_headless_scrape)
+            context = await browser.new_context(
+                storage_state=ctx.settings.storage_state if os.path.exists(ctx.settings.storage_state) else None
+            )
+            page = await context.new_page()
+            await _ensure_authenticated(page, ctx, logger)
+            for idx, keyword in enumerate(keywords):
+                if idx > 0 and ctx.settings.per_keyword_delay_ms > 0:
+                    await asyncio.sleep(ctx.settings.per_keyword_delay_ms / 1000.0)
                 if ctx.token_bucket:
-                    SCRAPE_RATE_LIMIT_TOKENS.set(ctx.token_bucket.tokens)
+                    await ctx.token_bucket.consume(1)
+                    if ctx.token_bucket:
+                        SCRAPE_RATE_LIMIT_TOKENS.set(ctx.token_bucket.tokens)
+                try:
+                    search_url = f"https://www.linkedin.com/search/results/content/?keywords={keyword}"
+                    await page.goto(search_url, timeout=ctx.settings.navigation_timeout_ms)
+                    await page.wait_for_timeout(1500)
+                    posts = await extract_posts(page, keyword, ctx.settings.max_posts_per_keyword, ctx)
+                    logger.info("keyword_extracted", keyword=keyword, count=len(posts))
+                    results.extend(posts)
+                except Exception as exc:
+                    logger.warning("keyword_failed", keyword=keyword, error=str(exc))
             try:
-                search_url = f"https://www.linkedin.com/search/results/content/?keywords={keyword}"
-                await page.goto(search_url, timeout=ctx.settings.navigation_timeout_ms)
-                await page.wait_for_timeout(1500)
-                posts = await extract_posts(page, keyword, ctx.settings.max_posts_per_keyword, ctx)
-                logger.info("keyword_extracted", keyword=keyword, count=len(posts))
-                results.extend(posts)
-            except Exception as exc:
-                logger.warning("keyword_failed", keyword=keyword, error=str(exc))
-        # Close browser
-        try:
-            await browser.close()
-        except Exception:
-            pass
+                await browser.close()
+            except Exception:
+                pass
+    except NotImplementedError:
+        logger.error("playwright_subprocess_unsupported", hint="Relancer sans reload: python scripts/run_server.py")
+        return []
     return results
 
 # ------------------------------------------------------------
@@ -195,66 +196,66 @@ async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> 
     for batch_index in range(0, len(all_keywords), batch_size):
         batch = all_keywords[batch_index: batch_index + batch_size]
         logger.info("batch_start", batch_index=batch_index//batch_size + 1, size=len(batch))
-        async with async_playwright() as pw:
-            recovery = await _recover_browser(pw, ctx, logger)
-            if recovery is None:
-                logger.warning("skip_batch_recovery_failed", batch=batch)
-                continue
-            browser, page = recovery
-            try:
-                for idx, keyword in enumerate(batch):
-                    if ctx.settings.adaptive_pause_every > 0 and results and (len(results) // ctx.settings.max_posts_per_keyword) % ctx.settings.adaptive_pause_every == 0 and (len(results) // ctx.settings.max_posts_per_keyword) != 0:
-                        # Rough heuristic: each keyword contributes up to max_posts_per_keyword posts
-                        logger.info("adaptive_pause", seconds=ctx.settings.adaptive_pause_seconds)
-                        await asyncio.sleep(ctx.settings.adaptive_pause_seconds)
-                    if page.is_closed():
-                        logger.warning("page_closed_detected", action="attempt_recovery")
-                        rec = await _recover_browser(pw, ctx, logger)
-                        if rec is None:
-                            logger.error("recovery_failed_abort_keyword", keyword=keyword)
-                            break
-                        browser, page = rec
-                    if ctx.token_bucket:
-                        await ctx.token_bucket.consume(1)
+        try:
+            async with async_playwright() as pw:
+                recovery = await _recover_browser(pw, ctx, logger)
+                if recovery is None:
+                    logger.warning("skip_batch_recovery_failed", batch=batch)
+                    continue
+                browser, page = recovery
+                try:
+                    for idx, keyword in enumerate(batch):
+                        if ctx.settings.adaptive_pause_every > 0 and results and (len(results) // ctx.settings.max_posts_per_keyword) % ctx.settings.adaptive_pause_every == 0 and (len(results) // ctx.settings.max_posts_per_keyword) != 0:
+                            logger.info("adaptive_pause", seconds=ctx.settings.adaptive_pause_seconds)
+                            await asyncio.sleep(ctx.settings.adaptive_pause_seconds)
+                        if page.is_closed():
+                            logger.warning("page_closed_detected", action="attempt_recovery")
+                            rec = await _recover_browser(pw, ctx, logger)
+                            if rec is None:
+                                logger.error("recovery_failed_abort_keyword", keyword=keyword)
+                                break
+                            browser, page = rec
                         if ctx.token_bucket:
-                            SCRAPE_RATE_LIMIT_TOKENS.set(ctx.token_bucket.tokens)
-                    # Geo-bias the search to France to improve locality of results
-                    kw = keyword
-                    try:
-                        if ctx.settings.search_geo_hint:
-                            kw = f"{keyword} {ctx.settings.search_geo_hint}".strip()
-                    except Exception:
-                        pass
-                    search_url = f"https://www.linkedin.com/search/results/content/?keywords={kw}"
-                    ok = await _attempt_navigation(page, search_url, ctx, logger)
-                    if not ok:
-                        logger.warning("skip_keyword_navigation_failed", keyword=keyword)
-                        continue
-                    try:
-                        await page.wait_for_timeout(1200)
-                        posts = await extract_posts(page, keyword, ctx.settings.max_posts_per_keyword, ctx)
-                        logger.info("keyword_extracted", keyword=keyword, count=len(posts))
-                        results.extend(posts)
-                    except Exception as exc:
-                        logger.warning("keyword_processing_failed", keyword=keyword, error=str(exc))
-                        # Attempt screenshot for diagnostics
+                            await ctx.token_bucket.consume(1)
+                            if ctx.token_bucket:
+                                SCRAPE_RATE_LIMIT_TOKENS.set(ctx.token_bucket.tokens)
+                        kw = keyword
                         try:
-                            screenshot_path = Path(ctx.settings.screenshot_dir) / f"error_{keyword.replace(' ','_')}.png"
-                            await page.screenshot(path=str(screenshot_path))
-                            logger.info("keyword_error_screenshot", path=str(screenshot_path))
+                            if ctx.settings.search_geo_hint:
+                                kw = f"{keyword} {ctx.settings.search_geo_hint}".strip()
                         except Exception:
                             pass
-            finally:
-                # Diagnostic screenshot at end of batch
-                try:
-                    if not page.is_closed():
-                        end_shot = Path(ctx.settings.screenshot_dir) / f"batch_{batch_index//batch_size + 1}_end.png"
-                        await page.screenshot(path=str(end_shot))
-                        logger.info("batch_screenshot", path=str(end_shot))
-                except Exception:
-                    pass
-                with contextlib.suppress(Exception):
-                    await browser.close()
+                        search_url = f"https://www.linkedin.com/search/results/content/?keywords={kw}"
+                        ok = await _attempt_navigation(page, search_url, ctx, logger)
+                        if not ok:
+                            logger.warning("skip_keyword_navigation_failed", keyword=keyword)
+                            continue
+                        try:
+                            await page.wait_for_timeout(1200)
+                            posts = await extract_posts(page, keyword, ctx.settings.max_posts_per_keyword, ctx)
+                            logger.info("keyword_extracted", keyword=keyword, count=len(posts))
+                            results.extend(posts)
+                        except Exception as exc:
+                            logger.warning("keyword_processing_failed", keyword=keyword, error=str(exc))
+                            try:
+                                screenshot_path = Path(ctx.settings.screenshot_dir) / f"error_{keyword.replace(' ','_')}.png"
+                                await page.screenshot(path=str(screenshot_path))
+                                logger.info("keyword_error_screenshot", path=str(screenshot_path))
+                            except Exception:
+                                pass
+                finally:
+                    try:
+                        if not page.is_closed():
+                            end_shot = Path(ctx.settings.screenshot_dir) / f"batch_{batch_index//batch_size + 1}_end.png"
+                            await page.screenshot(path=str(end_shot))
+                            logger.info("batch_screenshot", path=str(end_shot))
+                    except Exception:
+                        pass
+                    with contextlib.suppress(Exception):
+                        await browser.close()
+        except NotImplementedError:
+            logger.error("playwright_subprocess_unsupported", hint="Relancer sans reload: python scripts/run_server.py")
+            break
         logger.info("batch_complete", batch=batch)
     return results
 
