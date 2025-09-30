@@ -412,17 +412,67 @@ async def require_auth(request: Request, ctx=Depends(get_auth_context)):
 # LinkedIn session requirement for protected views
 # ------------------------------------------------------------
 async def require_linkedin_session(ctx=Depends(get_auth_context)):
-    # En mode mock on autorise l'accès sans session LinkedIn réelle
+    """Ensure a valid LinkedIn session (li_at cookie) before serving protected views.
+
+    Behaviour changes:
+    - We ALWAYS compute session_status now (even in mock mode) for better diagnostics.
+    - If PLAYWRIGHT_MOCK_MODE is enabled we normally bypass the redirect (legacy behaviour),
+      but you can force enforcement by setting ENFORCE_LINKEDIN_SESSION=1.
+    """
+    import os as _os
+    from pathlib import Path as _P
+
+    # Resolve flags
+    mock_mode = False
     try:
-        if ctx.settings.playwright_mock_mode:  # type: ignore[attr-defined]
-            return
+        mock_mode = bool(getattr(ctx.settings, "playwright_mock_mode", False))  # type: ignore[attr-defined]
+    except Exception:
+        mock_mode = False
+    enforce_env = _os.getenv("ENFORCE_LINKEDIN_SESSION", "0").lower() in ("1", "true", "yes", "on")
+
+    st = await session_status(ctx)
+
+    # Structured diagnostic log (always emitted once per guarded request)
+    try:  # pragma: no cover - diagnostics
+        ctx.logger.info(
+            "session_gate_check",
+            storage_state=str(ctx.settings.storage_state),
+            exists=_P(ctx.settings.storage_state).exists(),
+            valid=st.valid,
+            details=st.details,
+            mock_mode=mock_mode,
+            enforce=enforce_env,
+        )
     except Exception:
         pass
-    st = await session_status(ctx)
-    if not st.valid:
-        # Pas authentifié : redirige vers login
+
+    # Decide enforcement
+    must_enforce = enforce_env or not mock_mode  # enforce if explicit OR not in mock mode
+    if not st.valid and must_enforce:
+        try:
+            ctx.logger.warning(
+                "session_gate_redirect_login",
+                reason="invalid_session",
+                details=st.details,
+                mock_mode=mock_mode,
+                enforce=enforce_env,
+            )
+        except Exception:
+            pass
         raise HTTPException(status_code=302, headers={"Location": "/login?reason=session_expired"})
-    return
+
+    # Otherwise we are allowed through (either valid or mock bypass)
+    try:
+        ctx.logger.info(
+            "session_gate_ok" if st.valid else "session_gate_mock_bypass",
+            has_li_at=st.details.get("has_li_at"),
+            cookies_count=st.details.get("cookies_count"),
+            mock_mode=mock_mode,
+            enforce=enforce_env,
+        )
+    except Exception:
+        pass
+    return  # explicit
 
 
 # ------------------------------------------------------------
