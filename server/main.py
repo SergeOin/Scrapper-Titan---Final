@@ -165,6 +165,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
                                 except Exception: pass
                                 cur = conn.execute("SELECT id, author, company, company_norm, author_profile, text FROM posts")
                                 upd = 0; scanned = 0
+                                # Ensure index on company_norm (idempotent)
+                                try:
+                                    conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_company_norm ON posts(company_norm)")
+                                except Exception:
+                                    pass
                                 for r in cur.fetchall():
                                     scanned += 1
                                     author = r["author"] or ""

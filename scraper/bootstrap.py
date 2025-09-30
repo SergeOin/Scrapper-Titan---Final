@@ -203,6 +203,9 @@ class Settings(BaseSettings):
     fast_first_cycle: bool = Field(True, alias="FAST_FIRST_CYCLE")
     # Company normalization background interval (seconds). 0 disables.
     company_norm_interval_seconds: int = Field(0, alias="COMPANY_NORM_INTERVAL_SECONDS")
+    # Content filters: exclude job-seeker posts, enforce France locale
+    filter_exclude_job_seekers: bool = Field(True, alias="FILTER_EXCLUDE_JOB_SEEKERS")
+    filter_france_only: bool = Field(True, alias="FILTER_FRANCE_ONLY")
 
     @field_validator("scrape_keywords_raw")
     @classmethod
