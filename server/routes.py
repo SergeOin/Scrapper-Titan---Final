@@ -542,6 +542,78 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
     q = _sanitize_query(q)
     sort_field, sort_direction = _normalize_sort(sort_by, sort_dir)
     rows: list[dict[str, Any]] = []
+    def _derive_company(author: str, current_company: Optional[str], author_profile: Optional[str], text: Optional[str]) -> Optional[str]:
+        """Attempt to derive a company name when the stored company is missing or duplicates the author.
+
+        Heuristics (lightweight, defensive):
+         - If author_profile looks like JSON, parse and look for keys (company, organization, headline, subtitle, occupation)
+         - Extract portion after French 'chez ' or English ' at ' / '@' tokens
+         - Split on common separators (" | ", " · ", " - ", ",") and choose a segment that does not repeat the author name and has letters
+        """
+        try:
+            if current_company and current_company.strip() and current_company.strip().lower() != author.strip().lower():
+                return current_company  # Already distinct
+            profile_obj = None
+            if author_profile and author_profile.strip().startswith('{'):
+                import json as _json_mod
+                try:
+                    profile_obj = _json_mod.loads(author_profile)
+                except Exception:
+                    profile_obj = None
+            candidates: list[str] = []
+            if profile_obj:
+                for k in ("company", "organization", "org", "headline", "subtitle", "occupation", "title"):
+                    v = profile_obj.get(k)
+                    if isinstance(v, str):
+                        candidates.append(v)
+            if text and isinstance(text, str):
+                # Sometimes post text contains signature lines with company
+                candidates.append(text[:240])  # limit for speed
+            def _clean(seg: str) -> str:
+                return seg.strip().strip('-–|·•').strip()
+            extracted: list[str] = []
+            for raw in candidates:
+                if not raw:
+                    continue
+                lower = raw.lower()
+                marker_pos = -1
+                marker = None
+                for m in ["chez ", " at ", " @"]:
+                    mp = lower.find(m)
+                    if mp != -1:
+                        marker_pos = mp + len(m)
+                        marker = m
+                        break
+                segs: list[str] = []
+                if marker_pos != -1:
+                    tail = raw[marker_pos:]
+                    segs.append(tail)
+                # Also split full raw on separators to find plausible company tokens
+                for sep in [" | ", " · ", " - ", ",", " • "]:
+                    if sep in raw:
+                        segs.extend(raw.split(sep))
+                if not segs:
+                    segs = [raw]
+                for seg in segs:
+                    segc = _clean(seg)
+                    if not segc:
+                        continue
+                    if len(segc) < 2 or segc.lower() == author.lower():
+                        continue
+                    # Avoid picking obvious role words alone
+                    if segc.lower() in {"freelance", "independant", "indépendant", "consultant", "recruteur"}:
+                        continue
+                    # Must contain at least one letter
+                    if not any(c.isalpha() for c in segc):
+                        continue
+                    extracted.append(segc)
+            # Rank choices: prefer ones with capital letters and without '@'
+            for cand in extracted:
+                if author.lower() not in cand.lower():
+                    return cand[:120]
+        except Exception:
+            return current_company
+        return current_company
     # Mongo path
     if ctx.mongo_client:
         try:
@@ -557,7 +629,19 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
                 ]
             # Exclude raw + legacy score fields
             cursor = coll.find(mf, {"raw": 0, "score": 0, "recruitment_score": 0}).sort(sort_field, sort_direction).skip(skip).limit(limit)
-            rows = [doc async for doc in cursor]
+            rows = []
+            async for doc in cursor:
+                try:
+                    author = str(doc.get("author") or "")
+                    comp = doc.get("company")
+                    prof = doc.get("author_profile")
+                    txt = doc.get("text")
+                    derived = _derive_company(author, comp, prof, txt)
+                    if derived and (not comp or str(comp).strip().lower() == author.strip().lower()):
+                        doc["company"] = derived
+                except Exception:
+                    pass
+                rows.append(doc)
         except Exception as exc:  # pragma: no cover
             ctx.logger.error("posts_query_failed", error=str(exc))
             rows = []
@@ -616,6 +700,11 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
                     item = dict(r)
                     item["is_favorite"] = int(item.get("is_favorite", 0) or 0)
                     item["is_deleted"] = int(item.get("is_deleted", 0) or 0)
+                    # Derive company if missing or equal to author
+                    try:
+                        item["company"] = _derive_company(str(item.get("author") or ""), item.get("company"), item.get("author_profile"), item.get("text")) or item.get("company")
+                    except Exception:
+                        pass
                     rows.append(item)
     except Exception as exc:  # pragma: no cover
         ctx.logger.warning("sqlite_fallback_query_failed", error=str(exc))
