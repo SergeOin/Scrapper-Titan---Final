@@ -52,10 +52,48 @@ except Exception:  # pragma: no cover
 # produce a 500 on first page load. We resolve relative to this file's location.
 _THIS_DIR = Path(__file__).resolve().parent
 _TEMPLATE_DIR = _THIS_DIR / "templates"
-if not _TEMPLATE_DIR.exists():  # Fallback: try current working directory as last resort
-    alt = Path.cwd() / "server" / "templates"
-    if alt.exists():
-        _TEMPLATE_DIR = alt
+if not _TEMPLATE_DIR.exists():  # Fallback strategies for frozen/shortcut launch contexts
+    candidates = []
+    # 1. CWD/server/templates (already tried previously as 'alt')
+    candidates.append(Path.cwd() / "server" / "templates")
+    # 2. Executable directory (PyInstaller one-folder) sibling path
+    try:
+        import sys as _sys
+        if getattr(_sys, "frozen", False):
+            exe_dir = Path(_sys.executable).parent
+            candidates.append(exe_dir / "server" / "templates")
+            # PyInstaller may also unpack to _MEIPASS – include it
+            meipass = Path(getattr(_sys, "_MEIPASS", exe_dir))  # type: ignore[attr-defined]
+            candidates.append(meipass / "server" / "templates")
+    except Exception:
+        pass
+    # 3. Walk upwards a few levels (defensive) looking for server/templates
+    try:
+        cur = Path.cwd()
+        for _ in range(4):
+            cand = cur / "server" / "templates"
+            candidates.append(cand)
+            cur = cur.parent
+    except Exception:
+        pass
+    for c in candidates:
+        if c.exists():
+            _TEMPLATE_DIR = c
+            break
+
+try:
+    import logging as _logging
+    _logging.getLogger("server").info(
+        "templates_init", chosen=str(_TEMPLATE_DIR), exists=_TEMPLATE_DIR.exists(), cwd=str(Path.cwd())
+    )
+    # Extra diagnostics for packaged environments where login.html was reported missing
+    if _TEMPLATE_DIR.exists():
+        # list a few files
+        sample = sorted([p.name for p in _TEMPLATE_DIR.glob('*.html')])[:5]
+        _logging.getLogger("server").info("templates_sample", sample=sample)
+except Exception:
+    pass
+
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 
 # Register custom Jinja filters

@@ -651,6 +651,10 @@ def main():
     os.environ.setdefault("LOG_LEVEL", "INFO")
     # Prefer in-process autonomous worker
     os.environ.setdefault("INPROCESS_AUTONOMOUS", "1")
+    # Enable the in-process autonomous worker by providing a sensible default interval
+    # Without this, AUTONOMOUS_WORKER_INTERVAL_SECONDS=0 disables any background scraping
+    # leading to "scraper actif" UI state but no cycles executed.
+    os.environ.setdefault("AUTONOMOUS_WORKER_INTERVAL_SECONDS", "60")  # run a cycle every 60s by default
     # Keep dashboard private by default in desktop mode
     os.environ.setdefault("DASHBOARD_PUBLIC", "0")
     # Speed optimizations: disable remote backends by default in packaged desktop (avoid 5s connection timeouts)
@@ -664,6 +668,9 @@ def main():
     os.environ.setdefault("TRACE_DIR", str(user_base / "traces"))
     os.environ.setdefault("CSV_FALLBACK_FILE", str(user_base / "exports" / "fallback_posts.csv"))
     os.environ.setdefault("LOG_FILE", str(user_base / "logs" / "server.log"))
+    # Persist browser session & lightweight session store in user-writable data dir (avoid read-only install dir)
+    os.environ.setdefault("STORAGE_STATE", str(user_base / "storage_state.json"))
+    os.environ.setdefault("SESSION_STORE_PATH", str(user_base / "session_store.json"))
     # Launch Playwright dependency installation in background to avoid blocking UI (perceived faster startup)
     def _bg_playwright():  # pragma: no cover (background helper)
         try:
@@ -830,6 +837,18 @@ def main():
                     webview.start(_after_start, gui="mshtml", http_server=False, debug=False)
             else:
                 webview.start(_after_start, gui=None, http_server=False, debug=False)
+        except ModuleNotFoundError:
+            # pywebview non présent: ouvrir le dashboard dans le navigateur par défaut comme repli.
+            logging.getLogger("desktop").warning("pywebview introuvable – ouverture du navigateur externe")
+            try:
+                import webbrowser
+                if _wait_for_server(base_url, timeout=15.0):
+                    webbrowser.open(base_url + "/")
+                else:
+                    webbrowser.open(base_url + "/health")
+            except Exception:
+                logging.getLogger("desktop").exception("external_browser_open_failed")
+            return
         except Exception:
             logging.getLogger("desktop").exception("Failed to start webview UI; attempting WebView2 install and retry")
             if _is_windows():
@@ -838,24 +857,35 @@ def main():
                 time.sleep(3)
                 try:
                     if _webview2_runtime_installed():
+                        import webview  # type: ignore
                         webview.start(_after_start, gui="edgechromium", http_server=False, debug=False)
                         return
                 except Exception:
-                    logging.getLogger("desktop").warning("Retry after WebView2 install failed; will not open external browser")
+                    logging.getLogger("desktop").warning("Retry after WebView2 install failed; falling back to external browser")
+                try:
+                    import webbrowser
+                    if _wait_for_server(base_url, timeout=10.0):
+                        webbrowser.open(base_url + "/")
+                except Exception:
+                    pass
                 _message_box(
                     APP_DISPLAY_NAME,
                     (
-                        "Impossible d'ouvrir la fenêtre intégrée.\n\n"
-                        "Veuillez installer (ou réinstaller) 'Microsoft Edge WebView2 Runtime' puis relancer l'application.\n"
-                        "L'installateur est inclus et lancé automatiquement au premier démarrage."
+                        "Impossible d'ouvrir la fenêtre intégrée. Un navigateur externe a été tenté.\n\n"
+                        "Si rien ne s'est ouvert, installez (ou réinstallez) 'Microsoft Edge WebView2 Runtime' puis relancez l'application."
                     ),
                 )
                 return
             else:
-                # Non-Windows fallback shouldn't use external browser per requirement; just inform.
+                try:
+                    import webbrowser
+                    if _wait_for_server(base_url, timeout=10.0):
+                        webbrowser.open(base_url + "/")
+                except Exception:
+                    pass
                 _message_box(
                     APP_DISPLAY_NAME,
-                    "Impossible d'ouvrir la fenêtre intégrée. Veuillez relancer l'application.",
+                    "Impossible d'ouvrir la fenêtre intégrée. Un navigateur externe a été tenté.",
                 )
                 return
     except Exception:
