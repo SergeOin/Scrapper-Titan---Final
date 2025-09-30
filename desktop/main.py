@@ -657,6 +657,10 @@ def main():
     os.environ.setdefault("AUTONOMOUS_WORKER_INTERVAL_SECONDS", "60")  # run a cycle every 60s by default
     # Keep dashboard private by default in desktop mode
     os.environ.setdefault("DASHBOARD_PUBLIC", "0")
+    # Enforce LinkedIn session gating by default in desktop builds so the dashboard
+    # always requires a valid stored LinkedIn session (li_at) unless the user explicitly
+    # opts out by setting ENFORCE_LINKEDIN_SESSION=0 before launch.
+    os.environ.setdefault("ENFORCE_LINKEDIN_SESSION", "1")
     # Speed optimizations: disable remote backends by default in packaged desktop (avoid 5s connection timeouts)
     os.environ.setdefault("DISABLE_MONGO", "1")
     os.environ.setdefault("DISABLE_REDIS", "1")
