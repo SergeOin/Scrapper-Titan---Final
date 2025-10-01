@@ -58,38 +58,7 @@ except Exception:  # pragma: no cover
     broadcast = None  # type: ignore
     EventType = None  # type: ignore
 
-# ---------------------------------------------------------------------------
-# Ultra-early Windows event loop policy hardening BEFORE importing Playwright.
-# Rationale: In the packaged build we still see NotImplementedError arising from
-# asyncio.subprocess on Windows (Proactor loop path). For frozen apps the default
-# policy can revert very early (before desktop/main enforcement) in the worker
-# module import context executed inside uvicorn thread. We therefore enforce the
-# selector policy here unconditionally (unless env explicitly requests proactor)
-# and log a single diagnostic. This MUST happen before importing playwright.*
-# ---------------------------------------------------------------------------
-if os.name == "nt":  # pragma: no cover (platform-specific)
-    try:
-        desired = os.environ.get("EVENT_LOOP_POLICY", "selector").lower().strip()
-        if desired not in ("selector", "proactor"):
-            desired = "selector"
-        current_cls = asyncio.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
-        changed = False
-        if desired == "selector" and "Selector" not in current_cls:
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
-            changed = True
-        elif desired == "proactor" and "Proactor" not in current_cls:
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())  # type: ignore[attr-defined]
-            changed = True
-        new_cls = asyncio.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
-        structlog.get_logger("worker").info(
-            "pre_playwright_loop_policy",
-            desired=desired,
-            before=current_cls,
-            after=new_cls,
-            changed=changed,
-        )
-    except Exception:
-        structlog.get_logger("worker").warning("pre_playwright_loop_policy_failed", exc_info=True)
+# Event loop policy is now fixed early in sitecustomize.py (remove redundant enforcement here)
 
 # Delay Playwright import until after policy enforcement.
 try:  # Optional heavy import lazy usage
