@@ -17,6 +17,7 @@ import contextlib
 from typing import AsyncIterator
 import asyncio
 import sys
+import logging
 
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -65,6 +66,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
         ctx.logger.debug("api_startup")
     else:
         ctx.logger.info("api_startup")
+    # Diagnostic: log effective event loop policy class (helps validate Playwright NotImplementedError root cause fix)
+    try:
+        loop_policy_cls = asyncio.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
+        ctx.logger.info("loop_policy_detected", policy=loop_policy_cls)
+        # Subprocess probe: if a trivial subprocess creation already raises NotImplementedError we know it's global.
+        async def _probe_subprocess():
+            try:
+                proc = await asyncio.create_subprocess_exec("cmd","/c","echo","probe", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                out, err = await proc.communicate()
+                ctx.logger.info("subprocess_probe_ok", rc=proc.returncode, out=out.decode(errors='ignore').strip())
+            except NotImplementedError:
+                ctx.logger.error("subprocess_probe_not_implemented")
+            except Exception as e:  # pragma: no cover
+                ctx.logger.error("subprocess_probe_failed", error=str(e))
+        try:
+            await _probe_subprocess()
+        except Exception:
+            pass
+    except Exception:
+        logging.getLogger("server").warning("loop_policy_introspection_failed", exc_info=True)
     bg_task: asyncio.Task | None = None
     norm_task: asyncio.Task | None = None
     # In-process autonomous worker

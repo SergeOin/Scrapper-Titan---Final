@@ -29,11 +29,20 @@ try {
   $exe = Join-Path $distDir 'TitanScraper.exe'
   if(!(Test-Path $exe)){ throw "Executable not found: $exe" }
   $p = Start-Process -FilePath $exe -PassThru
-  Start-Sleep -Seconds 5
-  try {
-    $resp = Invoke-WebRequest -Uri 'http://127.0.0.1:8000/health' -UseBasicParsing -TimeoutSec 3
-    if($resp.StatusCode -eq 200){ Write-Host "[build_desktop_exe] Health OK" -ForegroundColor Green }
-    else { Write-Warning "Health endpoint returned $($resp.StatusCode)" }
-  } catch { Write-Warning "Unable to contact health endpoint: $_" }
+  $maxWait = 12
+  $elapsed = 0
+  $healthOk = $false
+  while($elapsed -lt $maxWait -and -not $healthOk){
+    Start-Sleep -Seconds 2
+    $elapsed += 2
+    try {
+      $resp = Invoke-WebRequest -Uri 'http://127.0.0.1:8000/health' -UseBasicParsing -TimeoutSec 3
+      if($resp.StatusCode -eq 200){
+        Write-Host "[build_desktop_exe] Health OK after ${elapsed}s" -ForegroundColor Green
+        $healthOk = $true
+      }
+    } catch {}
+  }
+  if(-not $healthOk){ Write-Warning "Health endpoint not reachable within ${maxWait}s (continuing build)" }
   try { Stop-Process -Id $p.Id -Force } catch {}
 } catch { Write-Warning "Smoke test failed: $_" }

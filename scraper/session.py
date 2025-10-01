@@ -10,11 +10,20 @@ from typing import Any, Optional
 import sys
 import asyncio as _asyncio
 
-# Ensure Windows uses Selector event loop policy at import time (affects new loops in any thread)
+# Ensure Windows uses SELECTOR event loop policy (Proactor lacks asyncio subprocess support ⇒ NotImplementedError for Playwright)
 if sys.platform.startswith("win"):
-    try:
-        _asyncio.set_event_loop_policy(_asyncio.WindowsProactorEventLoopPolicy())
-    except Exception:
+    try:  # ultra-early hardening
+        before_cls = _asyncio.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
+        if "Selector" not in before_cls:
+            _asyncio.set_event_loop_policy(_asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
+        after_cls = _asyncio.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
+        try:
+            # Lightweight log (structlog not yet configured sometimes; guard)
+            import logging as _lg
+            _lg.getLogger("session").info("session_loop_policy_adjust", before=before_cls, after=after_cls)
+        except Exception:  # pragma: no cover
+            pass
+    except Exception:  # pragma: no cover
         pass
 
 import structlog

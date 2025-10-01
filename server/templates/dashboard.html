@@ -82,7 +82,7 @@
   </div>
 
   <div id="statusContainer" data-interval="{{ autonomous_interval or 0 }}" data-init-wait="{{ login_initial_wait_seconds or 120 }}" style="margin-top:0.75rem; font-size:0.9rem; display:flex; align-items:center; gap:.75rem;">
-  <div id="statusHint" class="status-hint status-hint-wait" aria-live="polite"><span class="inline-spinner" aria-hidden="true"></span>Démarrage du premier cycle…</div>
+  <div id="statusHint" class="status-hint status-hint-wait" aria-live="polite"><span class="inline-spinner" aria-hidden="true"></span>Démarrage du cycle en cours…</div>
   </div>
   <style>
   /* Status line removed; only hint banner remains */
@@ -307,14 +307,14 @@
             setHintVisible(true);
           } else {
             // Initial: immediate launch message with spinner (no artificial wait)
-            setHintHTML(`${spinner}Premier cycle en cours…`, 'status-hint-wait');
+            setHintHTML(`${spinner}Cycle en cours…`, 'status-hint-wait');
             setHintVisible(true);
             if (!_autoTriggeredFirstRun) {
               _autoTriggeredFirstRun = true;
               try {
                 const fd = new FormData();
                 const tr = await fetch('/trigger', { method:'POST', body: fd, headers: { 'X-Trigger-From': 'dashboard' } });
-                if (tr.ok) { showToast('Premier cycle lancé','info'); }
+                if (tr.ok) { showToast('Cycle en cours lancé','info'); }
               } catch(_) { /* ignore */ }
             }
             ensureAutoPulse(true, interval);

@@ -128,12 +128,35 @@ else:
     except Exception:
         pass
 
+# Attempt early sitecustomize import (should already auto-run if present, but explicit for frozen env certainty)
+try:
+    import sitecustomize  # type: ignore  # noqa: F401
+except Exception:
+    pass
+
 
 def _ensure_event_loop_policy():
     if _is_windows():
+        # On certains environnements packagés (PyInstaller), Playwright peut échouer avec
+        # NotImplementedError lors de create_subprocess_exec si la boucle Proactor est utilisée.
+        # On offre donc un fallback configurable via EVENT_LOOP_POLICY=selector|proactor (default: selector)
         try:
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+            chosen = os.getenv("EVENT_LOOP_POLICY", "selector").lower().strip()
+            if chosen not in ("selector", "proactor"):
+                chosen = "selector"
+            if chosen == "selector":
+                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            else:
+                asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+            try:
+                logging.getLogger("desktop").info(
+                    "event_loop_policy_selected", policy=chosen,
+                    loop_class=asyncio.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
+                )
+            except Exception:
+                pass
         except Exception:
+            # Silencieux: on laisse la policy par défaut si on ne peut pas la changer
             pass
 
 
@@ -603,6 +626,11 @@ def main():
     _setup_logging(user_base)
     _ensure_event_loop_policy()
     log = logging.getLogger("desktop")
+    # Log early loop policy diagnostic
+    try:
+        log.info("early_loop_policy", cls=asyncio.get_event_loop_policy().__class__.__name__)  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
     # Diagnostic: log PID & PPID early
     try:
@@ -671,6 +699,24 @@ def main():
     os.environ.setdefault("SCREENSHOT_DIR", str(user_base / "screenshots"))
     os.environ.setdefault("TRACE_DIR", str(user_base / "traces"))
     os.environ.setdefault("CSV_FALLBACK_FILE", str(user_base / "exports" / "fallback_posts.csv"))
+    # Ensure SQLite DB lives in user-writable data dir (Program Files is read-only for standard users)
+    # Previous behavior left SQLITE_PATH at default 'fallback.sqlite3' in the install directory → inserts failed silently
+    # causing zero posts to appear in the dashboard.
+    if "SQLITE_PATH" not in os.environ:
+        legacy_sqlite = Path("fallback.sqlite3")  # legacy location (install dir / CWD)
+        new_sqlite = user_base / "fallback.sqlite3"
+        os.environ["SQLITE_PATH"] = str(new_sqlite)
+        try:
+            if legacy_sqlite.exists() and not new_sqlite.exists():
+                # Attempt migration (copy) so existing data is preserved if user ran unpacked build before MSI
+                import shutil
+                new_sqlite.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(legacy_sqlite, new_sqlite)
+                logging.getLogger("desktop").info(
+                    "sqlite_legacy_migrated", source=str(legacy_sqlite), target=str(new_sqlite)
+                )
+        except Exception:
+            logging.getLogger("desktop").warning("sqlite_migration_failed", exc_info=True)
     os.environ.setdefault("LOG_FILE", str(user_base / "logs" / "server.log"))
     # Persist browser session & lightweight session store in user-writable data dir (avoid read-only install dir)
     os.environ.setdefault("STORAGE_STATE", str(user_base / "storage_state.json"))

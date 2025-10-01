@@ -44,7 +44,8 @@ async def test_store_posts_fallback_sqlite(tmp_path, monkeypatch):
     with conn:
         cur = conn.execute("SELECT COUNT(*) FROM posts")
         count = cur.fetchone()[0]
-    assert count == 3
+    # With new content_hash unique index + batch hash skip, identical author/text collapse to 1 row
+    assert count == 1
 
 @pytest.mark.asyncio
 async def test_store_posts_fallback_csv(tmp_path, monkeypatch):

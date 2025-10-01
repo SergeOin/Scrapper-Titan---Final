@@ -102,6 +102,17 @@ Schéma persistant actuel (champs de score supprimés) :
 | `EXPORT_DIR` | Dossier exports CSV | `exports` |
 | `RECRUITMENT_SIGNAL_THRESHOLD` | Seuil compteur métrique recrutement (champ non stocké) | `0.35` |
 | `SHUTDOWN_TOKEN` | Jeton requis pour POST `/shutdown` | `secret123` |
+| `PLAYWRIGHT_FORCE_SYNC` | Force un mode Playwright synchrone (fallback thread) si `1` | `0` |
+| `AUTO_ENABLE_MOCK_ON_PLAYWRIGHT_FAILURE` | Active automatiquement mode mock si lancement Playwright échoue | `1` |
+| `FORCE_PLAYWRIGHT_DISABLED` | Force désactivation Playwright (scraping réel) et bascule mock | `0` |
+| `PLAYWRIGHT_FAILURE_LOG` | Fichier JSONL des erreurs Playwright throttlé | `playwright_failures.log` |
+| `STORAGE_STATE_ENCRYPT` | Chiffrer `storage_state.json` sur disque (Fernet) | `1` |
+| `STORAGE_STATE_KEY` | Clé base64 32 bytes pour Fernet (si chiffrement) | `gAAAA...` |
+| `PURGE_MAX_AGE_DAYS` | Purge SQLite des posts plus vieux que X jours | `30` |
+| `VACUUM_INTERVAL_HOURS` | Intervalle maintenance (purge+VACUUM) heures | `6` |
+| `FILTER_RECRUITMENT_ONLY` | Ne conserver que les posts recrutement (>= seuil) | `1` |
+| `FILTER_REQUIRE_AUTHOR_AND_PERMALINK` | Filtrer posts sans auteur/permalink | `1` |
+| `PLAYWRIGHT_MOCK_MODE` | Mode simulation (aucune navigation réelle) | `0` |
 
 ---
 ## 🚀 Démarrage Local (Windows PowerShell)
@@ -192,6 +203,7 @@ black .
 | `scrape_scroll_iterations_total` | Counter | Nombre total d'itérations de scroll exécutées |
 | `scrape_extraction_incomplete_total` | Counter | Extractions arrêtées sous le seuil `MIN_POSTS_TARGET` |
 | `scrape_recruitment_posts_total` | Counter | Posts détectés recrutement (heuristique interne, score non stocké) |
+| `scrape_filtered_posts_total{reason}` | Counter | Posts rejetés (reason: recruitment, author_perma, langue, domaine ...) |
 
 Endpoints opérationnels additionnels :
 | Endpoint | Méthode | Description |
@@ -202,6 +214,10 @@ Endpoints opérationnels additionnels :
 | `/debug/last_batch` | GET | Derniers posts (auteur, company, keyword, timestamps) pour debug extraction |
 | `/api/stats` | GET | Statistiques runtime agrégées (mock_mode, intervalle autonome, posts_count, âge last_run, queue_depth) |
 | `/api/version` | GET | Métadonnées build (commit, timestamp) pour traçabilité |
+| `/metrics.json` | GET | Fallback JSON si Prometheus non consommable (mode démo / sandbox) |
+| `/debug/mode` | GET | Indique mode courant (mock, async, sync) |
+| `/debug/storage/counts` | GET | Compteurs stockage SQLite (lignes) |
+| `/debug/status` | GET | Statut synthétique (quotas, mode, risques) |
 
 ### Statistiques supplémentaires (meta)
 Le document meta Mongo (`_id: "global"`) contient désormais :

@@ -31,6 +31,7 @@ def ensure_sqlite_schema(path: str):
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_keyword ON posts(keyword)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_published ON posts(published_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_keyword_published ON posts(keyword, published_at)")
         conn.execute(
             """CREATE TABLE IF NOT EXISTS post_flags (
             post_id TEXT PRIMARY KEY,

@@ -669,7 +669,30 @@ async def bootstrap(force: bool = False) -> AppContext:
 # Helper accessors
 # ------------------------------------------------------------
 async def get_context() -> AppContext:
-    """Public accessor for the global application context."""
+    """Public accessor for the global application context.
+
+    Rebuilds the singleton if SQLITE_PATH env var changed since last bootstrap
+    (test isolation / dynamic override) or if underlying file was deleted.
+    """
+    global _context_singleton
+    desired_sqlite = os.environ.get("SQLITE_PATH")
+    if _context_singleton is not None:
+        try:
+            current_path = _context_singleton.settings.sqlite_path  # type: ignore[attr-defined]
+        except Exception:
+            current_path = None
+        rebuild = False
+        if desired_sqlite and current_path and os.path.abspath(desired_sqlite) != os.path.abspath(current_path):
+            rebuild = True
+        elif desired_sqlite and not current_path:
+            rebuild = True
+        elif current_path and not os.path.exists(current_path):  # file removed between tests
+            rebuild = True
+        if rebuild:
+            # Force rebuild
+            _context_singleton = None
+            return await bootstrap(force=True)
+        return _context_singleton
     return await bootstrap()
 
 
