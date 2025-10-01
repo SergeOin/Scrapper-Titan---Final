@@ -280,6 +280,14 @@
         const r = await fetch('/health');
         if(!r.ok) throw new Error('HTTP '+r.status);
         const data = await r.json();
+        // --- Enhanced empty-state context flags ---
+        // We record a few booleans in dataset for refreshPosts() to tailor the empty table message.
+        const bodyEl = document.body;
+        if (bodyEl) {
+          bodyEl.dataset.scrapingEnabled = String(!!data.scraping_enabled);
+          bodyEl.dataset.lastRun = data.last_run ? '1' : '0';
+          bodyEl.dataset.playwrightReady = (data.playwright_ready === false || data.playwright_available === false) ? '0' : '1';
+        }
         // Disabled reasons: hard flag or reload auto-disable (health can expose later if added)
         if(data.scraping_enabled === false && data.disabled_flag){
           setHint('Scraper désactivé (mode maintenance)', 'status-hint-wait');
@@ -314,7 +322,7 @@
             setHintVisible(true);
           } else {
             // Initial: immediate launch message with spinner (no artificial wait)
-            setHintHTML(`${spinner}Cycle en cours…`, 'status-hint-wait');
+            setHintHTML(`${spinner}Premier cycle en cours…`, 'status-hint-wait');
             setHintVisible(true);
             if (!_autoTriggeredFirstRun) {
               _autoTriggeredFirstRun = true;
@@ -386,7 +394,22 @@
         const tbody = document.querySelector('table tbody');
         if(!tbody) return;
         if(data.items.length === 0){
-          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;font-size:0.8rem;color:#555;">Aucun résultat pour le moment.</td></tr>';
+          // Refined contextual empty message
+          const bodyEl = document.body;
+          const scrapingEnabled = bodyEl?.dataset.scrapingEnabled === 'true';
+          const hasRun = bodyEl?.dataset.lastRun === '1';
+          const playwrightReady = bodyEl?.dataset.playwrightReady !== '0';
+          let msg = 'Aucun résultat pour le moment.';
+          if (!hasRun && scrapingEnabled) {
+            msg = 'Premier cycle en cours… Patientez pendant la collecte initiale.';
+          } else if (!scrapingEnabled && !hasRun) {
+            msg = 'Scraper inactif – cliquez sur Reprendre pour lancer la première collecte.';
+          } else if (scrapingEnabled && hasRun && playwrightReady) {
+            msg = 'Aucun post correspondant à vos filtres actuels.';
+          } else if (!playwrightReady) {
+            msg = 'Playwright non prêt – réinstallez ou relancez puis déclenchez un cycle.';
+          }
+          tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;font-size:0.8rem;color:#555;">${msg}</td></tr>`;
           return;
         }
         const rows = data.items.map(p=>{
