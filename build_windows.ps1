@@ -70,8 +70,15 @@ $spec = ".\desktop\pyinstaller.spec"
 $extra = ""
 if ($OneFile) { $extra = "--onefile" }
 
-Write-Host "Running PyInstaller..." -ForegroundColor Cyan
-pyinstaller $spec $extra
-if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller failed with code $LASTEXITCODE"; exit $LASTEXITCODE }
+Write-Host "Running PyInstaller (clean build)..." -ForegroundColor Cyan
+# Force removal of previous build artifacts for a guaranteed fresh embed of modified sources.
+Remove-Item .\build\pyinstaller -Recurse -Force -ErrorAction SilentlyContinue
+# Temporarily relax error preference so PyInstaller stderr (warnings) doesn't abort script prematurely.
+$prevErrPref = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+python -W ignore -m PyInstaller --clean $spec $extra 2>&1
+$pyExit = $LASTEXITCODE
+$ErrorActionPreference = $prevErrPref
+if ($pyExit -ne 0) { Write-Error "PyInstaller failed with code $pyExit"; exit $pyExit }
 
 Write-Host "Build complete. Output in .\\dist\\TitanScraper" -ForegroundColor Green

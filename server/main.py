@@ -251,19 +251,39 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
 
 app = FastAPI(title="LinkedIn Scraper Dashboard", version="0.1.0", lifespan=lifespan)
 
-# On Windows allow selecting loop implementation; Selector loop tends to be more
-# stable for Playwright subprocess spawning under reload. Use WIN_LOOP env var
-# to override (values: 'selector' (default), 'proactor').
+# ---------------------------------------------------------------------------
+# Reduce log noise: suppress repetitive "Application startup complete" / shutdown
+# messages from uvicorn when we are not using --reload (desktop packaged mode).
+# We keep real errors / warnings intact.
+# ---------------------------------------------------------------------------
+try:  # pragma: no cover - cosmetic logging filter
+    class _UvicornNoiseFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:  # type: ignore[override]
+            msg = record.getMessage()
+            if msg.startswith("Application startup complete"):
+                return False
+            if msg.startswith("Application shutdown complete"):
+                return False
+            return True
+    logging.getLogger("uvicorn.error").addFilter(_UvicornNoiseFilter())
+except Exception:
+    pass
+
+# Event loop policy selection (desktop packaging now favors Proactor for Playwright subprocesses).
 if sys.platform.startswith("win"):
     import os as _os
-    desired = _os.environ.get("WIN_LOOP", "selector").lower()
+    desired = _os.environ.get("WIN_LOOP", "proactor").lower()
     try:
-        if desired.startswith("pro"):
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        if desired.startswith("sel"):
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
+            _loop_cls = asyncio.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
+            logging.getLogger("server").warning(f"loop_policy_selected desired={desired} loop_class={_loop_cls}")
         else:
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    except Exception:
-        pass
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())  # type: ignore[attr-defined]
+            _loop_cls = asyncio.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
+            logging.getLogger("server").info(f"loop_policy_selected desired={desired} loop_class={_loop_cls}")
+    except Exception as _exc:  # pragma: no cover
+        logging.getLogger("server").warning(f"loop_policy_set_failed desired={desired} error={_exc}")
 
 # Configure CORS if public dashboard
 import os

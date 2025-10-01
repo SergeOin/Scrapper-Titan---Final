@@ -90,6 +90,21 @@ You can add a workflow to build artifacts per platform. Example skeleton:
 - SQLite fallback file `fallback.sqlite3` is shipped alongside the app; you can replace it with your own.
 - Local session files (`storage_state.json`, `session_store.json`) remain next to the app unless configured otherwise.
 
+### Immediate first cycle (RUN_ON_START)
+
+Set `RUN_ON_START=1` (environment variable) before launching the desktop executable to trigger an immediate scrape cycle as soon as the local server is ready (it uses the `/trigger` endpoint internally). This is useful to:
+
+- Force creation of the SQLite database (`fallback.sqlite3`) without waiting for the autonomous interval (default 60s)
+- Quickly populate the dashboard with initial mock data when `PLAYWRIGHT_MOCK_MODE=1`
+
+Example (Windows PowerShell):
+
+```powershell
+$env:PLAYWRIGHT_MOCK_MODE=1; $env:RUN_ON_START=1; Start-Process .\TitanScraper.exe
+```
+
+The trigger is fire‑and‑forget; any error is logged to `%LOCALAPPDATA%/TitanScraper/logs/desktop.log` under `run_on_start_failed`.
+
 ## Troubleshooting
 
 - “Chromium not found” → run `python -m playwright install chromium` once.

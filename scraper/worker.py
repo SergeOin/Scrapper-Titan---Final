@@ -20,6 +20,7 @@ If no queue: iterate over settings.keywords once (manual run mode).
 from __future__ import annotations
 
 import asyncio
+import sys
 import contextlib
 import json
 import os
@@ -167,15 +168,24 @@ async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> 
                 launch_attempts += 1
                 if os.name == "nt":
                     pol = asyncio.get_event_loop_policy().__class__.__name__
-                    # Ensure Selector loop (Proactor cannot spawn subprocess -> Playwright NotImplementedError)
-                    if "Proactor" in pol:
+                    # Allow optional explicit selector forcing via env
+                    if os.getenv("WORKER_FORCE_SELECTOR") in ("1","true","yes","on") and sys.platform.startswith("win") and "Selector" not in pol:
                         try:
                             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
                             pol2 = asyncio.get_event_loop_policy().__class__.__name__
-                            logger.warning("event_loop_policy_forced_selector_prelaunch", previous=pol, new=pol2)
+                            logger.warning("event_loop_policy_forced_selector_worker", previous=pol, new=pol2)
                             pol = pol2
-                        except Exception as e:
+                        except Exception as e:  # pragma: no cover
                             logger.warning("event_loop_policy_selector_force_failed", error=str(e), previous=pol)
+                    # If still Selector and no explicit force, try upgrading to Proactor before Playwright
+                    if os.getenv("WORKER_FORCE_SELECTOR") not in ("1","true","yes","on") and "Selector" in pol:
+                        try:
+                            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())  # type: ignore[attr-defined]
+                            pol3 = asyncio.get_event_loop_policy().__class__.__name__
+                            logger.info("event_loop_policy_upgraded_proactor", previous=pol, new=pol3)
+                            pol = pol3
+                        except Exception as e:  # pragma: no cover
+                            logger.warning("event_loop_policy_upgrade_failed", error=str(e), previous=pol)
                     logger.info("playwright_launch_attempt", attempt=launch_attempts, policy=pol)
                 async with async_playwright() as pw:
                     # Apply a timeout to recovery to avoid hanging indefinitely if Chromium crashes silently

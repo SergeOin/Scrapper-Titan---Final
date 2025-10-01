@@ -10,19 +10,16 @@ from typing import Any, Optional
 import sys
 import asyncio as _asyncio
 
-# Ensure Windows uses SELECTOR event loop policy (Proactor lacks asyncio subprocess support ⇒ NotImplementedError for Playwright)
-if sys.platform.startswith("win"):
-    try:  # ultra-early hardening
+# Historical: we used to force Selector here. This broke Playwright (needs subprocess on Windows).
+# Now we respect sitecustomize choice (default: proactor). Allow override only if SESSION_FORCE_SELECTOR=1.
+if sys.platform.startswith("win") and os.getenv("SESSION_FORCE_SELECTOR") in ("1","true","yes","on"):
+    try:
         before_cls = _asyncio.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
         if "Selector" not in before_cls:
             _asyncio.set_event_loop_policy(_asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
         after_cls = _asyncio.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
-        try:
-            # Lightweight log (structlog not yet configured sometimes; guard)
-            import logging as _lg
-            _lg.getLogger("session").info("session_loop_policy_adjust", before=before_cls, after=after_cls)
-        except Exception:  # pragma: no cover
-            pass
+        import logging as _lg
+        _lg.getLogger("session").warning("session_loop_policy_forced_selector", before=before_cls, after=after_cls)
     except Exception:  # pragma: no cover
         pass
 
@@ -246,6 +243,14 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                 return False, {"error": msg}
         return await _asyncio.to_thread(_sync_login_impl)
     try:
+        # Ensure proactor in async path as well (if user forced selector earlier without override)
+        if sys.platform.startswith("win"):
+            try:
+                cur = _asyncio.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
+                if "Selector" in cur and os.getenv("SESSION_FORCE_SELECTOR") not in ("1","true","yes","on"):
+                    _asyncio.set_event_loop_policy(_asyncio.WindowsProactorEventLoopPolicy())  # type: ignore[attr-defined]
+            except Exception:
+                pass
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=_headless)  # login visible by default unless overridden
             page = await browser.new_page()

@@ -42,6 +42,10 @@ from fastapi.responses import RedirectResponse
 
 router = APIRouter()
 
+# Flag indicating the desktop launcher triggered an initial cycle at startup.
+# Set when /trigger receives the special header injected by the desktop app.
+_run_on_start_received: bool = False
+
 # Attempt optional desktop IPC import (safe if not present)
 try:  # pragma: no cover - dynamic environment
     from desktop import ipc as _desktop_ipc  # type: ignore
@@ -1109,6 +1113,7 @@ async def dashboard(
             "sort_dir": (sort_dir or "desc"),
             "mock_mode": ctx.settings.playwright_mock_mode,
             "trash_count": trash_count,
+            "run_on_start_received": _run_on_start_received,
         },
     )
 
@@ -1155,6 +1160,7 @@ async def dashboard_demo(
             "sort_dir": (sort_dir or "desc"),
             "mock_mode": ctx.settings.playwright_mock_mode,
             "trash_count": trash_count,
+            "run_on_start_received": _run_on_start_received,
         },
     )
 
@@ -1413,6 +1419,9 @@ async def trigger_scrape(
     keywords: Optional[str] = Form(None),
     ctx=Depends(get_auth_context),
 ):
+    # Declare global once (previous inline duplicated 'global' statements caused SyntaxError
+    # due to Python interpreting assignment before some global declarations).
+    global _run_on_start_received  # noqa: PLW0603
     # Optional trigger token enforcement (permit dashboard-originated calls)
     if ctx.settings.trigger_token:
         supplied = request.headers.get("X-Trigger-Token")
@@ -1421,7 +1430,16 @@ async def trigger_scrape(
             raise HTTPException(status_code=401, detail="Invalid trigger token")
     # Allow trigger in tests even if scraping is disabled; otherwise, enforce flag.
     import os
-    if not ctx.settings.scraping_enabled and os.environ.get("PYTEST_CURRENT_TEST") is None:
+    # Allow run-on-start bootstrap even if scraping is currently disabled, so that
+    # the initial cycle (which ensures early DB/materialization) can still run.
+    is_run_on_start = request.headers.get("X-Run-On-Start") == "1"
+    try:
+        ctx.logger.info(
+            f"trigger_request start run_on_start={is_run_on_start} scraping_enabled={ctx.settings.scraping_enabled} has_keywords_form={keywords is not None} headers_count={len(request.headers)}"
+        )
+    except Exception:
+        pass
+    if (not ctx.settings.scraping_enabled) and (os.environ.get("PYTEST_CURRENT_TEST") is None) and (not is_run_on_start):
         raise HTTPException(status_code=400, detail="Scraping désactivé")
     kws = ctx.settings.keywords
     if keywords:
@@ -1430,7 +1448,20 @@ async def trigger_scrape(
     if ctx.redis:
         try:
             await ctx.redis.rpush(ctx.settings.redis_queue_key, json_dumps(payload))
+            # Structured log for normal enqueue
             ctx.logger.info("job_enqueued", keywords=kws)
+            # Detect run-on-start header (desktop immediate trigger) for observability
+            if request.headers.get("X-Run-On-Start") == "1":
+                _run_on_start_received = True
+                try:
+                    ctx.logger.info(
+                        "run_on_start_trigger_received",
+                        keywords=kws,
+                        run_on_start=1,
+                        redis_enqueue=True,
+                    )
+                except Exception:
+                    pass
             return Response(status_code=202)
         except Exception as exc:  # pragma: no cover
             ctx.logger.error("enqueue_failed", error=str(exc))
@@ -1440,7 +1471,53 @@ async def trigger_scrape(
     assert _local_queue is not None
     await _local_queue.put(kws)
     ctx.logger.warning("local_queue_enqueued", size=_local_queue.qsize())
+    if request.headers.get("X-Run-On-Start") == "1":
+        _run_on_start_received = True
+        try:
+            ctx.logger.info(
+                "run_on_start_trigger_received",
+                keywords=kws,
+                run_on_start=1,
+                redis_enqueue=False,
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            ctx.logger.debug("trigger_request_no_run_on_start_flag")
+        except Exception:
+            pass
     return Response(status_code=204)
+
+
+@router.get("/debug/run_on_start")
+async def debug_run_on_start():
+    """Return whether a run-on-start trigger has been received during this process lifetime.
+
+    Useful for external diagnostics / automated tests.
+    Example response: {"run_on_start_seen": true}
+    """
+    import logging as _logging
+    try:
+        val = bool(_run_on_start_received)
+        # Avoid kwargs with std logging; use plain string formatting for reliability
+        _logging.getLogger("server").info(f"debug_run_on_start_query run_on_start_seen={val}")
+        return {"run_on_start_seen": val, "raw": _run_on_start_received}
+    except Exception as exc:  # pragma: no cover
+        _logging.getLogger("server").warning(f"debug_run_on_start_error err={exc}")
+        return {"run_on_start_seen": False, "error": str(exc)}
+
+
+@router.get("/debug/loop_policy")
+async def debug_loop_policy():
+    """Return current asyncio event loop policy class name (diagnostic)."""
+    import asyncio as _a, logging as _l
+    try:
+        cls = _a.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
+        _l.getLogger("server").info("debug_loop_policy_query", loop_policy=cls)
+        return {"loop_policy": cls}
+    except Exception as exc:  # pragma: no cover
+        return {"loop_policy": None, "error": str(exc)}
 
 
 @router.get("/api/posts")
@@ -1625,15 +1702,52 @@ async def health(ctx=Depends(get_auth_context)):
         data["disabled_flag"] = bool(getattr(ctx.settings, 'disable_scraper', False))
     except Exception:
         data["disabled_flag"] = False
-    # Playwright availability shallow check (only if not disabled)
+    # Playwright availability + readiness probe (only if not disabled)
+    pw_available = False
+    pw_ready = False
     try:
         if not data.get("disabled_flag"):
             from playwright.async_api import async_playwright  # type: ignore
-            data["playwright_available"] = True
-        else:
-            data["playwright_available"] = False
+            pw_available = True
+            # Readiness: browsers path exists with at least one chromium executable OR mock mode bypass
+            try:
+                mock_mode = bool(getattr(ctx.settings, 'playwright_mock_mode', False))  # type: ignore[attr-defined]
+            except Exception:
+                mock_mode = False
+            if mock_mode:
+                pw_ready = True
+            else:
+                import os as _os, re as _re
+                bpath = _os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+                if bpath and _os.path.isdir(bpath):
+                    # Look for chromium directories with chrome(.exe)
+                    for root, dirs, files in __import__('os').walk(bpath):
+                        for f in files:
+                            if _re.search(r"chrome(?:\.exe)?$", f, flags=_re.IGNORECASE):
+                                pw_ready = True
+                                break
+                        if pw_ready:
+                            break
+                # Fallback: attempt a quick async launch probe with timeout (non-fatal)
+                if not pw_ready:
+                    try:
+                        import asyncio as _a
+                        async def _probe():
+                            try:
+                                async with async_playwright() as pw:  # type: ignore
+                                    browser = await pw.chromium.launch(headless=True)
+                                    await browser.close()
+                                return True
+                            except Exception:
+                                return False
+                        pw_ready = await _a.wait_for(_probe(), timeout=5.0)
+                    except Exception:
+                        pw_ready = False
+        data["playwright_available"] = pw_available
+        data["playwright_ready"] = pw_ready
     except Exception:
         data["playwright_available"] = False
+        data["playwright_ready"] = False
     # Quota progression (in-memory)
     try:
         target = ctx.settings.daily_post_target
@@ -1660,6 +1774,88 @@ async def health(ctx=Depends(get_auth_context)):
         except Exception:
             pass
     return data
+
+# ------------------------------------------------------------
+# Diagnostics page (HTML) consuming /debug/loop_policy & /debug/run_on_start & /health
+# ------------------------------------------------------------
+@router.get("/diagnostics", response_class=HTMLResponse)
+async def diagnostics_page(request: Request, ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    # Fetch basic diagnostics (reuse existing helpers)
+    loop_policy = None
+    run_on_start_seen = False
+    from fastapi import HTTPException as _HTE  # local alias
+    # Loop policy endpoint (internal call)
+    try:
+        import asyncio as _a
+        loop_policy = _a.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
+    except Exception:
+        loop_policy = "<error>"
+    try:
+        run_on_start_seen = bool(_run_on_start_received)
+    except Exception:
+        run_on_start_seen = False
+    # Health snapshot for playwright readiness
+    pw_ready = False; pw_available = False
+    try:
+        h = await health(ctx)  # type: ignore
+        pw_available = bool(h.get("playwright_available"))
+        pw_ready = bool(h.get("playwright_ready"))
+    except Exception:
+        pass
+    html = f"""
+    <html><head><title>Diagnostics</title><meta charset='utf-8'/>
+    <style>body{{font-family:system-ui;padding:1.25rem;background:#0f172a;color:#e2e8f0}} h1{{margin-top:0;font-size:1.3rem}} .kv{{margin:.35rem 0}} code{{background:#1e293b;padding:2px 4px;border-radius:4px}} a{{color:#93c5fd}} .tag{{display:inline-block;padding:2px 6px;border-radius:4px;font-size:.65rem;letter-spacing:.5px;text-transform:uppercase;margin-left:.5rem}} .ok{{background:#166534;color:#dcfce7}} .warn{{background:#854d0e;color:#fef9c3}} .err{{background:#991b1b;color:#fee2e2}} button{{background:#2563eb;color:#fff;border:none;padding:.5rem .8rem;border-radius:6px;cursor:pointer;margin-top:.8rem}} button:hover{{background:#1d4ed8}} .group{{background:#1e293b;padding:1rem;border-radius:8px;margin-bottom:1rem}} .small{{font-size:.75rem;color:#94a3b8}} pre{{background:#1e293b;padding:.75rem;border-radius:6px;overflow:auto;font-size:.7rem}} .sep{{height:1px;background:#334155;margin:1.2rem 0}} </style>
+    </head><body>
+    <h1>Diagnostics système</h1>
+    <div class='group'>
+      <div class='kv'>Loop policy: <strong>{loop_policy}</strong></div>
+      <div class='kv'>Run-on-start reçu: <strong>{'oui' if run_on_start_seen else 'non'}</strong></div>
+      <div class='kv'>Playwright disponible: <strong style='color:{'#16a34a' if pw_available else '#dc2626'}'>{str(pw_available).lower()}</strong></div>
+      <div class='kv'>Playwright prêt (navigateurs): <strong style='color:{'#16a34a' if pw_ready else '#dc2626'}'>{str(pw_ready).lower()}</strong></div>
+      <form method='post' action='/admin/playwright/reinstall' onsubmit="return confirm('Relancer installation Playwright ?');"><button type='submit'>Réinstaller Playwright (Chromium)</button></form>
+      <p class='small'>La réinstallation tente d'appeler <code>playwright install chromium</code> dans l'environnement courant. Les logs seront visibles dans server.log / desktop.log.</p>
+      <p><a href='/'>&larr; Retour Dashboard</a></p>
+    </div>
+    </body></html>
+    """
+    return HTMLResponse(html)
+
+# ------------------------------------------------------------
+# On-demand Playwright (re)installation endpoint
+# ------------------------------------------------------------
+@router.post("/admin/playwright/reinstall")
+async def playwright_reinstall(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    import subprocess, sys as _sys, os as _os, tempfile
+    # Prevent reinstall if mock mode forced disabled (saves time on demo setups)
+    try:
+        if getattr(ctx.settings, 'playwright_mock_mode', False):  # type: ignore[attr-defined]
+            return JSONResponse({"status": "skipped", "reason": "mock_mode_active"})
+    except Exception:
+        pass
+    browsers_path = _os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or str(Path.home() / "AppData" / "Local" / "TitanScraper" / "pw-browsers")
+    _os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", browsers_path)
+    cmd = [_sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"]
+    ctx.logger.info("playwright_reinstall_start", path=browsers_path, cmd=" ".join(cmd))
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        ok = proc.returncode == 0
+        if ok:
+            ctx.logger.info("playwright_reinstall_complete", rc=proc.returncode)
+        else:
+            ctx.logger.error("playwright_reinstall_failed", rc=proc.returncode, stderr=proc.stderr[:400])
+        return JSONResponse({
+            "status": "ok" if ok else "error",
+            "returncode": proc.returncode,
+            "stdout": proc.stdout[-8000:],
+            "stderr": proc.stderr[-8000:],
+            "browsers_path": browsers_path,
+        }, status_code=200 if ok else 500)
+    except subprocess.TimeoutExpired:
+        ctx.logger.error("playwright_reinstall_timeout")
+        return JSONResponse({"status": "timeout"}, status_code=504)
+    except Exception as exc:  # pragma: no cover
+        ctx.logger.error("playwright_reinstall_exception", error=str(exc))
+        return JSONResponse({"status": "exception", "error": str(exc)}, status_code=500)
 
 
 @router.post("/api/admin/normalize_companies")

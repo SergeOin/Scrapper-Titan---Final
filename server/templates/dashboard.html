@@ -68,8 +68,15 @@
 </head>
 <body>
   <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
-    <h1 style="margin:0;">LinkedIn Scraper</h1>
+    <h1 style="margin:0;">LinkedIn Scraper
+      {% if run_on_start_received %}
+        <span class="pill" style="margin-left:.5rem; background:#dcfce7; border-color:#86efac; color:#166534;" title="Cycle initial lancé automatiquement au démarrage">Cycle initial lancé au démarrage</span>
+      {% endif %}
+    </h1>
     <div class="actions" style="margin-top:0;">
+      <a href="/diagnostics" style="text-decoration:none;">
+        <button type="button" class="btn-outline" title="Diagnostics système">Diagnostics</button>
+      </a>
       <form id="exportForm" class="inline" action="/export/excel" method="get">
         <input type="hidden" name="q" value="{{ q or '' }}" />
         <input type="hidden" name="sort_by" value="{{ sort_by }}" />

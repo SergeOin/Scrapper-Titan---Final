@@ -137,27 +137,21 @@ except Exception:
 
 def _ensure_event_loop_policy():
     if _is_windows():
-        # On certains environnements packagés (PyInstaller), Playwright peut échouer avec
-        # NotImplementedError lors de create_subprocess_exec si la boucle Proactor est utilisée.
-        # On offre donc un fallback configurable via EVENT_LOOP_POLICY=selector|proactor (default: selector)
+        # Playwright nécessite create_subprocess_exec => Proactor est compatible.
+        # Le bug initial venait d'un forcing "selector" bloquant les subprocess.
+        # On bascule par défaut sur Proactor, avec possibilité de revenir à selector via EVENT_LOOP_POLICY=selector.
         try:
-            chosen = os.getenv("EVENT_LOOP_POLICY", "selector").lower().strip()
+            chosen = os.getenv("EVENT_LOOP_POLICY", "proactor").lower().strip()
             if chosen not in ("selector", "proactor"):
-                chosen = "selector"
-            if chosen == "selector":
-                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-            else:
+                chosen = "proactor"
+            if chosen == "proactor":
                 asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-            try:
-                logging.getLogger("desktop").info(
-                    "event_loop_policy_selected", policy=chosen,
-                    loop_class=asyncio.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
-                )
-            except Exception:
-                pass
-        except Exception:
-            # Silencieux: on laisse la policy par défaut si on ne peut pas la changer
-            pass
+            else:
+                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            logging.getLogger("desktop").info(
+                f"event_loop_policy_selected policy={chosen} loop_class={asyncio.get_event_loop_policy().__class__.__name__}")  # type: ignore[attr-defined]
+        except Exception as exc:
+            logging.getLogger("desktop").warning(f"event_loop_policy_set_failed err={exc}")
 
 
 def _find_free_port(preferred: int = 8000, max_tries: int = 20) -> int:
@@ -428,13 +422,33 @@ def _setup_logging(base: Path) -> None:
     except Exception:
         pass
     log_file = log_dir / "desktop.log"
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[
-            logging.FileHandler(log_file, encoding="utf-8"),
-        ],
-    )
+    # Configure root minimally if not configured
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+    # Ensure a dedicated desktop logger with isolated file handler
+    dlog = logging.getLogger("desktop")
+    dlog.propagate = False
+    # Remove existing file handlers pointing elsewhere
+    for h in list(dlog.handlers):
+        try:
+            if isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', '').endswith('desktop.log'):
+                # Already correct
+                break
+            else:
+                dlog.removeHandler(h)
+        except Exception:
+            pass
+    else:
+        # Only add if loop didn't break (no correct handler found)
+        try:
+            fh = logging.FileHandler(log_file, encoding="utf-8")
+            fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+            dlog.addHandler(fh)
+        except Exception:
+            pass
     frozen = bool(getattr(sys, "frozen", False))
     exe_dir = Path(sys.executable).parent if frozen else "n/a"
     logging.getLogger("desktop").info(
@@ -626,9 +640,17 @@ def main():
     _setup_logging(user_base)
     _ensure_event_loop_policy()
     log = logging.getLogger("desktop")
+    # Build/version marker for packaged verification (helps ensure latest code is embedded)
+    try:
+        version_file = ROOT / 'VERSION'
+        version_val = version_file.read_text(encoding='utf-8').strip() if version_file.exists() else 'unknown'
+    except Exception:
+        version_val = 'unknown'
+    # Use plain string logs (PyInstaller/basic logger may not support kwargs reliably)
+    log.info(f"desktop_build_marker version={version_val} marker=run_on_start_patch_v2")
     # Log early loop policy diagnostic
     try:
-        log.info("early_loop_policy", cls=asyncio.get_event_loop_policy().__class__.__name__)  # type: ignore[attr-defined]
+        log.info(f"early_loop_policy cls={asyncio.get_event_loop_policy().__class__.__name__}")  # type: ignore[attr-defined]
     except Exception:
         pass
 
@@ -923,12 +945,94 @@ def main():
                         window.focus()
                     except Exception:
                         pass
+                    # Optional immediate cycle trigger (RUN_ON_START=1) to ensure early SQLite creation
+                    try:
+                        run_on_start = os.environ.get("RUN_ON_START", "0").lower() in ("1","true","yes","on")
+                    except Exception:
+                        run_on_start = False
+                    # Log early detection before spawning thread
+                    try:
+                        log.info(f"run_on_start_detected enabled={run_on_start}")
+                    except Exception:
+                        pass
+                    if run_on_start:
+                        import threading as _th, requests as _rq
+                        def _trigger_once():  # fire & forget
+                            log = logging.getLogger("desktop")
+                            try:
+                                # Optional small delay (default 1.5s) to let server finish warm tasks
+                                try:
+                                    delay_ms = int(os.environ.get("RUN_ON_START_DELAY_MS", "1500"))
+                                except Exception:
+                                    delay_ms = 1500
+                                # Clamp to minimum 800ms pour laisser le serveur initialiser les structures
+                                if delay_ms < 800:
+                                    delay_ms = 800
+                                log.info(f"run_on_start_schedule enabled={run_on_start} delay_ms={delay_ms}")
+                                if delay_ms > 0:
+                                    time.sleep(min(15_000, delay_ms) / 1000.0)
+                                headers = {"X-Trigger-From": "dashboard", "X-Run-On-Start": "1"}
+                                resp = _rq.post(base_url + "/trigger", headers=headers, timeout=15)
+                                log.info(f"run_on_start_triggered status={resp.status_code}")
+                                # Post verification
+                                try:
+                                    time.sleep(1.2)
+                                    dbg = _rq.get(base_url + "/debug/run_on_start", timeout=6).json()
+                                    if not dbg.get("run_on_start_seen"):
+                                        log.warning("run_on_start_flag_not_seen_first_attempt retrying=1")
+                                        time.sleep(1.0)
+                                        resp2 = _rq.post(base_url + "/trigger", headers=headers, timeout=15)
+                                        log.info(f"run_on_start_trigger_retry status={resp2.status_code}")
+                                        time.sleep(1.2)
+                                        dbg2 = _rq.get(base_url + "/debug/run_on_start", timeout=6).json()
+                                        log.info(f"run_on_start_post_check final_seen={dbg2.get('run_on_start_seen')} raw={dbg2}")
+                                    else:
+                                        log.info(f"run_on_start_post_check final_seen=True raw={dbg}")
+                                except Exception as _exc:
+                                    log.warning(f"run_on_start_post_check_error err={_exc}")
+                            except Exception as exc:  # pragma: no cover
+                                log.warning("run_on_start_failed", error=str(exc))
+                        _th.Thread(target=_trigger_once, name="run-on-start", daemon=True).start()
                 else:
                     # Show a simple retry message inside the loading window
                     window.load_html("<h2 style='font-family:system-ui'>Serveur lent à démarrer – nouvelle tentative...</h2>")
                     again = _wait_for_server(base_url, timeout=15.0)
                     if again:
                         window.load_url(base_url + "/")
+                        # Retry path also honours RUN_ON_START if it was set
+                        try:
+                            run_on_start = os.environ.get("RUN_ON_START", "0").lower() in ("1","true","yes","on")
+                        except Exception:
+                            run_on_start = False
+                        try:
+                            log.info(f"run_on_start_detected enabled={run_on_start} retry=True")
+                        except Exception:
+                            pass
+                        if run_on_start:
+                            import threading as _th, requests as _rq
+                            def _trigger_once_retry():
+                                log = logging.getLogger("desktop")
+                                try:
+                                    try:
+                                        delay_ms = int(os.environ.get("RUN_ON_START_DELAY_MS", "1500"))
+                                    except Exception:
+                                        delay_ms = 1500
+                                    if delay_ms < 800:
+                                        delay_ms = 800
+                                    log.info(f"run_on_start_schedule enabled={run_on_start} delay_ms={delay_ms} retry=True")
+                                    if delay_ms > 0:
+                                        time.sleep(min(15_000, delay_ms) / 1000.0)
+                                    resp = _rq.post(base_url + "/trigger", headers={"X-Trigger-From": "dashboard", "X-Run-On-Start": "1"}, timeout=15)
+                                    log.info(f"run_on_start_triggered_retry status={resp.status_code}")
+                                    try:
+                                        time.sleep(1.2)
+                                        dbg = _rq.get(base_url + "/debug/run_on_start", timeout=6).json()
+                                        log.info(f"run_on_start_post_check_retry seen={dbg.get('run_on_start_seen')} raw={dbg}")
+                                    except Exception as _exc:
+                                        log.warning(f"run_on_start_post_check_retry_error err={_exc}")
+                                except Exception as exc:  # pragma: no cover
+                                    log.warning("run_on_start_failed_retry", error=str(exc))
+                            _th.Thread(target=_trigger_once_retry, name="run-on-start-retry", daemon=True).start()
             except Exception:
                 logging.getLogger("desktop").exception("post_start_load_failed")
 
