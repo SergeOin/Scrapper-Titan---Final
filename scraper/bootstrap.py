@@ -214,6 +214,9 @@ class Settings(BaseSettings):
     disable_scraper: bool = Field(False, alias="DISABLE_SCRAPER")
     # When true, automatically disable scraper if a live reload environment is detected (uvicorn --reload)
     auto_disable_on_reload: bool = Field(True, alias="AUTO_DISABLE_ON_RELOAD")
+    # Purge & maintenance
+    purge_max_age_days: int = Field(30, alias="PURGE_MAX_AGE_DAYS")
+    vacuum_interval_hours: int = Field(6, alias="VACUUM_INTERVAL_HOURS")
 
     def __init__(self, **data):  # type: ignore[override]
         explicit = dict(data)

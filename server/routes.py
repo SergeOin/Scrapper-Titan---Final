@@ -1862,6 +1862,32 @@ async def metrics(ctx=Depends(get_auth_context)):
     data = generate_latest()
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
+@router.get("/metrics.json")
+async def metrics_json(ctx=Depends(get_auth_context)):
+    """JSON metrics fallback when Prometheus exposition is disabled or external scraper absent."""
+    import os, sqlite3
+    payload = {
+        "mock_mode": bool(getattr(ctx.settings, 'playwright_mock_mode', False)),
+        "scraping_enabled": ctx.settings.scraping_enabled,
+        "enable_metrics": ctx.settings.enable_metrics,
+    }
+    try:
+        if ctx.settings.sqlite_path and os.path.exists(ctx.settings.sqlite_path):
+            conn = sqlite3.connect(ctx.settings.sqlite_path)
+            with conn:
+                row = conn.execute("SELECT COUNT(*) FROM posts").fetchone()
+                payload["sqlite_posts"] = int(row[0]) if row else 0
+            conn.close()
+    except Exception:
+        pass
+    if ctx.mongo_client:
+        try:
+            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
+            payload["mongo_posts"] = await coll.count_documents({})
+        except Exception:
+            pass
+    return JSONResponse(payload)
+
 
 # ------------------------------------------------------------
 # Session management endpoints and login page
