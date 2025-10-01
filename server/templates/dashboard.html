@@ -248,7 +248,7 @@
     function startInitCountdown(){}
     function stopInitCountdown(){ if(_initCountdownHandle){ clearInterval(_initCountdownHandle); _initCountdownHandle=null; } _initLeft = null; }
 
-    let _autoTriggeredFirstRun = false;
+    let _autoTriggeredFirstRun = false; // legacy flag retained; auto first-run removed
     let _autoPulseHandle = null;
     let _autoPulseBusy = false;
     function ensureAutoPulse(enabled, interval){
@@ -321,17 +321,10 @@
             setHintHTML(html, 'status-hint-ok');
             setHintVisible(true);
           } else {
-            // Initial: immediate launch message with spinner (no artificial wait)
-            setHintHTML(`${spinner}Premier cycle en cours…`, 'status-hint-wait');
+            // Initial state (no last run yet): show guidance instead of auto triggering
+            setHintHTML('Scraper actif – aucun cycle lancé. Utilisez le bouton "Lancer un cycle" pour démarrer la collecte initiale.', 'status-hint-wait');
             setHintVisible(true);
-            if (!_autoTriggeredFirstRun) {
-              _autoTriggeredFirstRun = true;
-              try {
-                const fd = new FormData();
-                const tr = await fetch('/trigger', { method:'POST', body: fd, headers: { 'X-Trigger-From': 'dashboard' } });
-                if (tr.ok) { showToast('Cycle en cours lancé','info'); }
-              } catch(_) { /* ignore */ }
-            }
+            // Auto trigger removed per request
             ensureAutoPulse(true, interval);
           }
           if (btn) { btn.textContent = 'Mettre en pause'; btn.style.background = '#dc2626'; }
@@ -401,9 +394,9 @@
           const playwrightReady = bodyEl?.dataset.playwrightReady !== '0';
           let msg = 'Aucun résultat pour le moment.';
           if (!hasRun && scrapingEnabled) {
-            msg = 'Premier cycle en cours… Patientez pendant la collecte initiale.';
+            msg = 'Aucun post encore collecté – cliquez sur "Lancer un cycle".';
           } else if (!scrapingEnabled && !hasRun) {
-            msg = 'Scraper inactif – cliquez sur Reprendre pour lancer la première collecte.';
+            msg = 'Scraper inactif – cliquez sur Reprendre puis sur "Lancer un cycle".';
           } else if (scrapingEnabled && hasRun && playwrightReady) {
             msg = 'Aucun post correspondant à vos filtres actuels.';
           } else if (!playwrightReady) {
@@ -504,6 +497,28 @@
   startStatusTicker();
   setupActionDelegation();
   refreshTrashCount();
+  // Inject manual trigger button (first-run or anytime) if not present
+  (function addManualTrigger(){
+    const container = document.getElementById('statusContainer');
+    if(!container) return;
+    if(document.getElementById('manualTriggerBtn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'manualTriggerBtn';
+    btn.type = 'button';
+    btn.style.marginLeft = '1rem';
+    btn.textContent = 'Lancer un cycle';
+    btn.addEventListener('click', async ()=>{
+      btn.disabled = true; const prev = btn.textContent; btn.textContent = 'Lancement…';
+      try {
+        const fd = new FormData();
+        const r = await fetch('/trigger', { method:'POST', body: fd, headers: { 'X-Trigger-From': 'dashboard-manual' }});
+        if(!r.ok){ showToast('Échec lancement: '+r.status,'error'); }
+        else { showToast('Cycle démarré','info'); refreshStatus(); }
+      } catch(e){ showToast('Erreur: '+e,'error'); }
+      finally { btn.disabled = false; btn.textContent = prev; }
+    });
+    container.appendChild(btn);
+  })();
     // Logout handler
     const logoutBtn = document.getElementById('logoutBtn');
     if (logoutBtn) {
