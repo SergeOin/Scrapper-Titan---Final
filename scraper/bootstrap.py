@@ -111,6 +111,8 @@ class Settings(BaseSettings):
     redis_queue_key: str = Field("jobs:scrape", alias="REDIS_QUEUE_KEY")
     job_visibility_timeout: int = Field(300, alias="JOB_VISIBILITY_TIMEOUT")
     job_poll_interval: int = Field(3, alias="JOB_POLL_INTERVAL")
+    # If true, a Redis connection failure will permanently disable Redis usage (no retry attempts in session)
+    redis_fail_hard_disable: bool = Field(True, alias="REDIS_FAIL_HARD_DISABLE")
 
     # Optional: disable remote backends entirely (useful for pure-local SQLite mode)
     disable_mongo: bool = Field(False, alias="DISABLE_MONGO")
@@ -463,17 +465,19 @@ async def init_redis(settings: Settings, logger: structlog.BoundLogger) -> Optio
         return None
     try:
         redis_client = aioredis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
-        # Simple ping
         await redis_client.ping()
         logger.info("redis_connected", url=settings.redis_url)
         return redis_client
     except Exception as exc:  # pragma: no cover
-        # If pointing to a local default instance (localhost:6379), treat as optional and avoid noisy error logs.
         url = settings.redis_url or ""
-        if (("localhost" in url) or ("127.0.0.1" in url)) and (":6379" in url):
-            logger.debug("redis_unavailable_local_fallback", error=str(exc))
-        else:
-            logger.error("redis_connection_failed", error=str(exc))
+        level = logger.debug if (("localhost" in url) or ("127.0.0.1" in url)) and (":6379" in url) else logger.error
+        level("redis_connection_failed", error=str(exc), url=url)
+        if settings.redis_fail_hard_disable:
+            try:
+                settings.disable_redis = True  # type: ignore[attr-defined]
+                logger.warning("redis_disabled_after_failure", url=url)
+            except Exception:
+                pass
         return None
 
 
@@ -525,6 +529,27 @@ async def bootstrap(force: bool = False) -> AppContext:
         configure_logging(settings.log_level, settings)
         logger = structlog.get_logger().bind(component="bootstrap")
 
+        # Preflight: test if asyncio.create_subprocess_exec works (Windows frozen issue). If it fails hard -> force mock mode.
+        try:
+            async def _sub_ok():  # minimal echo command cross-platform
+                proc = await asyncio.create_subprocess_exec(sys.executable, '-c', 'import sys;sys.exit(0)')
+                await proc.communicate()
+                return proc.returncode == 0
+            ok = asyncio.get_event_loop().run_until_complete(_sub_ok()) if not asyncio.get_event_loop().is_running() else True
+            if not ok:
+                if not settings.playwright_mock_mode:
+                    settings.playwright_mock_mode = True  # type: ignore[attr-defined]
+                logger.warning("subprocess_preflight_failed", action="force_mock_mode")
+        except Exception as _pre_exc:
+            # Only force if explicit env allows auto fallback
+            if os.environ.get("AUTO_ENABLE_MOCK_ON_PLAYWRIGHT_FAILURE", "1").lower() in ("1","true","yes","on"):
+                try:
+                    if not settings.playwright_mock_mode:
+                        settings.playwright_mock_mode = True  # type: ignore[attr-defined]
+                    logger.warning("subprocess_preflight_exception", error=str(_pre_exc), action="force_mock_mode")
+                except Exception:
+                    pass
+
         # Auto-disable logic in dev reload context (avoid Playwright subprocess issues on Windows)
         try:
             if settings.auto_disable_on_reload and not settings.disable_scraper:
@@ -569,6 +594,46 @@ async def bootstrap(force: bool = False) -> AppContext:
             redis=redis_client,
             token_bucket=token_bucket,
         )
+        # Ensure SQLite fallback file + core tables exist immediately (even before first scrape)
+        try:
+            if settings.sqlite_path:
+                from pathlib import Path as _P
+                import sqlite3 as _sq
+                sp = _P(settings.sqlite_path)
+                sp.parent.mkdir(parents=True, exist_ok=True)
+                conn = _sq.connect(str(sp))
+                with conn:
+                    conn.execute(
+                        """CREATE TABLE IF NOT EXISTS posts (
+                        id TEXT PRIMARY KEY,
+                        keyword TEXT,
+                        author TEXT,
+                        author_profile TEXT,
+                        company TEXT,
+                        permalink TEXT,
+                        text TEXT,
+                        language TEXT,
+                        published_at TEXT,
+                        collected_at TEXT,
+                        raw_json TEXT,
+                        search_norm TEXT,
+                        content_hash TEXT
+                        )"""
+                    )
+                    # Lightweight flags table; indexes created lazily in worker/routes otherwise
+                    conn.execute(
+                        """CREATE TABLE IF NOT EXISTS post_flags (
+                        post_id TEXT PRIMARY KEY,
+                        is_favorite INTEGER NOT NULL DEFAULT 0,
+                        is_deleted INTEGER NOT NULL DEFAULT 0,
+                        favorite_at TEXT,
+                        deleted_at TEXT
+                        )"""
+                    )
+                conn.close()
+                logger.debug("sqlite_initialized", path=settings.sqlite_path)
+        except Exception as _e:  # pragma: no cover
+            logger.warning("sqlite_init_failed", error=str(_e), path=getattr(settings, 'sqlite_path', None))
         # Pre-initialize risk counters (avoid attribute errors in early worker loop)
         try:
             setattr(ctx, "_risk_auth_suspect", 0)
@@ -584,6 +649,7 @@ async def bootstrap(force: bool = False) -> AppContext:
             keywords=settings.keywords,
             scraping_enabled=settings.scraping_enabled,
             disabled_flag=settings.disable_scraper,
+            mock_mode=settings.playwright_mock_mode,
         )
         _context_singleton = ctx
         return ctx

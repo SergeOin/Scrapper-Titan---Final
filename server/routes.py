@@ -12,6 +12,7 @@ Auth (optional): Basic auth if INTERNAL_AUTH_USER and INTERNAL_AUTH_PASS_HASH se
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 import contextlib
 import io
 from typing import Any, Optional
@@ -1179,18 +1180,17 @@ async def export_excel(
     _auth=Depends(require_auth),
     _ls=Depends(require_linkedin_session),
 ):
-    # Lazy import pandas to avoid failing app startup if numpy/pandas cannot load in frozen builds
+    # Lazy import pandas; if unavailable, fallback to direct xlsxwriter generation (no dependency on numpy)
+    pandas_ok = True
     try:
         import pandas as pd  # type: ignore
     except Exception as e:  # pragma: no cover
+        pandas_ok = False
+        err_txt = str(e)
         try:
-            ctx.logger.error("export_excel_pandas_unavailable", error=str(e))
+            ctx.logger.error("export_excel_pandas_unavailable", error=err_txt)
         except Exception:
             pass
-        return PlainTextResponse(
-            "Export Excel indisponible: dépendance pandas/numpy introuvable. Réinstallez l'application.",
-            status_code=500,
-        )
     # Clamp limit defensively
     limit = min(limit, 5000)
     skip = (page - 1) * limit
@@ -1210,10 +1210,35 @@ async def export_excel(
             "Lien": post.get("permalink") or "",
         })
     columns = ["Keyword", "Auteur", "Entreprise", "Statut", "Métier", "Opportunité", "Texte", "Publié le", "Collecté le", "Lien"]
-    df = pd.DataFrame(rows, columns=columns)
     buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        df.to_excel(writer, index=False, sheet_name="Posts")
+    if pandas_ok:
+        try:
+            df = pd.DataFrame(rows, columns=columns)  # type: ignore[name-defined]
+            with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:  # type: ignore[name-defined]
+                df.to_excel(writer, index=False, sheet_name="Posts")
+        except Exception as e:  # pragma: no cover
+            # Fallback to manual writer if DataFrame path still fails (rare numpy issues)
+            try:
+                ctx.logger.warning("export_excel_pandas_fallback_manual", error=str(e))
+            except Exception:
+                pass
+            pandas_ok = False
+    if not pandas_ok:
+        # Manual minimal XLSX using xlsxwriter directly
+        try:
+            import xlsxwriter  # type: ignore
+            wb = xlsxwriter.Workbook(buffer, {'in_memory': True})
+            ws = wb.add_worksheet('Posts')
+            for col, header in enumerate(columns):
+                ws.write(0, col, header)
+            for r_idx, row in enumerate(rows, start=1):
+                for c_idx, col in enumerate(columns):
+                    ws.write(r_idx, c_idx, row.get(col, ""))
+            wb.close()
+        except Exception as e:  # pragma: no cover
+            return PlainTextResponse(
+                f"Export Excel indisponible (échec fallback): {e}", status_code=500
+            )
     buffer.seek(0)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     filename = f"linkedin_posts_{timestamp}.xlsx"
@@ -1223,6 +1248,127 @@ async def export_excel(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=headers,
     )
+
+# ------------------------------------------------------------
+# Debug endpoints (non-authenticated for local desktop only)
+# ------------------------------------------------------------
+@router.get("/debug/loop")
+async def debug_loop(ctx=Depends(get_auth_context)):
+    import asyncio as _a
+    pol = None
+    try:
+        pol = _a.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
+    except Exception:
+        pol = "<error>"
+    return {"policy": pol}
+
+@router.get("/debug/pandas")
+async def debug_pandas(ctx=Depends(get_auth_context)):
+    try:
+        import pandas as _pd  # type: ignore
+        import numpy as _np  # type: ignore
+        v = {"pandas": getattr(_pd, '__version__', '?'), "numpy": getattr(_np, '__version__', '?')}
+        # Tiny dataframe test
+        try:
+            import io as _io
+            buf = _io.BytesIO()
+            _pd.DataFrame({"a":[1,2]}).to_excel(buf, index=False)
+            v["excel_write"] = "ok"
+        except Exception as e:
+            v["excel_write"] = f"fail:{e}"  # pragma: no cover
+        return v
+    except Exception as e:  # pragma: no cover
+        try:
+            ctx.logger.error("debug_pandas_import_failed", error=str(e))
+        except Exception:
+            pass
+        return {"error": str(e)}
+
+@router.get("/debug/mode")
+async def debug_mode(ctx=Depends(get_auth_context)):
+    """Return current runtime mode (mock, scraping enabled, loop policy, sync flag)."""
+    import asyncio as _a
+    try:
+        loop_policy = _a.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
+    except Exception:
+        loop_policy = "<error>"
+    return {
+        "playwright_mock_mode": bool(getattr(ctx.settings, "playwright_mock_mode", False)),
+        "scraping_enabled": bool(getattr(ctx.settings, "scraping_enabled", False)),
+        "disable_scraper": bool(getattr(ctx.settings, "disable_scraper", False)),
+        "loop_policy": loop_policy,
+        "playwright_force_sync": os.environ.get("PLAYWRIGHT_FORCE_SYNC", "0") in ("1","true","yes","on"),
+    }
+
+@router.get("/debug/storage/counts")
+async def debug_storage_counts(ctx=Depends(get_auth_context)):
+    """Return counts for posts/favorites/deleted (SQLite + Mongo meta if available)."""
+    import sqlite3, os
+    counts = {"mongo_posts": None, "sqlite_posts": None, "favorites": None, "deleted": None}
+    # Mongo authoritative count (excluding demo posts)
+    if ctx.mongo_client:
+        try:
+            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
+            counts["mongo_posts"] = await coll.count_documents({"author": {"$ne": "demo_recruteur"}, "keyword": {"$ne": "demo_recruteur"}})
+        except Exception:
+            counts["mongo_posts"] = None
+    # SQLite counts
+    try:
+        sp = ctx.settings.sqlite_path
+        if sp and os.path.exists(sp):
+            conn = sqlite3.connect(sp)
+            with conn:
+                row = conn.execute("SELECT COUNT(*) FROM posts").fetchone()
+                counts["sqlite_posts"] = int(row[0]) if row else 0
+                try:
+                    conn.execute("SELECT 1 FROM post_flags LIMIT 1")
+                    rowf = conn.execute("SELECT SUM(is_favorite), SUM(is_deleted) FROM post_flags").fetchone()
+                    if rowf:
+                        counts["favorites"] = int(rowf[0] or 0)
+                        counts["deleted"] = int(rowf[1] or 0)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return counts
+
+@router.get("/debug/status")
+async def debug_status(ctx=Depends(get_auth_context)):
+    """Consolidated runtime status (loop policy, mode, counts)."""
+    import asyncio as _a, time as _t
+    pol = None
+    try:
+        pol = _a.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
+    except Exception:
+        pol = '<error>'
+    # Basic post counts from SQLite
+    sqlite_info = {}
+    try:
+        sp = ctx.settings.sqlite_path
+        if sp and os.path.exists(sp):
+            conn = sqlite3.connect(sp)
+            with conn:
+                row = conn.execute('SELECT COUNT(*) FROM posts').fetchone()
+                sqlite_info['posts'] = int(row[0]) if row else 0
+                try:
+                    rowf = conn.execute('SELECT SUM(is_favorite), SUM(is_deleted) FROM post_flags').fetchone()
+                    if rowf:
+                        sqlite_info['favorites'] = int(rowf[0] or 0)
+                        sqlite_info['deleted'] = int(rowf[1] or 0)
+                except Exception:
+                    pass
+            conn.close()
+    except Exception:
+        pass
+    return {
+        'loop_policy': pol,
+        'mock_mode': bool(getattr(ctx.settings, 'playwright_mock_mode', False)),
+        'force_sync': os.environ.get('PLAYWRIGHT_FORCE_SYNC','0') in ('1','true','yes','on'),
+        'scraping_enabled': ctx.settings.scraping_enabled,
+        'keywords': ctx.settings.keywords,
+        'sqlite': sqlite_info,
+        'time': _t.time(),
+    }
 
 
 _local_queue: asyncio.Queue[list[str]] | None = None
