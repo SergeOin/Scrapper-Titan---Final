@@ -58,12 +58,55 @@ except Exception:  # pragma: no cover
     broadcast = None  # type: ignore
     EventType = None  # type: ignore
 
+# ---------------------------------------------------------------------------
+# Ultra-early Windows event loop policy hardening BEFORE importing Playwright.
+# Rationale: In the packaged build we still see NotImplementedError arising from
+# asyncio.subprocess on Windows (Proactor loop path). For frozen apps the default
+# policy can revert very early (before desktop/main enforcement) in the worker
+# module import context executed inside uvicorn thread. We therefore enforce the
+# selector policy here unconditionally (unless env explicitly requests proactor)
+# and log a single diagnostic. This MUST happen before importing playwright.*
+# ---------------------------------------------------------------------------
+if os.name == "nt":  # pragma: no cover (platform-specific)
+    try:
+        desired = os.environ.get("EVENT_LOOP_POLICY", "selector").lower().strip()
+        if desired not in ("selector", "proactor"):
+            desired = "selector"
+        current_cls = asyncio.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
+        changed = False
+        if desired == "selector" and "Selector" not in current_cls:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
+            changed = True
+        elif desired == "proactor" and "Proactor" not in current_cls:
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())  # type: ignore[attr-defined]
+            changed = True
+        new_cls = asyncio.get_event_loop_policy().__class__.__name__  # type: ignore[attr-defined]
+        structlog.get_logger("worker").info(
+            "pre_playwright_loop_policy",
+            desired=desired,
+            before=current_cls,
+            after=new_cls,
+            changed=changed,
+        )
+    except Exception:
+        structlog.get_logger("worker").warning("pre_playwright_loop_policy_failed", exc_info=True)
+
+# Delay Playwright import until after policy enforcement.
 try:  # Optional heavy import lazy usage
     from playwright.async_api import async_playwright, Page, Browser
 except Exception:  # pragma: no cover
     async_playwright = None  # type: ignore
     Page = Any  # type: ignore
     Browser = Any  # type: ignore
+
+# Sync fallback wrapper (thread-based) when async subprocess creation fails in frozen builds
+try:
+    from .playwright_sync import should_force_sync, run_sync_playwright  # type: ignore
+except Exception:  # pragma: no cover
+    def should_force_sync() -> bool:  # type: ignore
+        return False
+    async def run_sync_playwright(keywords, ctx):  # type: ignore
+        return []
 
 # ------------------------------------------------------------
 # Authentication helpers (single session use)
@@ -181,18 +224,112 @@ async def _attempt_navigation(page: Any, url: str, ctx: AppContext, logger: stru
     return False
 
 async def _recover_browser(pw, ctx: AppContext, logger: structlog.BoundLogger):  # returns (browser, page) or None
-    try:
-        browser = await pw.chromium.launch(headless=ctx.settings.playwright_headless_scrape)
-        # Apply storage_state on context to restore authenticated session
-        context = await browser.new_context(
-            storage_state=ctx.settings.storage_state if os.path.exists(ctx.settings.storage_state) else None
-        )
-        page = await context.new_page()
-        await _ensure_authenticated(page, ctx, logger)
-        return browser, page
-    except Exception as exc:
-        logger.error("browser_recovery_failed", error=str(exc))
-        return None
+    """Try to (re)create a browser + page with robust fallbacks.
+
+    Steps:
+      1. Enforce WindowsProactorEventLoopPolicy first (Windows) if currently selector.
+      2. Launch with optional extra args + headless override env PLAYWRIGHT_DISABLE_HEADLESS=1.
+      3. Create context WITH storage_state if file exists; on failure retry once WITHOUT storage_state.
+      4. Create page; if fails, relaunch whole browser once.
+      5. Ensure authenticated (lightweight check + screenshot capture logged upstream).
+    """
+    storage_file = ctx.settings.storage_state
+    storage_exists = os.path.exists(storage_file)
+    disable_headless = os.environ.get("PLAYWRIGHT_DISABLE_HEADLESS", "0").lower() in ("1","true","yes","on")
+    extra_args_env = os.environ.get("PLAYWRIGHT_EXTRA_ARGS", "")
+    extra_args = [a.strip() for a in extra_args_env.split(" ") if a.strip()] if extra_args_env else []
+    # Provide a safe default argument set for Windows if nothing specified
+    if not extra_args:
+        extra_args = ["--disable-gpu","--no-sandbox","--disable-dev-shm-usage"]
+    # Policy hardening (updated): ensure we use Selector loop (Proactor lacks subprocess support -> NotImplementedError)
+    if os.name == "nt":
+        try:
+            pol = asyncio.get_event_loop_policy().__class__.__name__
+            if "Proactor" in pol:
+                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
+                logger.warning("event_loop_policy_switched_selector", previous=pol)
+        except Exception:
+            pass
+    headless_flag = ctx.settings.playwright_headless_scrape and not disable_headless
+    attempt = 0
+    last_error = None
+    for phase in ("with_storage","without_storage"):
+        attempt += 1
+        try:
+            logger.info(
+                "browser_launch_attempt",
+                attempt=attempt,
+                headless=headless_flag,
+                phase=phase,
+                storage_state=storage_file,
+                storage_exists=storage_exists,
+                extra_args=extra_args,
+            )
+            browser = await pw.chromium.launch(headless=headless_flag, args=extra_args)
+            ctx_arg = storage_file if (phase == "with_storage" and storage_exists) else None
+            try:
+                context = await browser.new_context(storage_state=ctx_arg)
+            except Exception as e_ctx:
+                last_error = f"context_create_failed:{e_ctx}"; logger.error("context_create_failed", error=str(e_ctx), phase=phase)
+                with contextlib.suppress(Exception):
+                    await browser.close()
+                if phase == "with_storage":
+                    continue  # retry without storage
+                else:
+                    return None
+            try:
+                page = await context.new_page()
+            except Exception as e_page:
+                last_error = f"new_page_failed:{e_page}"; logger.error("new_page_failed", error=str(e_page), phase=phase)
+                with contextlib.suppress(Exception):
+                    await browser.close()
+                if phase == "with_storage":
+                    continue
+                else:
+                    return None
+            try:
+                await _ensure_authenticated(page, ctx, logger)
+            except Exception as auth_exc:
+                logger.warning("ensure_authenticated_error", error=str(auth_exc))
+            return browser, page
+        except Exception as exc:
+            last_error = str(exc)
+            logger.error("browser_recovery_failed", error=last_error, phase=phase)
+            with contextlib.suppress(Exception):
+                await browser.close()  # type: ignore[name-defined]
+            if phase == "with_storage":
+                continue
+            return None
+    # If standard launches exhausted, attempt persistent context fallback (user_data_dir) unless disabled
+    if os.environ.get("PLAYWRIGHT_PERSISTENT_FALLBACK", "1").lower() in ("1","true","yes","on"):
+        import tempfile, shutil
+        user_data_dir = Path(tempfile.mkdtemp(prefix="pw_ud_"))
+        try:
+            logger.warning("browser_persistent_fallback_start", user_data_dir=str(user_data_dir))
+            # Force headful in fallback if previous was headless
+            headless_flag = ctx.settings.playwright_headless_scrape and not disable_headless
+            browser_context = await pw.chromium.launch_persistent_context(
+                user_data_dir=str(user_data_dir),
+                headless=headless_flag,
+                args=extra_args,
+            )
+            # In persistent mode, context == browser_context
+            page = browser_context.pages[0] if browser_context.pages else await browser_context.new_page()
+            try:
+                await _ensure_authenticated(page, ctx, logger)
+            except Exception as auth_exc:
+                logger.warning("ensure_authenticated_error_persistent", error=str(auth_exc))
+            logger.info("browser_persistent_fallback_success")
+            return browser_context, page  # we treat 'browser_context' as 'browser' for closing upstream
+        except Exception as p_exc:
+            logger.error("browser_persistent_fallback_failed", error=str(p_exc))
+        finally:
+            # Do NOT remove user_data_dir immediately on success (session reuse). Only clean on failure.
+            if not page or page.is_closed():  # type: ignore[name-defined]
+                with contextlib.suppress(Exception):
+                    shutil.rmtree(user_data_dir, ignore_errors=True)
+    logger.error("browser_recovery_exhausted", last_error=last_error)
+    return None
 
 async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> list[Post]:
     if async_playwright is None:
@@ -204,71 +341,110 @@ async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> 
     for batch_index in range(0, len(all_keywords), batch_size):
         batch = all_keywords[batch_index: batch_index + batch_size]
         logger.info("batch_start", batch_index=batch_index//batch_size + 1, size=len(batch))
-        try:
-            async with async_playwright() as pw:
-                recovery = await _recover_browser(pw, ctx, logger)
-                if recovery is None:
-                    logger.warning("skip_batch_recovery_failed", batch=batch)
-                    continue
-                browser, page = recovery
-                try:
-                    for idx, keyword in enumerate(batch):
-                        if ctx.settings.adaptive_pause_every > 0 and results and (len(results) // ctx.settings.max_posts_per_keyword) % ctx.settings.adaptive_pause_every == 0 and (len(results) // ctx.settings.max_posts_per_keyword) != 0:
-                            logger.info("adaptive_pause", seconds=ctx.settings.adaptive_pause_seconds)
-                            await asyncio.sleep(ctx.settings.adaptive_pause_seconds)
-                        if page.is_closed():
-                            logger.warning("page_closed_detected", action="attempt_recovery")
-                            rec = await _recover_browser(pw, ctx, logger)
-                            if rec is None:
-                                logger.error("recovery_failed_abort_keyword", keyword=keyword)
-                                break
-                            browser, page = rec
-                        if ctx.token_bucket:
-                            await ctx.token_bucket.consume(1)
-                            if ctx.token_bucket:
-                                SCRAPE_RATE_LIMIT_TOKENS.set(ctx.token_bucket.tokens)
-                        kw = keyword
-                        try:
-                            if ctx.settings.search_geo_hint:
-                                kw = f"{keyword} {ctx.settings.search_geo_hint}".strip()
-                        except Exception:
-                            pass
-                        search_url = f"https://www.linkedin.com/search/results/content/?keywords={kw}"
-                        ok = await _attempt_navigation(page, search_url, ctx, logger)
-                        if not ok:
-                            logger.warning("skip_keyword_navigation_failed", keyword=keyword)
-                            continue
-                        try:
-                            await page.wait_for_timeout(1200)
-                            posts = await extract_posts(page, keyword, ctx.settings.max_posts_per_keyword, ctx)
-                            logger.info("keyword_extracted", keyword=keyword, count=len(posts))
-                            results.extend(posts)
-                        except Exception as exc:
-                            logger.warning("keyword_processing_failed", keyword=keyword, error=str(exc))
-                            try:
-                                screenshot_path = Path(ctx.settings.screenshot_dir) / f"error_{keyword.replace(' ','_')}.png"
-                                await page.screenshot(path=str(screenshot_path))
-                                logger.info("keyword_error_screenshot", path=str(screenshot_path))
-                            except Exception:
-                                pass
-                finally:
-                    try:
-                        if not page.is_closed():
-                            end_shot = Path(ctx.settings.screenshot_dir) / f"batch_{batch_index//batch_size + 1}_end.png"
-                            await page.screenshot(path=str(end_shot))
-                            logger.info("batch_screenshot", path=str(end_shot))
-                    except Exception:
-                        pass
-                    with contextlib.suppress(Exception):
-                        await browser.close()
-        except NotImplementedError:
-            logger.error("playwright_subprocess_unsupported", hint="Relancer sans reload: python scripts/run_server.py")
+        # Wrapper with explicit retries + loop policy fallback for Playwright launch
+        launch_attempts = 0
+        max_attempts = 2  # 1) selector (par défaut), 2) proactor fallback
+        last_error: Optional[str] = None
+        while launch_attempts < max_attempts:
             try:
+                launch_attempts += 1
+                if os.name == "nt":
+                    pol = asyncio.get_event_loop_policy().__class__.__name__
+                    # Ensure Selector loop (Proactor cannot spawn subprocess -> Playwright NotImplementedError)
+                    if "Proactor" in pol:
+                        try:
+                            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
+                            pol2 = asyncio.get_event_loop_policy().__class__.__name__
+                            logger.warning("event_loop_policy_forced_selector_prelaunch", previous=pol, new=pol2)
+                            pol = pol2
+                        except Exception as e:
+                            logger.warning("event_loop_policy_selector_force_failed", error=str(e), previous=pol)
+                    logger.info("playwright_launch_attempt", attempt=launch_attempts, policy=pol)
+                async with async_playwright() as pw:
+                    # Apply a timeout to recovery to avoid hanging indefinitely if Chromium crashes silently
+                    timeout_seconds = int(os.environ.get("PLAYWRIGHT_RECOVER_TIMEOUT_SECONDS", "15"))
+                    try:
+                        recovery = await asyncio.wait_for(_recover_browser(pw, ctx, logger), timeout=timeout_seconds)
+                    except asyncio.TimeoutError:
+                        logger.error("browser_launch_timeout", timeout_seconds=timeout_seconds)
+                        recovery = None
+                    if recovery is None:
+                        logger.warning("skip_batch_recovery_failed", batch=batch)
+                        break
+                    browser, page = recovery
+                    try:
+                        for idx, keyword in enumerate(batch):
+                            if ctx.settings.adaptive_pause_every > 0 and results and (len(results) // ctx.settings.max_posts_per_keyword) % ctx.settings.adaptive_pause_every == 0 and (len(results) // ctx.settings.max_posts_per_keyword) != 0:
+                                logger.info("adaptive_pause", seconds=ctx.settings.adaptive_pause_seconds)
+                                await asyncio.sleep(ctx.settings.adaptive_pause_seconds)
+                            if page.is_closed():
+                                logger.warning("page_closed_detected", action="attempt_recovery")
+                                rec = await _recover_browser(pw, ctx, logger)
+                                if rec is None:
+                                    logger.error("page_recovery_failed", keyword=keyword)
+                                    break
+                                browser, page = rec
+                            if ctx.token_bucket:
+                                await ctx.token_bucket.consume(1)
+                                SCRAPE_RATE_LIMIT_TOKENS.set(ctx.token_bucket.tokens)
+                            try:
+                                search_url = f"https://www.linkedin.com/search/results/content/?keywords={keyword}"
+                                ok = await _attempt_navigation(page, search_url, ctx, logger)
+                                if not ok:
+                                    logger.warning("navigation_gave_up", keyword=keyword)
+                                    continue
+                                # Log final URL + attempt lightweight root readiness
+                                try:
+                                    current_url = page.url
+                                except Exception:
+                                    current_url = "<unknown>"
+                                logger.info("navigation_arrived", keyword=keyword, url=current_url)
+                                # Wait for a generic root container (non-fatal)
+                                root_wait_ms = int(os.environ.get("PLAYWRIGHT_ROOT_WAIT_MS", "4000"))
+                                with contextlib.suppress(Exception):
+                                    await page.wait_for_selector("main, div.scaffold-layout__main, div.feed-shared-update-v2", timeout=root_wait_ms)
+                                posts = await extract_posts(page, keyword, ctx.settings.max_posts_per_keyword, ctx)
+                                logger.info("keyword_extracted", keyword=keyword, count=len(posts))
+                                results.extend(posts)
+                            except Exception as exc:
+                                logger.warning("keyword_failed", keyword=keyword, error=str(exc))
+                        # Diagnostic fin de batch
+                        if not page.is_closed():
+                            with contextlib.suppress(Exception):
+                                end_shot = Path(ctx.settings.screenshot_dir) / f"batch_{batch_index//batch_size + 1}_end.png"
+                                await page.screenshot(path=str(end_shot))
+                                logger.info("batch_screenshot", path=str(end_shot))
+                    finally:
+                        with contextlib.suppress(Exception):
+                            await browser.close()
+                last_error = None  # success
+                break
+            except NotImplementedError as ne:
+                last_error = str(ne)
+                logger.error("playwright_not_implemented", attempt=launch_attempts, error=last_error)
+                if os.name == "nt" and launch_attempts < max_attempts:
+                    # Force Selector loop then retry once
+                    try:
+                        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
+                        logger.warning("event_loop_policy_recover_selector")
+                    except Exception as exc:
+                        logger.warning("event_loop_policy_recover_failed", error=str(exc))
+                    await asyncio.sleep(0.6)
+                    continue
+                break
+            except Exception as exc:
+                last_error = str(exc)
+                logger.error("playwright_launch_failed", attempt=launch_attempts, error=last_error)
+                if launch_attempts < max_attempts:
+                    await asyncio.sleep(1.0)
+                    continue
+                break
+        if last_error:
+            # Fallback mock mode to keep UI alive
+            with contextlib.suppress(Exception):
                 if hasattr(ctx.settings, "playwright_mock_mode"):
                     setattr(ctx.settings, "playwright_mock_mode", True)
-                logger.warning("fallback_mock_mode_enabled")
-            except Exception:
-                pass
+                    logger.warning("fallback_mock_mode_enabled", reason="playwright_launch_unrecoverable", error=last_error)
             break
         logger.info("batch_complete", batch=batch)
     return results
@@ -350,7 +526,17 @@ async def store_posts(ctx: AppContext, posts: list[Post]) -> None:
         with SCRAPE_STEP_DURATION.labels(step="sqlite_insert").time():
             _store_sqlite(ctx.settings.sqlite_path, posts)
         SCRAPE_STORAGE_ATTEMPTS.labels("sqlite", "success").inc()
-        logger.info("sqlite_inserted", path=ctx.settings.sqlite_path, inserted=len(posts))
+        total_rows = None
+        try:
+            if ctx.settings.sqlite_path and os.path.exists(ctx.settings.sqlite_path):
+                _conn_chk = sqlite3.connect(ctx.settings.sqlite_path)
+                with _conn_chk:
+                    r = _conn_chk.execute("SELECT COUNT(*) FROM posts").fetchone()
+                    if r:
+                        total_rows = int(r[0])
+        except Exception:
+            total_rows = None
+        logger.info("sqlite_inserted", path=ctx.settings.sqlite_path, inserted=len(posts), total_rows=total_rows)
         return
     except Exception as exc:  # pragma: no cover
         SCRAPE_STORAGE_ATTEMPTS.labels("sqlite", "error").inc()
@@ -561,6 +747,9 @@ POST_CONTAINER_SELECTORS = [
     "div.update-components-feed-update",
     "div.occludable-update",
     "div[data-urn*='urn:li:activity:']",
+    # Additional generic fallbacks (layout changes / experimental wrappers)
+    "div.feed-shared-update-v3",
+    "div.update-components-actor__container",
 ]
 AUTHOR_SELECTOR = (
     "a.update-components-actor__meta-link, "
@@ -725,6 +914,10 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                     dynamic_max_scroll = max(ctx.settings.adaptive_scroll_min, ctx.settings.max_scroll_steps - 1)
     except Exception:
         pass
+    # Rejection statistics for diagnostics (reason -> count)
+    reject_stats: dict[str, int] = {}
+    # Optional diagnostics
+    diagnostics_enabled = bool(int(os.environ.get("PLAYWRIGHT_DEBUG_SNAPSHOTS", "0")))
     for step in range(dynamic_max_scroll + 1):
         elements: list[Any] = []
         for selector in POST_CONTAINER_SELECTORS:
@@ -741,77 +934,125 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                 await page.wait_for_timeout(1200)
             except Exception:
                 pass
-        for el in elements:
+            if diagnostics_enabled:
+                # Save a small HTML snapshot for troubleshooting missing selectors
+                try:
+                    html = await page.content()
+                    snap_path = Path(ctx.settings.screenshot_dir) / f"debug_{keyword}_step0.html"
+                    snap_path.write_text(html[:200_000], encoding="utf-8", errors="ignore")
+                    ctx.logger.warning("debug_snapshot_written", path=str(snap_path), keyword=keyword)
+                except Exception:
+                    pass
+            # Rescan after a lightweight scroll if still none
+            if not elements:
+                with contextlib.suppress(Exception):
+                    await page.evaluate("window.scrollBy(0, 600)")
+                    await page.wait_for_timeout(800)
+                for selector in POST_CONTAINER_SELECTORS:
+                    with contextlib.suppress(Exception):
+                        found2 = await page.query_selector_all(selector)
+                        if found2:
+                            elements.extend(found2)
+                if diagnostics_enabled:
+                    try:
+                        html2 = await page.content()
+                        snap_path2 = Path(ctx.settings.screenshot_dir) / f"debug_{keyword}_after_rescan.html"
+                        snap_path2.write_text(html2[:200_000], encoding="utf-8", errors="ignore")
+                        ctx.logger.warning("debug_snapshot_after_rescan", path=str(snap_path2), keyword=keyword, found=len(elements))
+                    except Exception:
+                        pass
+            # Count raw <article> tags for heuristic signal
+            if diagnostics_enabled:
+                with contextlib.suppress(Exception):
+                    article_count = await page.evaluate("() => document.querySelectorAll('article').length")
+                    ctx.logger.info("debug_article_count", keyword=keyword, count=article_count)
+        # Element-level verbose diagnostics flag
+        verbose_el = bool(int(os.environ.get("PLAYWRIGHT_DEBUG_VERBOSE", "0")))
+        if verbose_el:
+            ctx.logger.info("elements_batch", keyword=keyword, step=step, count=len(elements))
+        for idx_el, el in enumerate(elements):
             if len(posts) >= max_items:
                 break
-            try:
-                author_el = await el.query_selector(AUTHOR_SELECTOR)
-                text_el = await el.query_selector(TEXT_SELECTOR)
-                date_el = await el.query_selector(DATE_SELECTOR)
-                media_el = await el.query_selector(MEDIA_INDICATOR_SELECTOR)
-                company_val: Optional[str] = None
-                for csel in COMPANY_SELECTORS:
-                    try:
-                        c_el = await el.query_selector(csel)
-                        if c_el:
-                            raw_company = await c_el.inner_text()
-                            if raw_company:
-                                company_val = utils.normalize_whitespace(raw_company).strip()
-                                if company_val:
-                                    break
-                    except Exception:
-                        continue
+            # ---------------------------
+            # ELEMENT QUERY PHASE
+            # (Previous bug: this block was indented inside the 'if len(posts)' guard -> never executed)
+            # ---------------------------
+            author_el = await el.query_selector(AUTHOR_SELECTOR)
+            # Fallback author selectors (LinkedIn layout variants)
+            if not author_el:
+                with contextlib.suppress(Exception):
+                    author_el = await el.query_selector("span.update-components-actor__name, span.feed-shared-actor__name")
+            if not author_el:
+                with contextlib.suppress(Exception):
+                    author_el = await el.query_selector("span[dir='ltr'] strong, span[dir='ltr'] a")
 
-                # ---------------------------
-                # AUTHOR & COMPANY BLOCK
-                # ---------------------------
-                author = (await author_el.inner_text()) if author_el else "Unknown"
-                if author:
-                    author = utils.normalize_whitespace(author).strip()
-                    for sep in [" •", "·", "Verified", "Vérifié"]:
-                        if sep in author:
-                            author = author.split(sep, 1)[0].strip()
-                    if author.endswith("Premium"):
-                        author = author.replace("Premium", "").strip()
-                # Strip follower count segments wrongly captured as author (company pages)
-                if author and _FOLLOWER_SEG_PATTERN.search(author.lower()):
-                    cleaned = _strip_follower_segment(author)
-                    author = cleaned or "Unknown"
-                # Fallbacks for author when direct selector fails or yields generic text
-                if not author or author.lower() == "unknown":
-                    try:
-                        meta_link = await el.query_selector("a.update-components-actor__meta-link")
-                        if meta_link:
-                            # Prefer aria-label as it often contains the full name
-                            aria = await meta_link.get_attribute("aria-label")
-                            if aria:
-                                # Heuristic: cut before bullet or 'Vérifié'
-                                cut = aria
-                                for sep in [" •", "·", "Vérifié", "Verified", "•"]:
-                                    if sep in cut:
-                                        cut = cut.split(sep, 1)[0]
-                                        break
-                                cut = utils.normalize_whitespace(cut).strip()
-                                if cut:
-                                    author = cut
-                            if (not author or author.lower() == "unknown"):
-                                txt = await meta_link.inner_text()
-                                if txt:
-                                    txt = utils.normalize_whitespace(txt).strip()
-                                    if txt:
-                                        author = txt
-                    except Exception:
-                        pass
-                if not author or author.lower() == "unknown":
-                    try:
-                        # Another structure: title span contains the name
-                        title_span = await el.query_selector("span.update-components-actor__title span[dir='ltr']")
-                        if title_span:
-                            txt = await title_span.inner_text()
+            # Extra fallback: capture top-level text block if main selector missing
+            text_el = await el.query_selector(TEXT_SELECTOR) or await el.query_selector("div.update-components-text, div.feed-shared-update-v2__commentary")
+            date_el = await el.query_selector(DATE_SELECTOR)
+            media_el = await el.query_selector(MEDIA_INDICATOR_SELECTOR)
+            company_val: Optional[str] = None
+            for csel in COMPANY_SELECTORS:
+                try:
+                    c_el = await el.query_selector(csel)
+                    if c_el:
+                        raw_company = await c_el.inner_text()
+                        if raw_company:
+                            company_val = utils.normalize_whitespace(raw_company).strip()
+                            if company_val:
+                                break
+                except Exception:
+                    continue
+
+            # ---------------------------
+            # AUTHOR & COMPANY BLOCK
+            # ---------------------------
+            author = (await author_el.inner_text()) if author_el else "Unknown"
+            if author:
+                author = utils.normalize_whitespace(author).strip()
+                for sep in [" •", "·", "Verified", "Vérifié"]:
+                    if sep in author:
+                        author = author.split(sep, 1)[0].strip()
+                if author.endswith("Premium"):
+                    author = author.replace("Premium", "").strip()
+            # Strip follower count segments wrongly captured as author (company pages)
+            if author and _FOLLOWER_SEG_PATTERN.search(author.lower()):
+                cleaned = _strip_follower_segment(author)
+                author = cleaned or "Unknown"
+            # Always attempt full enrichment & fallback; previously gated only when author Unknown
+            if not author or author.lower() == "unknown":
+                try:
+                    meta_link = await el.query_selector("a.update-components-actor__meta-link")
+                    if meta_link:
+                        # Prefer aria-label as it often contains the full name
+                        aria = await meta_link.get_attribute("aria-label")
+                        if aria:
+                            # Heuristic: cut before bullet or 'Vérifié'
+                            cut = aria
+                            for sep in [" •", "·", "Vérifié", "Verified", "•"]:
+                                if sep in cut:
+                                    cut = cut.split(sep, 1)[0]
+                                    break
+                            cut = utils.normalize_whitespace(cut).strip()
+                            if cut:
+                                author = cut
+                        if (not author or author.lower() == "unknown"):
+                            txt = await meta_link.inner_text()
                             if txt:
-                                author = utils.normalize_whitespace(txt).strip()
-                    except Exception:
-                        pass
+                                txt = utils.normalize_whitespace(txt).strip()
+                                if txt:
+                                    author = txt
+                except Exception:
+                    pass
+            if not author or author.lower() == "unknown":
+                try:
+                    # Another structure: title span contains the name
+                    title_span = await el.query_selector("span.update-components-actor__title span[dir='ltr']")
+                    if title_span:
+                        txt = await title_span.inner_text()
+                        if txt:
+                            author = utils.normalize_whitespace(txt).strip()
+                except Exception:
+                    pass
                 # Heuristic: if no company identified via selectors, attempt to derive from author string patterns
                 # Patterns we encounter: "Nom • Rôle chez Entreprise", "Nom - Entreprise", "Nom | Entreprise"
                 if not company_val and author and author != "Unknown":
@@ -845,169 +1086,176 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                             actor_description = utils.normalize_whitespace(raw_desc).strip()
                 except Exception:
                     actor_description = None
-
                 # If still no company, try to parse from actor description/body using patterns like '@ Company' or 'chez Company' or ' at Company'
-                if not company_val:
-                    candidates = []
-                    if actor_description:
-                        candidates.append(actor_description)
-                    # text_norm available after text extraction below; we defer adding it until computed
+            # NOTE: Move text extraction outside previous conditional so it's always available
+            text_raw = ""
+            try:
                 text_raw = (await text_el.inner_text()) if text_el else ""
-                text_norm = utils.normalize_whitespace(text_raw)
-                if not company_val and text_norm:
-                    candidates.append(text_norm)
-                if not company_val and candidates:
-                    comp = None
-                    for blob in candidates:
-                        # Normalize blob for parsing
-                        blob_clean = blob.replace(" at ", " chez ")
-                        for marker in ["@ ", "chez "]:
-                            if marker in blob_clean:
-                                tail = blob_clean.split(marker, 1)[1].strip()
-                                for stop in [" |", " -", ",", " •", "  "]:
-                                    if stop in tail:
-                                        tail = tail.split(stop, 1)[0].strip()
-                                if 2 <= len(tail) <= 80:
-                                    comp = tail
-                                    break
-                        if comp:
-                            break
-                    if comp:
-                        # Avoid author duplication
-                        if not author or comp.lower() != author.lower():
-                            company_val = comp
-                published_raw = (await date_el.get_attribute("datetime")) if date_el else None
-                published_iso = None
-                if published_raw:
-                    published_iso = published_raw
-                else:
-                    txt_for_date = ""
-                    if date_el:
-                        try:
-                            txt_for_date = await date_el.inner_text()
-                        except Exception:
-                            txt_for_date = ""
-                    if not txt_for_date:
-                        try:
-                            subdesc = await el.query_selector("span.update-components-actor__sub-description")
-                            if subdesc:
-                                txt_for_date = await subdesc.inner_text()
-                        except Exception:
-                            pass
-                    dt = utils.parse_possible_date(txt_for_date)
-                    if dt:
-                        published_iso = dt.isoformat()
-
-                language = utils.detect_language(text_norm, ctx.settings.default_lang)
-                # Provisional id; may be overridden by permalink-based id later
-                provisional_pid = utils.make_post_id(keyword, author, published_iso or text_norm[:30])
-                if provisional_pid in seen_ids:
-                    continue
-                seen_ids.add(provisional_pid)
-                recruitment_score = utils.compute_recruitment_signal(text_norm)
-                permalink = None
-                permalink_source = None
-                # 1. Sélecteurs directs
+            except Exception:
+                text_raw = ""
+            text_norm = utils.normalize_whitespace(text_raw)
+            if not company_val:
+                candidates = []
                 try:
-                    for sel_link in PERMALINK_LINK_SELECTORS:
-                        l = await el.query_selector(sel_link)
-                        if l:
-                            href = await l.get_attribute("href") or ""
-                            if href:
-                                if href.startswith('/'):
-                                    href = "https://www.linkedin.com" + href
-                                if '?' in href:
-                                    href = href.split('?', 1)[0]
-                                permalink = href
-                                permalink_source = f"selector:{sel_link}"
-                                break
+                    desc_el2 = await el.query_selector("span.update-components-actor__description")
+                    if desc_el2:
+                        rd = await desc_el2.inner_text()
+                        if rd:
+                            rd = utils.normalize_whitespace(rd).strip()
+                            candidates.append(rd)
                 except Exception:
                     pass
-                # 2. Parent anchor du time
-                if not permalink and date_el:
-                    try:
-                        parent_link = await date_el.evaluate("el => el.closest('a') ? el.closest('a').href : null")  # type: ignore
+                if text_norm:
+                    candidates.append(text_norm)
+                comp = None
+                for blob in candidates:
+                    blob_clean = blob.replace(" at ", " chez ")
+                    for marker in ["@ ", "chez "]:
+                        if marker in blob_clean:
+                            tail = blob_clean.split(marker, 1)[1].strip()
+                            for stop in [" |", " -", ",", " •", "  "]:
+                                if stop in tail:
+                                    tail = tail.split(stop, 1)[0].strip()
+                            if 2 <= len(tail) <= 80:
+                                comp = tail
+                                break
+                    if comp:
+                        break
+                if comp and (not author or comp.lower() != author.lower()):
+                    company_val = comp
+            # Date extraction (uniform)
+            published_raw = None
+            published_iso = None
+            try:
+                published_raw = (await date_el.get_attribute("datetime")) if date_el else None
+            except Exception:
+                published_raw = None
+            if published_raw:
+                published_iso = published_raw
+            else:
+                txt_for_date = ""
+                if date_el:
+                    with contextlib.suppress(Exception):
+                        txt_for_date = await date_el.inner_text()
+                if not txt_for_date:
+                    with contextlib.suppress(Exception):
+                        subdesc = await el.query_selector("span.update-components-actor__sub-description")
+                        if subdesc:
+                            txt_for_date = await subdesc.inner_text()
+                dt = utils.parse_possible_date(txt_for_date)
+                if dt:
+                    published_iso = dt.isoformat()
+
+            language = utils.detect_language(text_norm, ctx.settings.default_lang)
+            # Provisional id; may be overridden by permalink-based id later
+            provisional_pid = utils.make_post_id(keyword, author, published_iso or text_norm[:30] or str(idx_el))
+            if provisional_pid in seen_ids:
+                if verbose_el:
+                    ctx.logger.info("element_skipped_duplicate", keyword=keyword, idx=idx_el)
+                continue
+            seen_ids.add(provisional_pid)
+            recruitment_score = utils.compute_recruitment_signal(text_norm)
+            permalink = None
+            permalink_source = None
+            # 1. Sélecteurs directs
+            try:
+                for sel_link in PERMALINK_LINK_SELECTORS:
+                    l = await el.query_selector(sel_link)
+                    if l:
+                        href = await l.get_attribute("href") or ""
+                        if href:
+                            if href.startswith('/'):
+                                href = "https://www.linkedin.com" + href
+                            if '?' in href:
+                                href = href.split('?', 1)[0]
+                            permalink = href
+                            permalink_source = f"selector:{sel_link}"
+                            break
+            except Exception:
+                pass
+            # 2. Parent anchor du time
+            if not permalink and date_el:
+                try:
+                    parent_link = await date_el.evaluate("el => el.closest('a') ? el.closest('a').href : null")  # type: ignore
+                    if parent_link:
+                        if '?' in parent_link:
+                            parent_link = parent_link.split('?', 1)[0]
+                        if parent_link.startswith('/'):
+                            parent_link = "https://www.linkedin.com" + parent_link
                         if parent_link:
-                            if '?' in parent_link:
-                                parent_link = parent_link.split('?', 1)[0]
-                            if parent_link.startswith('/'):
-                                parent_link = "https://www.linkedin.com" + parent_link
-                            if parent_link:
-                                permalink = parent_link
-                                permalink_source = "time:closest"
-                    except Exception:
-                        pass
-                # 3. Fallback: any anchor in container pointing to feed/update or activity
-                if not permalink:
-                    try:
-                        a_el = await el.query_selector("a[href*='feed/update'], a[href*='activity']")
-                        if a_el:
-                            href = await a_el.get_attribute("href")
-                            if href:
-                                if '?' in href:
-                                    href = href.split('?', 1)[0]
-                                if href.startswith('/'):
-                                    href = "https://www.linkedin.com" + href
-                                permalink = href
-                                permalink_source = "container:any-anchor"
-                    except Exception:
-                        pass
-                # 3. Fallback URN
-                if not permalink:
-                    try:
-                        urn = await el.get_attribute("data-urn") or ""
-                        if "urn:li:activity:" in urn:
-                            activity_id = urn.split("urn:li:activity:")[-1].strip()
-                            if activity_id and activity_id.isdigit():
-                                permalink = f"https://www.linkedin.com/feed/update/urn:li:activity:{activity_id}/"
-                                permalink_source = "constructed_activity_id"
-                    except Exception:
-                        pass
-                # 4. Last resort: scan inner HTML for any activity URN pattern if still missing
-                if not permalink:
-                    try:
-                        html_blob = await el.inner_html()
-                        if html_blob and "urn:li:activity:" in html_blob:
-                            import re as _re_local
-                            m_act = _re_local.search(r"urn:li:activity:(\d+)", html_blob)
-                            if m_act:
-                                activity_id = m_act.group(1)
-                                permalink = f"https://www.linkedin.com/feed/update/urn:li:activity:{activity_id}"
-                                permalink_source = "html_scan_activity_id"
-                    except Exception:
-                        pass
-                if permalink_source:
-                    ctx.logger.debug("permalink_resolved", source=permalink_source)
-                if recruitment_score >= ctx.settings.recruitment_signal_threshold:
-                    SCRAPE_RECRUITMENT_POSTS.inc()
-                # Normalize permalink (remove trailing slash) to avoid duplicate logical posts
-                if permalink:
-                    permalink = _canonicalize_permalink(permalink)
-                final_id = utils.make_post_id(permalink) if permalink else provisional_pid
-                # Final author cleanup (after potential permalink resolution for stability)
-                if author:
-                    author = _dedupe_repeated_author(author)
-                post = Post(
-                    id=final_id,
-                    keyword=keyword,
-                    author=author,
-                    author_profile=actor_description,
-                    company=company_val,
-                    text=text_norm,
-                    language=language,
-                    published_at=published_iso,
-                    collected_at=datetime.now(timezone.utc).isoformat(),
-                    # scores removed
-                    permalink=permalink,
-                    raw={"published_raw": published_raw, "recruitment_threshold": ctx.settings.recruitment_signal_threshold},
-                )
-                # Enforce strict filters: language FR, recruitment intent, author/permalink presence
-                keep = True
-                reject_reason = None
+                            permalink = parent_link
+                            permalink_source = "time:closest"
+                except Exception:
+                    pass
+            # 3. Fallback: any anchor in container pointing to feed/update or activity
+            if not permalink:
+                try:
+                    a_el = await el.query_selector("a[href*='feed/update'], a[href*='activity']")
+                    if a_el:
+                        href = await a_el.get_attribute("href")
+                        if href:
+                            if '?' in href:
+                                href = href.split('?', 1)[0]
+                            if href.startswith('/'):
+                                href = "https://www.linkedin.com" + href
+                            permalink = href
+                            permalink_source = "container:any-anchor"
+                except Exception:
+                    pass
+            # 3. Fallback URN
+            if not permalink:
+                try:
+                    urn = await el.get_attribute("data-urn") or ""
+                    if "urn:li:activity:" in urn:
+                        activity_id = urn.split("urn:li:activity:")[-1].strip()
+                        if activity_id and activity_id.isdigit():
+                            permalink = f"https://www.linkedin.com/feed/update/urn:li:activity:{activity_id}/"
+                            permalink_source = "constructed_activity_id"
+                except Exception:
+                    pass
+            # 4. Last resort: scan inner HTML for any activity URN pattern if still missing
+            if not permalink:
+                try:
+                    html_blob = await el.inner_html()
+                    if html_blob and "urn:li:activity:" in html_blob:
+                        import re as _re_local
+                        m_act = _re_local.search(r"urn:li:activity:(\d+)", html_blob)
+                        if m_act:
+                            activity_id = m_act.group(1)
+                            permalink = f"https://www.linkedin.com/feed/update/urn:li:activity:{activity_id}"
+                            permalink_source = "html_scan_activity_id"
+                except Exception:
+                    pass
+            if permalink_source:
+                ctx.logger.debug("permalink_resolved", source=permalink_source)
+            if recruitment_score >= ctx.settings.recruitment_signal_threshold:
+                SCRAPE_RECRUITMENT_POSTS.inc()
+            if permalink:
+                permalink = _canonicalize_permalink(permalink)
+            final_id = utils.make_post_id(permalink) if permalink else provisional_pid
+            if author:
+                author = _dedupe_repeated_author(author)
+            post = Post(
+                id=final_id,
+                keyword=keyword,
+                author=author,
+                author_profile=None,
+                company=company_val,
+                text=text_norm,
+                language=language,
+                published_at=published_iso,
+                collected_at=datetime.now(timezone.utc).isoformat(),
+                permalink=permalink,
+                raw={"published_raw": published_raw, "recruitment_threshold": ctx.settings.recruitment_signal_threshold, "debug_idx": idx_el},
+            )
+            # Optional bypass for strict filters (debugging)
+            disable_filters = bool(int(os.environ.get("PLAYWRIGHT_DISABLE_STRICT_FILTERS", "0")))
+            keep = True
+            reject_reason = None
+            if not disable_filters:
                 try:
                     if ctx.settings.filter_language_strict and language.lower() != (ctx.settings.default_lang or "fr").lower():
                         keep = False; reject_reason = "language"
-                    # Domain filter: require at least one legal keyword when enabled
                     if keep and getattr(ctx.settings, 'filter_legal_domain_only', False):
                         tl = (text_norm or "").lower()
                         legal_markers = (
@@ -1015,11 +1263,10 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                         )
                         if not any(m in tl for m in legal_markers):
                             keep = False; reject_reason = reject_reason or "non_domain"
-                    if ctx.settings.filter_recruitment_only and recruitment_score < ctx.settings.recruitment_signal_threshold:
-                        if keep: keep = False; reject_reason = reject_reason or "recruitment"
-                    if ctx.settings.filter_require_author_and_permalink and (not post.author or post.author.lower() == "unknown" or not post.permalink):
-                        if keep: keep = False; reject_reason = reject_reason or "missing_core_fields"
-                    # Exclude job-seeker / availability self-promotion posts
+                    if keep and ctx.settings.filter_recruitment_only and recruitment_score < ctx.settings.recruitment_signal_threshold:
+                        keep = False; reject_reason = reject_reason or "recruitment"
+                    if keep and ctx.settings.filter_require_author_and_permalink and (not post.author or post.author.lower() == "unknown" or not post.permalink):
+                        keep = False; reject_reason = reject_reason or "missing_core_fields"
                     if keep and getattr(ctx.settings, 'filter_exclude_job_seekers', True):
                         tl = (text_norm or "").lower()
                         job_markers = (
@@ -1031,7 +1278,6 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                         )
                         if any(m in tl for m in job_markers):
                             keep = False; reject_reason = reject_reason or "job_seeker"
-                    # France-only heuristic
                     if keep and getattr(ctx.settings, 'filter_france_only', True):
                         tl = (text_norm or "").lower()
                         fr_positive = ("france","paris","idf","ile-de-france","lyon","marseille","bordeaux","lille","toulouse","nice","nantes","rennes")
@@ -1040,18 +1286,22 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                             keep = False; reject_reason = reject_reason or "not_fr"
                 except Exception:
                     pass
-                if keep:
-                    # Last sanitation: if company is identical to author, drop company to allow later normalization to fill
-                    if post.company and post.author and post.company.lower() == post.author.lower():
-                        post.company = None
-                    posts.append(post)
-                else:
-                    try:
-                        SCRAPE_FILTERED_POSTS.labels(reject_reason or "other").inc()
-                    except Exception:
-                        pass
-            except Exception as exc:  # pragma: no cover
-                ctx.logger.warning("extract_post_failed", error=str(exc))
+            else:
+                # Mark that filters were bypassed
+                post.raw["filters_bypassed"] = True
+            if keep:
+                if post.company and post.author and post.company.lower() == post.author.lower():
+                    post.company = None
+                posts.append(post)
+                if verbose_el:
+                    ctx.logger.info("element_kept", keyword=keyword, idx=idx_el, author=post.author, has_permalink=bool(post.permalink), text_len=len(post.text))
+            else:
+                reason = reject_reason or "other"
+                reject_stats[reason] = reject_stats.get(reason, 0) + 1
+                with contextlib.suppress(Exception):
+                    SCRAPE_FILTERED_POSTS.labels(reason).inc()
+                if verbose_el:
+                    ctx.logger.info("element_rejected", keyword=keyword, idx=idx_el, reason=reason, author=post.author, has_permalink=bool(post.permalink), text_len=len(post.text))
         # Stopping conditions
         if len(posts) >= max_items:
             break
@@ -1073,6 +1323,19 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
             if len(dens_list) > win:
                 dens_list = dens_list[-win:]
             setattr(ctx, "_recent_density", dens_list)
+    except Exception:
+        pass
+    try:
+        if reject_stats and os.environ.get("DEBUG_FILTER_SUMMARY", "1") != "0":
+            kept = len(posts)
+            total_rej = sum(reject_stats.values())
+            ctx.logger.info(
+                "extract_filter_summary",
+                keyword=keyword,
+                kept=kept,
+                rejected=total_rej,
+                **{f"rej_{k}": v for k, v in reject_stats.items()},
+            )
     except Exception:
         pass
     return posts
@@ -1222,7 +1485,83 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                     posts = await process_keyword(kw, ctx, first_keyword=(idx == 0))
                     all_new.extend(posts)
             else:
-                real_posts = await process_keywords_batched(iterable_keywords, ctx)
+                # Option 1: explicit force disable (environment switch)
+                force_disable = os.environ.get("FORCE_PLAYWRIGHT_DISABLED", "0").lower() in ("1","true","yes","on")
+                if force_disable:
+                    try:
+                        if not ctx.settings.playwright_mock_mode:
+                            setattr(ctx.settings, "playwright_mock_mode", True)
+                        ctx.logger.warning("playwright_forced_disabled", reason="env_FLAG", env="FORCE_PLAYWRIGHT_DISABLED")
+                    except Exception:
+                        pass
+                real_posts: list[Post] = []
+                if not ctx.settings.playwright_mock_mode:
+                    # Branch: forced sync mode
+                    if should_force_sync():
+                        ctx.logger.warning("playwright_force_sync_mode", reason="env_PLAYWRIGHT_FORCE_SYNC")
+                        try:
+                            sync_dicts = await run_sync_playwright(iterable_keywords, ctx)
+                            # Convert thin dict representation into Post objects (may be empty while scaffold)
+                            for d in sync_dicts:
+                                try:
+                                    p = Post(
+                                        id=d.get('id') or utils.make_post_id(d.get('keyword','sync'), d.get('author','sync'), d.get('published_at') or datetime.now(timezone.utc).isoformat()),
+                                        keyword=d.get('keyword',''),
+                                        author=d.get('author','Unknown'),
+                                        author_profile=None,
+                                        company=d.get('company'),
+                                        text=d.get('text',''),
+                                        language=d.get('language', ctx.settings.default_lang),
+                                        published_at=d.get('published_at'),
+                                        collected_at=datetime.now(timezone.utc).isoformat(),
+                                        permalink=d.get('permalink'),
+                                        raw={"mode":"sync_fallback"}
+                                    )
+                                    real_posts.append(p)
+                                except Exception:
+                                    continue
+                        except Exception as exc:
+                            ctx.logger.error("playwright_sync_failed", error=str(exc))
+                    else:
+                        try:
+                            real_posts = await process_keywords_batched(iterable_keywords, ctx)
+                        except NotImplementedError as ne:  # belt & suspenders (should be caught deeper but we want certainty)
+                            # Centralized single log for NotImplementedError to avoid spam
+                            if not getattr(ctx, '_logged_notimpl', False):
+                                ctx.logger.error("playwright_global_not_implemented", error=str(ne))
+                                setattr(ctx, '_logged_notimpl', True)
+                        except Exception as exc:
+                            # Collapse repeated unexpected errors into a single summarized log after threshold
+                            err_sig = type(exc).__name__
+                            counter = getattr(ctx, '_playwright_err_counts', {})
+                            count = counter.get(err_sig, 0) + 1
+                            counter[err_sig] = count
+                            setattr(ctx, '_playwright_err_counts', counter)
+                            if count <= 3:
+                                ctx.logger.error("playwright_unexpected_error", error=str(exc), occurrence=count)
+                            elif count == 4:
+                                ctx.logger.error("playwright_unexpected_error_suppressed", error=err_sig, occurrences=count, note="further identical errors suppressed")
+                            # else: suppress to reduce noise
+                # Automatic fallback to mock mode if Playwright produced nothing AND auto flag enabled
+                if (not real_posts) and (not ctx.settings.playwright_mock_mode):
+                    auto_flag = os.environ.get("AUTO_ENABLE_MOCK_ON_PLAYWRIGHT_FAILURE", "1").lower() in ("1","true","yes","on")
+                    if auto_flag:
+                        try:
+                            setattr(ctx.settings, "playwright_mock_mode", True)
+                            ctx.logger.warning("auto_mock_mode_enabled", reason="playwright_empty_or_failed", keywords=len(iterable_keywords))
+                        except Exception:
+                            pass
+                        # Generate synthetic posts now that mock mode enabled
+                        synthetic: list[Post] = []
+                        for idx, kw in enumerate(iterable_keywords):
+                            if idx > 0 and ctx.settings.per_keyword_delay_ms > 0:
+                                await asyncio.sleep(ctx.settings.per_keyword_delay_ms / 1000.0)
+                            try:
+                                posts = await process_keyword(kw, ctx, first_keyword=(idx == 0))
+                                synthetic.extend(posts)
+                            except Exception as exc:  # pragma: no cover
+                                ctx.logger.error("mock_generation_failed", keyword=kw, error=str(exc))
+                        real_posts = synthetic
                 all_new.extend(real_posts)
             # Restore original settings after lightweight first cycle
             if fast_cycle_applied:
