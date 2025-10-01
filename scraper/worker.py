@@ -1495,7 +1495,8 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                         try:
                             real_posts = await process_keywords_batched(iterable_keywords, ctx)
                         except NotImplementedError as ne:  # belt & suspenders (should be caught deeper but we want certainty)
-                            # Centralized single log for NotImplementedError to avoid spam
+                            from .core.errors import log_playwright_failure
+                            log_playwright_failure("not_implemented", ne)
                             if not getattr(ctx, '_logged_notimpl', False):
                                 ctx.logger.error("playwright_global_not_implemented", error=str(ne))
                                 setattr(ctx, '_logged_notimpl', True)
@@ -1510,6 +1511,12 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                                 ctx.logger.error("playwright_unexpected_error", error=str(exc), occurrence=count)
                             elif count == 4:
                                 ctx.logger.error("playwright_unexpected_error_suppressed", error=err_sig, occurrences=count, note="further identical errors suppressed")
+                            if count <= 3 or count % 10 == 0:
+                                try:
+                                    from .core.errors import log_playwright_failure
+                                    log_playwright_failure("unexpected", exc)
+                                except Exception:
+                                    pass
                             # else: suppress to reduce noise
                 # Automatic fallback to mock mode if Playwright produced nothing AND auto flag enabled
                 if (not real_posts) and (not ctx.settings.playwright_mock_mode):

@@ -529,6 +529,13 @@ async def bootstrap(force: bool = False) -> AppContext:
         configure_logging(settings.log_level, settings)
         logger = structlog.get_logger().bind(component="bootstrap")
 
+        # Optional encryption of storage_state
+        try:
+            from .core.secrets import ensure_encrypted_storage_state  # type: ignore
+            ensure_encrypted_storage_state(settings, logger)
+        except Exception:
+            pass
+
         # Preflight: test if asyncio.create_subprocess_exec works (Windows frozen issue). If it fails hard -> force mock mode.
         try:
             async def _sub_ok():  # minimal echo command cross-platform
