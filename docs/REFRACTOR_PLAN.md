@@ -372,7 +372,7 @@ Introduire:
 
 | Indicateur | Valeur initiale | Méthode mesure | Statut |
 |------------|-----------------|----------------|--------|
-| Durée smoke test (mock) | (à mesurer) | `scripts/smoke_test.py` local/CI | PENDING |
+| Durée smoke test (mock) | ~67.5 s (local initial) | `scripts/smoke_test.py` local/CI | BASELINE (optimisation future) |
 | Posts mock générés/job | (attendu 5–10 selon keywords) | Log `smoke_test_summary` | PENDING |
 | Taille `worker.py` (LOC) | >1200 | `cloc` ciblé | CAPTURÉ |
 | Couverture actuelle globale | (à extraire) | `pytest --cov` | PENDING |
