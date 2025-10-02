@@ -134,6 +134,17 @@ try:
 except Exception:
     pass
 
+# Force early import of server package modules so PyInstaller includes them even if
+# dynamic discovery misses hiddenimports. Without this, recent builds lacked 'server.main'
+# inside the embedded PYZ leading to runtime import errors in packaged mode.
+try:  # pragma: no cover - packaging side effect
+    import server  # noqa: F401
+    import server.main  # noqa: F401
+    import server.routes  # noqa: F401
+    import server.events  # noqa: F401
+except Exception as _pre_imp_exc:  # pragma: no cover
+    logging.getLogger("desktop").warning(f"early_server_import_failed err={_pre_imp_exc}")
+
 
 def _ensure_event_loop_policy():
     if _is_windows():

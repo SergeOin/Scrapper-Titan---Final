@@ -1,6 +1,9 @@
 {
   "name": "titan-scraper-desktop",
   "version": "1.2.5",
+  "scripts": {
+    "dev": "python scripts/run_all.py"
+  },
   "dependencies": {
     "mongodb": "^6.20.0"
   }

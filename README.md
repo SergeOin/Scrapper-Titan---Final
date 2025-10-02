@@ -121,7 +121,7 @@ Schéma persistant actuel (champs de score supprimés) :
 | `MONGO_URI` | URI MongoDB Atlas | `mongodb+srv://user:pass@cluster/db` |
 | `MONGO_DB` | Nom DB | `linkedin_scrape` |
 | `REDIS_URL` | Redis queue/cache | `redis://localhost:6379/0` |
-| `SCRAPE_KEYWORDS` | Liste mots-clés (séparés par ;) | `python;ai;data` |
+| `SCRAPE_KEYWORDS` | Liste mots-clés (séparés par ;) | `Avocat collaborateur;Avocat associé;Avocat Counsel;Paralegal;Legal counsel;Juriste;Responsable juridique;Directeur Juridique;Notaire stagiaire;Notaire associé;Notaire salarié;Notaire assistant;Clerc de notaire;Rédacteur d'actes;Responsable fiscal;Directeur fiscal;Comptable taxateur;Formaliste` |
 | `SCRAPING_ENABLED` | 1/0 activer désactiver | `1` |
 | `PLAYWRIGHT_HEADLESS` | Mode headless | `1` |
 | `CACHE_TTL_SECONDS` | TTL cache en secondes | `300` |

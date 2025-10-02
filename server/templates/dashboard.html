@@ -2,8 +2,10 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <title>LinkedIn Scraper - Dashboard</title>
+  <title>Titan Scraper - Dashboard</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="icon" type="image/png" href="/favicon.ico" />
+  <link rel="apple-touch-icon" href="/assets/logo.png" />
   <style>
   body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif; margin: 1.5rem; background:#f7f9fb; color:#222; }
     h1 { margin-top:0; font-size:1.4rem; }
@@ -66,22 +68,21 @@
     .meta-sub { display:block; font-size:.75rem; color:#64748b; margin-top:2px; }
   </style>
 </head>
-<body>
+<body data-mock-mode="{{ 'true' if mock_mode else 'false' }}">
   <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
-    <h1 style="margin:0;">LinkedIn Scraper
-      {% if run_on_start_received %}
-        <span class="pill" style="margin-left:.5rem; background:#dcfce7; border-color:#86efac; color:#166534;" title="Cycle initial lancé automatiquement au démarrage">Cycle initial lancé au démarrage</span>
-      {% endif %}
-    </h1>
+    <div style="display:flex; align-items:center; gap:.5rem;">
+      <h1 style="margin:0;">Titan Scraper
+        {% if run_on_start_received %}
+          <span class="pill" style="margin-left:.5rem; background:#dcfce7; border-color:#86efac; color:#166534;" title="Cycle initial lancé automatiquement au démarrage">Cycle initial lancé au démarrage</span>
+        {% endif %}
+      </h1>
+    </div>
     <div class="actions" style="margin-top:0;">
-      <a href="/diagnostics" style="text-decoration:none;">
-        <button type="button" class="btn-outline" title="Diagnostics système">Diagnostics</button>
-      </a>
       <form id="exportForm" class="inline" action="/export/excel" method="get">
         <input type="hidden" name="q" value="{{ q or '' }}" />
         <input type="hidden" name="sort_by" value="{{ sort_by }}" />
         <input type="hidden" name="sort_dir" value="{{ sort_dir }}" />
-        <input type="hidden" name="page" value="1" />
+  <input type="hidden" name="page" value="1" />
   <button type="submit" class="btn-outline">Exporter au format Excel</button>
       </form>
       <button id="logoutBtn" type="button" class="btn-outline">Se déconnecter</button>
@@ -91,9 +92,7 @@
   <div id="statusContainer" data-interval="{{ autonomous_interval or 0 }}" data-init-wait="{{ login_initial_wait_seconds or 120 }}" style="margin-top:0.75rem; font-size:0.9rem; display:flex; align-items:center; gap:.75rem;">
   <div id="statusHint" class="status-hint status-hint-wait" aria-live="polite"><span class="inline-spinner" aria-hidden="true"></span>Démarrage du cycle en cours…</div>
   </div>
-  <style>
-  /* Status line removed; only hint banner remains */
-  </style>
+  
   <script>
     // Toast system
     const _toastQ = [];
@@ -322,7 +321,7 @@
             setHintVisible(true);
           } else {
             // Initial state (no last run yet): show guidance instead of auto triggering
-            setHintHTML('Scraper actif – aucun cycle lancé. Utilisez le bouton "Lancer un cycle" pour démarrer la collecte initiale.', 'status-hint-wait');
+            setHintHTML('Scraper actif – aucun cycle lancé encore. Patience, le cycle démarrera automatiquement.', 'status-hint-wait');
             setHintVisible(true);
             // Auto trigger removed per request
             ensureAutoPulse(true, interval);
@@ -394,9 +393,9 @@
           const playwrightReady = bodyEl?.dataset.playwrightReady !== '0';
           let msg = 'Aucun résultat pour le moment.';
           if (!hasRun && scrapingEnabled) {
-            msg = 'Aucun post encore collecté – cliquez sur "Lancer un cycle".';
+            msg = 'Aucun post encore collecté – le premier cycle n\'a pas encore produit de résultats.';
           } else if (!scrapingEnabled && !hasRun) {
-            msg = 'Scraper inactif – cliquez sur Reprendre puis sur "Lancer un cycle".';
+            msg = 'Scraper en pause – reprenez pour permettre un prochain cycle automatique.';
           } else if (scrapingEnabled && hasRun && playwrightReady) {
             msg = 'Aucun post correspondant à vos filtres actuels.';
           } else if (!playwrightReady) {
@@ -447,9 +446,10 @@
               await refreshPosts();
               await refreshStatus();
               await refreshTrashCount();
-              showToast(`Cycle terminé (${payload.posts} posts)`, 'info');
-              // Keep guidance visible in active mode
-              setHint('Laissez l\'application ouverte pour collecter automatiquement de nouveaux posts.', 'status-hint-ok');
+              const postsCount = typeof payload.posts === 'number' && payload.posts >= 0 ? ` (${payload.posts} posts)` : '';
+              const cycleMsg = `Cycle terminé${postsCount}`;
+              showToast(cycleMsg, 'success');
+              setHint(cycleMsg, 'status-hint-ok');
               setHintVisible(true);
             } else if (payload.type === 'toggle') {
               await refreshStatus();
@@ -497,28 +497,6 @@
   startStatusTicker();
   setupActionDelegation();
   refreshTrashCount();
-  // Inject manual trigger button (first-run or anytime) if not present
-  (function addManualTrigger(){
-    const container = document.getElementById('statusContainer');
-    if(!container) return;
-    if(document.getElementById('manualTriggerBtn')) return;
-    const btn = document.createElement('button');
-    btn.id = 'manualTriggerBtn';
-    btn.type = 'button';
-    btn.style.marginLeft = '1rem';
-    btn.textContent = 'Lancer un cycle';
-    btn.addEventListener('click', async ()=>{
-      btn.disabled = true; const prev = btn.textContent; btn.textContent = 'Lancement…';
-      try {
-        const fd = new FormData();
-        const r = await fetch('/trigger', { method:'POST', body: fd, headers: { 'X-Trigger-From': 'dashboard-manual' }});
-        if(!r.ok){ showToast('Échec lancement: '+r.status,'error'); }
-        else { showToast('Cycle démarré','info'); refreshStatus(); }
-      } catch(e){ showToast('Erreur: '+e,'error'); }
-      finally { btn.disabled = false; btn.textContent = prev; }
-    });
-    container.appendChild(btn);
-  })();
     // Logout handler
     const logoutBtn = document.getElementById('logoutBtn');
     if (logoutBtn) {
@@ -599,7 +577,7 @@
   </table>
   <nav class="pagination">
     {% for page_num in range(1, total_pages + 1) %}
-      <a href="/?page={{ page_num }}&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}" class="{% if page_num == page %}active{% endif %}">{{ page_num }}</a>
+  <a href="/?page={{ page_num }}&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}" class="{% if page_num == page %}active{% endif %}">{{ page_num }}</a>
     {% endfor %}
   </nav>
   <a id="floatingTrash" class="floating-trash" href="/corbeille" title="Ouvrir la corbeille">

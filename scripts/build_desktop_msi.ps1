@@ -127,7 +127,7 @@ if($PerMachine){
   <Product Id='*' Name='$DisplayName' Language='1036' Version='$Version' Manufacturer='$Manufacturer' UpgradeCode='{9B5C7D24-38B2-4D4F-A0E5-4AA8F0F4B6C2}'>
     <Package InstallerVersion='500' Compressed='yes' InstallScope='$installScope' />
     <MajorUpgrade DowngradeErrorMessage='Une version plus recente est deja installee.' />
-    <MediaTemplate />
+  <MediaTemplate EmbedCab='yes' />
     <Property Id='ARPNOREPAIR' Value='1' />
     <Property Id='ARPNOMODIFY' Value='1' />
     <Directory Id='TARGETDIR' Name='SourceDir'>
@@ -183,7 +183,7 @@ Write-Host '[build_desktop_msi] Compiling (candle)...' -ForegroundColor Cyan
 & $candle.Path -o (Join-Path $work 'Product.wixobj') $productFile
 
 Write-Host '[build_desktop_msi] Linking (light)...' -ForegroundColor Cyan
-$msiName = "$Name-folder-$Version.msi"
+$msiName = "$Name-$Version.msi"
 & $light.Path -o (Join-Path $out $msiName) (Join-Path $work 'Product.wixobj') (Join-Path $work 'Harvest.wixobj')
 
 Write-Host "[build_desktop_msi] MSI created: $(Join-Path $out $msiName)" -ForegroundColor Green

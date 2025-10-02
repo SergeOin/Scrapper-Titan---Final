@@ -25,8 +25,8 @@ import contextlib
 import json
 import os
 import sqlite3
+import time
 import re as _re  # local lightweight regex (avoid repeated imports)
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -40,7 +40,6 @@ from .bootstrap import (
     SCRAPE_DURATION_SECONDS,
     SCRAPE_JOBS_TOTAL,
     SCRAPE_POSTS_EXTRACTED,
-    SCRAPE_MOCK_POSTS_EXTRACTED,
     SCRAPE_STORAGE_ATTEMPTS,
     SCRAPE_QUEUE_DEPTH,
     SCRAPE_JOB_FAILURES,
@@ -59,6 +58,8 @@ from .core.storage import store_posts_sqlite
 from .core.ids import canonical_permalink, content_hash
 from .core.maintenance import purge_and_vacuum
 from . import utils
+from .runtime import JobResult, RuntimePost
+from .runtime.pipeline import finalize_job_result
 try:
     from server.events import broadcast, EventType  # type: ignore
 except Exception:  # pragma: no cover
@@ -153,6 +154,9 @@ async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> 
     if async_playwright is None:
         raise RuntimeError("Playwright not installed.")
     logger = ctx.logger.bind(component="batched_session")
+    if getattr(ctx, "quota_exceeded", False):
+        logger.info("quota_skip_keywords", reason="daily_limit_reached")
+        return []
     batch_size = max(1, ctx.settings.keywords_session_batch_size)
     results: list[Post] = []
     # Split keywords into batches
@@ -275,33 +279,48 @@ async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> 
                     continue
                 break
         if last_error:
-            # Fallback mock mode to keep UI alive
-            with contextlib.suppress(Exception):
-                if hasattr(ctx.settings, "playwright_mock_mode"):
-                    setattr(ctx.settings, "playwright_mock_mode", True)
-                    logger.warning("fallback_mock_mode_enabled", reason="playwright_launch_unrecoverable", error=last_error)
+            logger.error("playwright_launch_unrecoverable", error=last_error, action="aborting_batch")
             break
         logger.info("batch_complete", batch=batch)
     return results
 
+
+async def _enforce_post_rate(ctx: AppContext, posts_added: int) -> None:
+    """Ensure we respect configured posts/ minute cap by sleeping if needed."""
+    if posts_added <= 0:
+        return
+    max_per_min = getattr(ctx.settings, "post_rate_max_per_minute", 0) or 0
+    if max_per_min <= 0:
+        return
+    horizon = 60.0
+    window = ctx.post_rate_window
+    for _ in range(posts_added):
+        while True:
+            now = time.monotonic()
+            while window and now - window[0] > horizon:
+                window.popleft()
+            if len(window) < max_per_min:
+                window.append(now)
+                break
+            wait = horizon - (now - window[0])
+            if wait <= 0:
+                window.popleft()
+                continue
+            try:
+                ctx.logger.info(
+                    "post_rate_throttle",
+                    wait_seconds=round(wait, 2),
+                    window=len(window),
+                    max_per_min=max_per_min,
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(wait)
+
 # ------------------------------------------------------------
-# Data model (lightweight) - could be pydantic models if needed
+# Data model (lightweight) - re-used from runtime package
 # ------------------------------------------------------------
-@dataclass(slots=True)
-class Post:
-    id: str
-    keyword: str
-    author: str
-    author_profile: Optional[str]
-    text: str
-    language: str
-    published_at: Optional[str]
-    collected_at: str
-    company: Optional[str] = None
-    permalink: Optional[str] = None
-    # Keep score in-memory for tests/metrics, but do not persist to storage
-    score: Optional[float] = None
-    raw: dict[str, Any] | None = None
+Post = RuntimePost
 
 
 # ------------------------------------------------------------
@@ -600,74 +619,7 @@ async def process_keyword(keyword: str, ctx: AppContext, *, first_keyword: bool 
     try:
         # Mock mode short-circuit (generate synthetic posts without browser)
         if ctx.settings.playwright_mock_mode:
-            logger.info("mock_mode_active")
-            now_iso = datetime.now(timezone.utc).isoformat()
-            synthetic: list[Post] = []
-            # Respect explicit max_mock_posts (tests rely on this) even if global per-keyword limit is higher
-            limit = min(int(getattr(ctx.settings, 'max_mock_posts', 5) or 5), ctx.settings.max_posts_per_keyword)
-
-            # Domain-specific recruitment roles (legal & fiscal)
-            roles = [
-                "avocat collaborateur","avocat associé","avocat counsel","paralegal","legal counsel","juriste",
-                "responsable juridique","directeur juridique","notaire stagiaire","notaire associé","notaire salarié",
-                "notaire assistant","clerc de notaire","rédacteur d’actes","responsable fiscal","directeur fiscal",
-                "comptable taxateur","formaliste"
-            ]
-            contrats = ["CDI","CDD","Stage","Alternance","Freelance"]
-            urgences = [
-                "prise de poste immédiate","démarrage sous 30 jours","urgence recrutement","création de poste",
-                "remplacement départ retraite","renforcement d’équipe"
-            ]
-            # Templates with placeholders {role}
-            templates = [
-                "Nous sommes à la recherche d’un {role} ({contrat}) pour renforcer notre équipe ({urgence}).",
-                "Vous souhaitez rejoindre notre étude en tant que {role} ({contrat}) ? Postulez ! ({urgence})",
-                "Opportunité: poste de {role} ouvert ({contrat}). {urgence}. Contactez-nous.",
-                "Dans le cadre de notre croissance, nous recrutons un(e) {role} ({contrat}) motivé(e) – {urgence}.",
-                "Rejoignez une équipe dynamique : poste {role} ({contrat}) à pourvoir ({urgence}).",
-                "Annonce: création de poste {role} ({contrat}) – {urgence} (profil rigoureux & esprit d’équipe).",
-                "Talents juridiques : votre profil de {role} ({contrat}) nous intéresse ! ({urgence})",
-                "Envie d’évoluer ? Poste {role} ({contrat}) avec responsabilités transverses – {urgence}.",
-            ]
-
-            import random
-            for i in range(limit):
-                role = roles[(i + hash(keyword)) % len(roles)]
-                template = templates[i % len(templates)]
-                contrat = contrats[(i * 3 + len(keyword)) % len(contrats)]
-                urgence = urgences[(i * 5 + hash(role)) % len(urgences)]
-                text = template.format(role=role, contrat=contrat, urgence=urgence)
-                # Slight enrichment referencing keyword occasionally
-                if i % 2 == 0 and keyword.lower() not in text.lower():
-                    text += f" (#{keyword})"
-                lang = "fr"
-                pid = utils.make_post_id(keyword, f"legal-mock-{i}-{role}", now_iso)
-                rscore = utils.compute_recruitment_signal(text)
-                if rscore >= ctx.settings.recruitment_signal_threshold:
-                    SCRAPE_RECRUITMENT_POSTS.inc()
-                synthetic.append(
-                    Post(
-                        id=pid,
-                        keyword=keyword,
-                        author="demo_recruteur",
-                        author_profile=None,
-                        company=None,
-                        text=text,
-                        language=lang,
-                        published_at=now_iso,
-                        collected_at=now_iso,
-                        # keep score only in memory (not persisted)
-                        score=rscore,
-                        permalink=f"https://www.linkedin.com/feed/update/{pid}",
-                        raw={"mode": "mock", "role": role, "contrat": contrat, "urgence": urgence},
-                    )
-                )
-            logger.info("mock_posts_generated", count=len(synthetic), domain="legal_recruitment")
-            SCRAPE_MOCK_POSTS_EXTRACTED.inc(len(synthetic))
-            return synthetic
-
-        # Non-mock direct invocation (legacy tests) returns empty list instead of raising
-        if not ctx.settings.playwright_mock_mode:
+            logger.warning("mock_mode_disabled", note="playwright_mock_mode ignored; real scraping required")
             return []
         return []
     finally:
@@ -708,18 +660,14 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
     # 3. Orchestrateur
     mode = select_mode(ctx)
     with SCRAPE_DURATION_SECONDS.time():
-        if os.environ.get("FORCE_PLAYWRIGHT_DISABLED", "0").lower() in ("1","true","yes","on") and mode != 'mock':
-            with contextlib.suppress(Exception):
-                ctx.settings.playwright_mock_mode = True  # type: ignore
-                mode = 'mock'
-                ctx.logger.warning("playwright_forced_disabled", env="FORCE_PLAYWRIGHT_DISABLED")
-        posts_dicts = await run_orchestrator(kw_list, ctx, async_batch_callable=process_keywords_batched)
-        if not posts_dicts and mode == 'async' and os.environ.get("AUTO_ENABLE_MOCK_ON_PLAYWRIGHT_FAILURE", "1").lower() in ("1","true","yes","on"):
-            with contextlib.suppress(Exception):
-                ctx.settings.playwright_mock_mode = True  # type: ignore
-                ctx.logger.warning("auto_mock_mode_enabled", reason="empty_async_result")
-                posts_dicts = await run_orchestrator(kw_list, ctx, async_batch_callable=process_keywords_batched)
-                mode = 'mock'
+        force_playwright_disabled = os.environ.get("FORCE_PLAYWRIGHT_DISABLED", "0").lower() in ("1","true","yes","on")
+        if force_playwright_disabled:
+            ctx.logger.warning("playwright_forced_disabled", env="FORCE_PLAYWRIGHT_DISABLED", note="no fallback mock mode available")
+            posts_dicts: list[dict[str, Any]] = []
+        else:
+            posts_dicts = await run_orchestrator(kw_list, ctx, async_batch_callable=process_keywords_batched)
+        if not posts_dicts and mode == 'async':
+            ctx.logger.warning("playwright_empty_result", reason="no_posts_returned", mock_mode="disabled")
         # 4. Déduplication (extrait vers runtime.dedup)
         from scraper.runtime.dedup import deduplicate  # import local pour éviter coût si mock simple
         deduped = deduplicate(posts_dicts)
@@ -741,17 +689,46 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                     permalink=d.get('permalink'),
                     raw=d.get('raw') or {},
                 ))
-        await store_posts(ctx, materialized)
+        from datetime import date
+        today_iso = date.today().isoformat()
+        if ctx.daily_post_date != today_iso:
+            ctx.daily_post_date = today_iso
+            ctx.daily_post_count = 0
+            ctx.quota_exceeded = False
+        hard_limit = getattr(ctx.settings, "daily_post_hard_limit", 0) or 0
+        if hard_limit > 0:
+            remaining = max(hard_limit - ctx.daily_post_count, 0)
+            if remaining <= 0 and materialized:
+                ctx.logger.warning("daily_quota_reached_skip", limit=hard_limit)
+                materialized = []
+                ctx.quota_exceeded = True
+            elif 0 < remaining < len(materialized):
+                ctx.logger.info(
+                    "daily_quota_clamped",
+                    keep=remaining,
+                    drop=len(materialized) - remaining,
+                    limit=hard_limit,
+                )
+                materialized = materialized[:remaining]
+                if remaining == 0:
+                    ctx.quota_exceeded = True
+        stored_count = len(materialized)
+        if stored_count:
+            await store_posts(ctx, materialized)
+            await _enforce_post_rate(ctx, stored_count)
         unknown = sum(1 for p in materialized if p.author == 'Unknown')
         SCRAPE_JOBS_TOTAL.labels(status="success").inc()
-        SCRAPE_POSTS_EXTRACTED.inc(len(materialized))
+        if stored_count:
+            SCRAPE_POSTS_EXTRACTED.inc(stored_count)
         with contextlib.suppress(Exception):
-            from datetime import date
-            today = date.today().isoformat()
+            today = today_iso
             if ctx.daily_post_date != today:
                 ctx.daily_post_date = today
                 ctx.daily_post_count = 0
-            ctx.daily_post_count += len(materialized)
+                ctx.quota_exceeded = False
+            ctx.daily_post_count += stored_count
+            if hard_limit > 0 and ctx.daily_post_count >= hard_limit:
+                ctx.quota_exceeded = True
         await update_meta(ctx, len(materialized))
         await update_meta_job_stats(ctx, len(materialized), unknown)
         if broadcast and EventType:
@@ -791,6 +768,9 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
     key_list = [k for k in list(keywords) if k and (k.strip().lower() not in blacklist)]
     all_new: list[Post] = []
     unknown_count = 0
+    job_started_at = datetime.now(timezone.utc)
+    job_mode = "mock" if ctx.settings.playwright_mock_mode else "async"
+    result: JobResult | None = None
     # Optional tracing span
     job_span = None
     try:  # pragma: no cover
@@ -831,6 +811,7 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                         if not ctx.settings.playwright_mock_mode:
                             setattr(ctx.settings, "playwright_mock_mode", True)
                         ctx.logger.warning("playwright_forced_disabled", reason="env_FLAG", env="FORCE_PLAYWRIGHT_DISABLED")
+                        job_mode = "mock"
                     except Exception:
                         pass
                 real_posts: list[Post] = []
@@ -838,6 +819,7 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                     # Branch: forced sync mode
                     if should_force_sync():
                         ctx.logger.warning("playwright_force_sync_mode", reason="env_PLAYWRIGHT_FORCE_SYNC")
+                        job_mode = "sync"
                         try:
                             sync_dicts = await run_sync_playwright(iterable_keywords, ctx)
                             # Convert thin dict representation into Post objects (may be empty while scaffold)
@@ -895,6 +877,7 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                         try:
                             setattr(ctx.settings, "playwright_mock_mode", True)
                             ctx.logger.warning("auto_mock_mode_enabled", reason="playwright_empty_or_failed", keywords=len(iterable_keywords))
+                            job_mode = "mock"
                         except Exception:
                             pass
                         # Generate synthetic posts now that mock mode enabled
@@ -918,27 +901,11 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                     ctx.logger.debug("fast_first_cycle_restored", max_posts=original_max_posts, scroll_steps=original_scroll_steps)
                 except Exception:
                     pass
-            # Cross-keyword deduplication: prefer permalink; else author+published_at; else author+text snippet
-            deduped: list[Post] = []
-            seen_keys: set[str] = set()
-            for p in all_new:
-                # Canonical permalink key first
-                if p.permalink:
-                    key = f"perma|{canonical_permalink(p.permalink)}"
-                elif p.published_at and p.author:
-                    key = f"authdate|{p.author}|{p.published_at}"
-                else:
-                    # Use stable content hash (same logic as storage) to reduce dupes when date missing
-                    ch = content_hash(p.author, p.text)
-                    key = f"authtext|{p.author}|{ch}"
-                if key not in seen_keys:
-                    seen_keys.add(key)
-                    deduped.append(p)
-            all_new = deduped
-            # Count unknown authors
-            for p in all_new:
-                if p.author == "Unknown":
-                    unknown_count += 1
+
+            result = finalize_job_result(all_new, ctx, mode=job_mode, started_at=job_started_at)
+            all_new = result.posts
+            unknown_count = result.unknown_authors
+            job_mode = result.mode
             await store_posts(ctx, all_new)
 
         SCRAPE_JOBS_TOTAL.labels(status="success").inc()
@@ -963,6 +930,7 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                     "type": EventType.JOB_COMPLETE,
                     "posts": len(all_new),
                     "unknown_authors": unknown_count,
+                    "mode": result.mode if result else job_mode,
                 })
                 # Quota progression event
                 try:

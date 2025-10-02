@@ -1,15 +1,17 @@
 # Runtime Refactor Skeleton (Sprint 2)
 
-Ce répertoire accueillera la décomposition du worker monolithique.
+Ce répertoire accueille progressivement la décomposition du `worker.py` historique.
 
 ## Modules prévus
 
-- `pacing.py` : gestion des délais adaptatifs / human-mode
-- `risk.py` : compteurs de risques, cooldown
-- `session.py` : gestion session navigateur (init, screenshots, fermeture)
-- `mock.py` : génération de posts synthétiques isolée
-- `dedup.py` : fonctions pures de déduplication
-- `pipeline.py` : orchestrateur `run_job(keywords, ctx)` retournant `JobResult`
+- `pacing.py` : gestion des délais adaptatifs / human-mode *(à venir)*
+- `risk.py` : compteurs de risques, cooldown *(à venir)*
+- `session.py` : gestion session navigateur (init, screenshots, fermeture) *(à venir)*
+- `mock.py` : génération de posts synthétiques isolée ✅
+- `dedup.py` : fonctions pures de déduplication ✅
+- `pipeline.py` : `finalize_job_result` (dédup + matérialisation) livrée ; `run_job` reste à implémenter
+
+> Dataclass partagée : `RuntimePost` vit désormais dans `runtime.models` et sert de base commune à l'orchestrateur et aux tests. `JobResult` y décrit l'enveloppe standard des exécutions.
 
 ## Contrat cible (draft)
 
@@ -30,4 +32,4 @@ class JobResult:
 - Pas d'accès direct SQLite/Mongo ici : utiliser une future abstraction `storage`.
 - Toute métrique émise via fonctions wrapper (facile à mocker en tests).
 
-_Mis en place en fin de Sprint 1 pour préparation Sprint 2._
+*Mise à jour : Sprint 2 — extraction progressive en cours.*

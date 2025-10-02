@@ -11,7 +11,7 @@ Sortie: liste filtrée sans doublons selon clé supérieure rencontrée.
 from __future__ import annotations
 
 from typing import Iterable, List, Dict, Any, Set, Tuple
-from scraper.utils import content_hash
+from scraper.core.ids import content_hash
 
 DedupKey = str
 

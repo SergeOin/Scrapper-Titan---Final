@@ -14,7 +14,7 @@ Design notes:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 import asyncio
@@ -23,6 +23,7 @@ from logging.handlers import RotatingFileHandler
 import os
 import sys
 import time
+from collections import deque
 
 import structlog
 from pydantic import Field, field_validator
@@ -70,13 +71,20 @@ class Settings(BaseSettings):
 
     # Concurrency & pacing
     concurrency_limit: int = Field(2, alias="CONCURRENCY_LIMIT")
-    per_keyword_delay_ms: int = Field(500, alias="PER_KEYWORD_DELAY_MS")  # extra pacing between keywords
+    # Per-keyword delay (legacy single value) kept for backward compat; if human_mode_enabled
+    # we randomize between per_keyword_delay_min_ms / per_keyword_delay_max_ms.
+    per_keyword_delay_ms: int = Field(500, alias="PER_KEYWORD_DELAY_MS")
+    per_keyword_delay_min_ms: int = Field(800, alias="PER_KEYWORD_DELAY_MIN_MS")
+    per_keyword_delay_max_ms: int = Field(1200, alias="PER_KEYWORD_DELAY_MAX_MS")
     global_rate_limit_per_min: int = Field(120, alias="GLOBAL_RATE_LIMIT_PER_MIN")  # soft token bucket
     rate_limit_bucket_size: int = Field(120, alias="RATE_LIMIT_BUCKET_SIZE")
     rate_limit_refill_per_sec: float = Field(2.0, alias="RATE_LIMIT_REFILL_PER_SEC")  # tokens per second
 
     # Keywords & limits
-    scrape_keywords_raw: str = Field("juriste;avocat;legal counsel;notaire", alias="SCRAPE_KEYWORDS")
+    scrape_keywords_raw: str = Field(
+        "Avocat collaborateur;Avocat associé;Avocat Counsel;Paralegal;Legal counsel;Juriste;Responsable juridique;Directeur Juridique;Notaire stagiaire;Notaire associé;Notaire salarié;Notaire assistant;Clerc de notaire;Rédacteur d'actes;Responsable fiscal;Directeur fiscal;Comptable taxateur;Formaliste",
+        alias="SCRAPE_KEYWORDS",
+    )
     # Semicolon-separated list of keywords to always ignore (case-insensitive)
     blacklisted_keywords_raw: str = Field("python;ai", alias="BLACKLISTED_KEYWORDS")
     max_posts_per_keyword: int = Field(30, alias="MAX_POSTS_PER_KEYWORD")
@@ -172,9 +180,9 @@ class Settings(BaseSettings):
     dashboard_public: bool = Field(False, alias="DASHBOARD_PUBLIC")
     autonomous_worker_interval_seconds: int = Field(0, alias="AUTONOMOUS_WORKER_INTERVAL_SECONDS")  # 0=disabled
     # Human-like cadence (optional)
-    human_mode_enabled: bool = Field(False, alias="HUMAN_MODE_ENABLED")
-    human_active_hours_start: int = Field(8, alias="HUMAN_ACTIVE_HOURS_START")  # local hour
-    human_active_hours_end: int = Field(20, alias="HUMAN_ACTIVE_HOURS_END")    # local hour
+    human_mode_enabled: bool = Field(True, alias="HUMAN_MODE_ENABLED")
+    human_active_hours_start: int = Field(8, alias="HUMAN_ACTIVE_HOURS_START")
+    human_active_hours_end: int = Field(19, alias="HUMAN_ACTIVE_HOURS_END")
     human_min_cycle_pause_seconds: int = Field(60, alias="HUMAN_MIN_CYCLE_PAUSE_SECONDS")
     human_max_cycle_pause_seconds: int = Field(180, alias="HUMAN_MAX_CYCLE_PAUSE_SECONDS")
     human_long_break_probability: float = Field(0.08, alias="HUMAN_LONG_BREAK_PROBABILITY")
@@ -183,10 +191,13 @@ class Settings(BaseSettings):
     human_night_mode: bool = Field(True, alias="HUMAN_NIGHT_MODE")
     human_night_pause_min_seconds: int = Field(1800, alias="HUMAN_NIGHT_PAUSE_MIN_SECONDS")
     human_night_pause_max_seconds: int = Field(3600, alias="HUMAN_NIGHT_PAUSE_MAX_SECONDS")
-    human_max_cycles_per_hour: int = Field(6, alias="HUMAN_MAX_CYCLES_PER_HOUR")
+    human_max_cycles_per_hour: int = Field(2, alias="HUMAN_MAX_CYCLES_PER_HOUR")
     # Daily quota objective (e.g. ensure at least X posts collected per active day)
     daily_post_target: int = Field(50, alias="DAILY_POST_TARGET")
     daily_post_soft_target: int = Field(40, alias="DAILY_POST_SOFT_TARGET")
+    daily_post_hard_limit: int = Field(300, alias="DAILY_POST_HARD_LIMIT")
+    post_rate_soft_per_minute: float = Field(2.0, alias="POST_RATE_SOFT_PER_MINUTE")
+    post_rate_max_per_minute: float = Field(3.0, alias="POST_RATE_MAX_PER_MINUTE")
 
     # Risk & pacing heuristics (anti-ban)
     risk_auth_suspect_threshold: int = Field(2, alias="RISK_AUTH_SUSPECT_THRESHOLD")
@@ -393,6 +404,11 @@ SCRAPE_FILTERED_POSTS = Counter(
     "scrape_filtered_posts_total", "Posts filtered out before persistence", labelnames=("reason",)
 )
 
+# Playwright launch failures (instrumentation for reliability tracking)
+PLAYWRIGHT_LAUNCH_FAILURES = Counter(
+    "playwright_launch_failures_total", "Number of Playwright browser launch failures"
+)
+
 
 # ------------------------------------------------------------
 # Context dataclass
@@ -410,6 +426,8 @@ class AppContext:
     # Daily quota tracking
     daily_post_count: int = 0
     daily_post_date: Optional[str] = None
+    post_rate_window: deque[float] = field(default_factory=lambda: deque(maxlen=600))
+    quota_exceeded: bool = False
     # quick helper
     def has_valid_session(self) -> bool:
         try:

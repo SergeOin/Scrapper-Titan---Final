@@ -22,7 +22,7 @@ import json as _json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Form, Query, Body
-from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from jinja2 import TemplateNotFound  # runtime safeguard for missing templates
 from passlib.hash import bcrypt
@@ -32,6 +32,7 @@ import signal
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from scraper.bootstrap import get_context
+from services.posts_service import PostsService, MOCK_AUTHOR_NAMES
 from scraper.utils import normalize_for_search as _normalize_for_search  # type: ignore
 from scraper import utils as _scrape_utils  # unified opportunity logic
 from scraper.session import session_status, login_via_playwright  # type: ignore
@@ -41,6 +42,14 @@ from .events import sse_event_iter, broadcast, EventType  # type: ignore
 from fastapi.responses import RedirectResponse
 
 router = APIRouter()
+_posts_service = PostsService()
+
+_BASE_DIR = Path(__file__).resolve().parent.parent
+_ICON_CANDIDATES = [
+    _BASE_DIR / "build" / "icon.ico",
+    _BASE_DIR / "Titan Scraper logo.ico",
+]
+_LOGO_PATH = _BASE_DIR / "Titan Scraper logo.png"
 
 # Flag indicating the desktop launcher triggered an initial cycle at startup.
 # Set when /trigger receives the special header injected by the desktop app.
@@ -62,7 +71,7 @@ if not _TEMPLATE_DIR.exists():  # Fallback strategies for frozen/shortcut launch
     candidates = []
     # 1. CWD/server/templates (already tried previously as 'alt')
     candidates.append(Path.cwd() / "server" / "templates")
-    # 2. Executable directory (PyInstaller one-folder) sibling path
+    # 2. Executable directory (PyInstaller) sibling path
     try:
         import sys as _sys
         if getattr(_sys, "frozen", False):
@@ -126,6 +135,23 @@ def _fmt_date(value: Optional[str]):  # value expected ISO string
         return value
 
 templates.env.filters['fmt_date'] = _fmt_date
+
+
+@router.get("/favicon.ico", include_in_schema=False)
+async def favicon_resource():
+    for candidate in _ICON_CANDIDATES:
+        if candidate.exists():
+            return FileResponse(candidate)
+    if _LOGO_PATH.exists():
+        return FileResponse(_LOGO_PATH, media_type="image/png")
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Icon not found")
+
+
+@router.get("/assets/logo.png", include_in_schema=False)
+async def logo_resource():
+    if _LOGO_PATH.exists():
+        return FileResponse(_LOGO_PATH, media_type="image/png")
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Logo not found")
 
 # Name/company helpers for display hygiene
 def _dedupe_person_name(name: Optional[str]) -> str:
@@ -644,10 +670,19 @@ def _fetch_deleted_posts(ctx) -> list[dict[str, Any]]:
             rows.append(dict(r))
     return rows
 
-async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_by: Optional[str] = None, sort_dir: Optional[str] = None) -> list[dict[str, Any]]:
+async def fetch_posts(
+    ctx,
+    skip: int,
+    limit: int,
+    q: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
+) -> list[dict[str, Any]]:
     q = _sanitize_query(q)
     sort_field, sort_direction = _normalize_sort(sort_by, sort_dir)
     rows: list[dict[str, Any]] = []
+    mock_names = list(MOCK_AUTHOR_NAMES)
+    mock_names_lower = [name.lower() for name in MOCK_AUTHOR_NAMES]
     def _derive_company(author: str, current_company: Optional[str], author_profile: Optional[str], text: Optional[str]) -> Optional[str]:
         """Attempt to derive a company name when the stored company is missing or duplicates the author.
 
@@ -724,8 +759,10 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
     if ctx.mongo_client:
         try:
             coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            # Toujours exclure contenu de démonstration
-            mf: dict[str, Any] = {"author": {"$ne": "demo_recruteur"}, "keyword": {"$ne": "demo_recruteur"}}
+            mf: dict[str, Any] = {
+                "author": {"$nin": mock_names},
+                "keyword": {"$nin": mock_names},
+            }
             if q:
                 mf["$or"] = [
                     {"text": {"$regex": q, "$options": "i"}},
@@ -770,11 +807,16 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
                 )
                 params: list[Any] = []
                 # Base WHERE pour exclure posts démo + corbeille
-                where_clauses = [
-                    "LOWER(p.author) <> 'demo_recruteur'",
-                    "LOWER(p.keyword) <> 'demo_recruteur'",
-                    "COALESCE(f.is_deleted,0) = 0"
-                ]
+                where_clauses: list[str] = ["COALESCE(f.is_deleted,0) = 0"]
+                if mock_names_lower:
+                    placeholders = ",".join(["?"] * len(mock_names_lower))
+                    demo_filters = [
+                        f"LOWER(p.author) NOT IN ({placeholders})",
+                        f"LOWER(p.keyword) NOT IN ({placeholders})",
+                    ]
+                    where_clauses = demo_filters + where_clauses
+                    params.extend(mock_names_lower)
+                    params.extend(mock_names_lower)
                 if q:
                     # Prefer accent-insensitive search if search_norm exists
                     try:
@@ -976,10 +1018,15 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
 
 async def count_posts(ctx, q: Optional[str] = None) -> int:
     q = _sanitize_query(q)
+    mock_names = list(MOCK_AUTHOR_NAMES)
+    mock_names_lower = [name.lower() for name in MOCK_AUTHOR_NAMES]
     if ctx.mongo_client:
         try:
             coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            mf: dict[str, Any] = {"author": {"$ne": "demo_recruteur"}, "keyword": {"$ne": "demo_recruteur"}}
+            mf: dict[str, Any] = {
+                "author": {"$nin": mock_names},
+                "keyword": {"$nin": mock_names},
+            }
             if q:
                 mf["$or"] = [
                     {"text": {"$regex": q, "$options": "i"}},
@@ -997,8 +1044,17 @@ async def count_posts(ctx, q: Optional[str] = None) -> int:
             conn = sqlite3.connect(ctx.settings.sqlite_path)
             with conn:
                 # Exclude demo content unconditionally
-                base_where = ["LOWER(p.author) <> 'demo_recruteur'", "LOWER(p.keyword) <> 'demo_recruteur'", "COALESCE(f.is_deleted,0) = 0"]
+                base_where = ["COALESCE(f.is_deleted,0) = 0"]
                 params: list[Any] = []
+                if mock_names_lower:
+                    placeholders = ",".join(["?"] * len(mock_names_lower))
+                    base_where = [
+                        f"LOWER(p.author) NOT IN ({placeholders})",
+                        f"LOWER(p.keyword) NOT IN ({placeholders})",
+                        *base_where,
+                    ]
+                    params.extend(mock_names_lower)
+                    params.extend(mock_names_lower)
                 if q:
                     try:
                         cols = [r[1] for r in conn.execute("PRAGMA table_info(posts)").fetchall()]
@@ -1055,10 +1111,23 @@ async def fetch_meta(ctx) -> dict[str, Any]:
                 conn = sqlite3.connect(ctx.settings.sqlite_path)
                 with conn:
                     _ensure_post_flags(conn)
-                    c = conn.execute(
+                    mock_names_lower = [name.lower() for name in MOCK_AUTHOR_NAMES]
+                    where = ["COALESCE(f.is_deleted,0) = 0"]
+                    params: list[Any] = []
+                    if mock_names_lower:
+                        placeholders = ",".join(["?"] * len(mock_names_lower))
+                        where = [
+                            f"LOWER(p.author) NOT IN ({placeholders})",
+                            f"LOWER(p.keyword) NOT IN ({placeholders})",
+                            *where,
+                        ]
+                        params.extend(mock_names_lower)
+                        params.extend(mock_names_lower)
+                    query = (
                         "SELECT COUNT(*) FROM posts p LEFT JOIN post_flags f ON f.post_id = p.id "
-                        "WHERE LOWER(p.author) <> 'demo_recruteur' AND LOWER(p.keyword) <> 'demo_recruteur' AND COALESCE(f.is_deleted,0) = 0"
-                    ).fetchone()
+                        + ("WHERE " + " AND ".join(where) if where else "")
+                    )
+                    c = conn.execute(query, params).fetchone()
                     if c:
                         meta["posts_count"] = c[0]
         except Exception:  # pragma: no cover
@@ -1088,14 +1157,25 @@ async def dashboard(
     _ls=Depends(require_linkedin_session),  # require linkedin session
 ):
     skip = (page - 1) * limit
-    posts = await fetch_posts(ctx, skip=skip, limit=limit, q=q, sort_by=sort_by, sort_dir=sort_dir)
+    posts = await fetch_posts(
+        ctx,
+        skip=skip,
+        limit=limit,
+        q=q,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
     meta = await fetch_meta(ctx)
     trash_count = _count_deleted(ctx)
     # Compute naive total pages if meta count known
     if _sanitize_query(q):
         total = await count_posts(ctx, q)
     else:
-        total = meta.get("posts_count", 0) or 0
+        total = await count_posts(ctx)
+    try:
+        meta["posts_count"] = total
+    except Exception:
+        pass
     total_pages = max(1, (total // limit) + (1 if total % limit else 0)) if total else page
     return templates.TemplateResponse(
         "dashboard.html",
@@ -1136,13 +1216,24 @@ async def dashboard_demo(
     except Exception:
         return RedirectResponse("/", status_code=302)
     skip = (page - 1) * limit
-    posts = await fetch_posts(ctx, skip=skip, limit=limit, q=q, sort_by=sort_by, sort_dir=sort_dir)
+    posts = await fetch_posts(
+        ctx,
+        skip=skip,
+        limit=limit,
+        q=q,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
     meta = await fetch_meta(ctx)
     trash_count = _count_deleted(ctx)
     if _sanitize_query(q):
         total = await count_posts(ctx, q)
     else:
-        total = meta.get("posts_count", 0) or 0
+        total = await count_posts(ctx)
+    try:
+        meta["posts_count"] = total
+    except Exception:
+        pass
     total_pages = max(1, (total // limit) + (1 if total % limit else 0)) if total else page
     return templates.TemplateResponse(
         "dashboard.html",
@@ -1200,7 +1291,14 @@ async def export_excel(
     # Clamp limit defensively
     limit = min(limit, 5000)
     skip = (page - 1) * limit
-    posts = await fetch_posts(ctx, skip=skip, limit=limit, q=q, sort_by=sort_by, sort_dir=sort_dir)
+    posts = await fetch_posts(
+        ctx,
+        skip=skip,
+        limit=limit,
+        q=q,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
     rows: list[dict[str, Any]] = []
     for post in posts:
         rows.append({
@@ -1258,6 +1356,116 @@ async def export_excel(
 # ------------------------------------------------------------
 # Debug endpoints (non-authenticated for local desktop only)
 # ------------------------------------------------------------
+
+@router.get("/api/debug/raw_posts")
+async def debug_raw_posts(
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    include_deleted: bool = Query(False),
+    include_demo: bool = Query(False),
+    q: Optional[str] = Query(None, description="Filtre LIKE simple sur texte / auteur / entreprise / mot-clé"),
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Retourne les lignes brutes de la table `posts` sans les filtres UI habituels.
+
+    Objectif: diagnostiquer pourquoi aucun post n'apparaît dans le tableau.
+
+    Champs ajoutés:
+      - would_be_excluded_demo: True si exclu normalement (author/keyword demo_recruteur)
+      - flag_is_favorite / flag_is_deleted (flags si présents)
+      - would_be_hidden_ui: True si (demo exclu) ou (deleted)
+    """
+    path = ctx.settings.sqlite_path
+    if not path or not Path(path).exists():
+        return {"items": [], "meta": {"sqlite_path": path, "exists": False}}
+    rows: list[dict[str, Any]] = []
+    meta: dict[str, Any] = {"sqlite_path": path, "exists": True}
+    mock_names_lower = [name.lower() for name in MOCK_AUTHOR_NAMES]
+    try:
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        with conn:
+            # Totaux globaux
+            try:
+                meta["total_posts"] = conn.execute("SELECT COUNT(*) FROM posts").fetchone()[0]
+            except Exception:
+                meta["total_posts"] = None
+            try:
+                meta["total_flags"] = conn.execute("SELECT COUNT(*) FROM post_flags").fetchone()[0]
+            except Exception:
+                meta["total_flags"] = None
+            # Build query
+            where: list[str] = []
+            params: list[Any] = []
+            if not include_demo and mock_names_lower:
+                placeholders = ",".join(["?"] * len(mock_names_lower))
+                where.append(
+                    f"LOWER(author) NOT IN ({placeholders}) AND LOWER(keyword) NOT IN ({placeholders})"
+                )
+                params.extend(mock_names_lower)
+                params.extend(mock_names_lower)
+            if not include_deleted:
+                # Only hide deleted if flag table says so
+                where.append("id NOT IN (SELECT post_id FROM post_flags WHERE is_deleted=1)")
+            if q:
+                pat = f"%{q}%"
+                where.append("(text LIKE ? OR author LIKE ? OR company LIKE ? OR keyword LIKE ?)")
+                params.extend([pat, pat, pat, pat])
+            base = "SELECT id, keyword, author, company, text, published_at, collected_at, permalink FROM posts"
+            if where:
+                base += " WHERE " + " AND ".join(where)
+            base += " ORDER BY collected_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            for r in conn.execute(base, params):
+                item = dict(r)
+                # Flags join (single lookups OK at low limit)
+                try:
+                    frow = conn.execute("SELECT is_favorite, is_deleted, favorite_at, deleted_at FROM post_flags WHERE post_id=?", (r["id"],)).fetchone()
+                except Exception:
+                    frow = None
+                if frow:
+                    item["flag_is_favorite"] = int(frow[0] or 0)
+                    item["flag_is_deleted"] = int(frow[1] or 0)
+                    item["favorite_at"] = frow[2]
+                    item["deleted_at"] = frow[3]
+                else:
+                    item["flag_is_favorite"] = 0
+                    item["flag_is_deleted"] = 0
+                demo_ex = (str(item.get("author") or "").lower() in mock_names_lower) or (str(item.get("keyword") or "").lower() in mock_names_lower)
+                item["would_be_excluded_demo"] = demo_ex
+                item["would_be_hidden_ui"] = demo_ex or bool(item.get("flag_is_deleted"))
+                # Troncature légère du texte pour ne pas gonfler la réponse
+                full_text = item.get("text") or ""
+                if full_text and len(full_text) > 700:
+                    item["text_preview"] = full_text[:700] + "…"
+                rows.append(item)
+            # Compteurs de répartition
+            try:
+                if mock_names_lower:
+                    placeholders = ",".join(["?"] * len(mock_names_lower))
+                    query_demo = (
+                        f"SELECT COUNT(*) FROM posts WHERE LOWER(author) IN ({placeholders}) "
+                        f"OR LOWER(keyword) IN ({placeholders})"
+                    )
+                    meta["demo_rows_total"] = conn.execute(
+                        query_demo, mock_names_lower + mock_names_lower
+                    ).fetchone()[0]
+                else:
+                    meta["demo_rows_total"] = 0
+            except Exception:
+                meta["demo_rows_total"] = None
+            try:
+                meta["deleted_rows_total"] = conn.execute("SELECT COUNT(*) FROM post_flags WHERE is_deleted=1").fetchone()[0]
+            except Exception:
+                meta["deleted_rows_total"] = None
+    except Exception as exc:  # pragma: no cover
+        try:
+            ctx.logger.warning("debug_raw_posts_error", error=str(exc))
+        except Exception:
+            pass
+        return {"items": [], "meta": meta, "error": str(exc)}
+    return {"items": rows, "meta": meta, "limit": limit, "offset": offset, "returned": len(rows), "include_demo": include_demo, "include_deleted": include_deleted}
 @router.get("/debug/loop")
 async def debug_loop(ctx=Depends(get_auth_context)):
     import asyncio as _a
@@ -1303,13 +1511,8 @@ async def debug_mode(ctx=Depends(get_auth_context)):
         "scraping_enabled": bool(getattr(ctx.settings, "scraping_enabled", False)),
         "disable_scraper": bool(getattr(ctx.settings, "disable_scraper", False)),
         "loop_policy": loop_policy,
-        "playwright_force_sync": os.environ.get("PLAYWRIGHT_FORCE_SYNC", "0") in ("1","true","yes","on"),
+        "playwright_force_sync": os.environ.get("PLAYWRIGHT_FORCE_SYNC", "0") in ("1", "true", "yes", "on"),
     }
-
-@router.get("/debug/storage/counts")
-async def debug_storage_counts(ctx=Depends(get_auth_context)):
-    """Return counts for posts/favorites/deleted (SQLite + Mongo meta if available)."""
-    import sqlite3, os
     counts = {"mongo_posts": None, "sqlite_posts": None, "favorites": None, "deleted": None}
     # Mongo authoritative count (excluding demo posts)
     if ctx.mongo_client:
@@ -1519,7 +1722,6 @@ async def debug_loop_policy():
     except Exception as exc:  # pragma: no cover
         return {"loop_policy": None, "error": str(exc)}
 
-
 @router.get("/api/posts")
 async def api_posts(
     page: int = Query(1, ge=1),
@@ -1528,11 +1730,26 @@ async def api_posts(
     sort_by: Optional[str] = Query(None),
     sort_dir: Optional[str] = Query(None),
     ctx=Depends(get_auth_context),
-    # min_score removed
 ):
     skip = (page - 1) * limit
-    posts = await fetch_posts(ctx, skip=skip, limit=limit, q=q, sort_by=sort_by, sort_dir=sort_dir)
-    return {"page": page, "limit": limit, "items": posts}
+    field, direction = _normalize_sort(sort_by, sort_dir)
+    items = await _posts_service.list_posts(
+        ctx,
+        skip=skip,
+        limit=limit,
+        q=q,
+        sort_field=field,
+        sort_direction=direction,
+    )
+    return {"page": page, "limit": limit, "items": items}
+
+@router.get("/api/posts/count")
+async def api_posts_count(
+    q: Optional[str] = Query(None),
+    ctx=Depends(get_auth_context),
+):
+    total = await _posts_service.count_posts(ctx, q=q)
+    return {"total": total}
 
 
 @router.post("/api/posts/{post_id}/favorite")
@@ -1802,23 +2019,276 @@ async def diagnostics_page(request: Request, ctx=Depends(get_auth_context), _aut
         pw_ready = bool(h.get("playwright_ready"))
     except Exception:
         pass
+    # -------- Enhanced structured diagnostics (copy/paste) --------
+    import json as _json_diag, sqlite3 as _sq_diag, os as _os_diag
+    from pathlib import Path as _PathDiag
+    diag: dict[str, Any] = {}
+    s = ctx.settings
+    def _b(v):
+        try: return bool(v)
+        except Exception: return False
+    # Basic flags
+    diag["app_name"] = getattr(s, 'app_name', None)
+    diag["version"] = None
+    try:
+        vf = _PathDiag('VERSION')
+        if vf.exists():
+            diag["version"] = vf.read_text(encoding='utf-8').strip()[:64]
+    except Exception: pass
+    diag["loop_policy"] = loop_policy
+    diag["mock_mode"] = _b(getattr(s, 'playwright_mock_mode', False))
+    diag["scraping_enabled"] = _b(getattr(s, 'scraping_enabled', False))
+    diag["disabled_flag"] = _b(getattr(s, 'disable_scraper', False))
+    diag["fast_first_cycle"] = _b(getattr(s, 'fast_first_cycle', False))
+    diag["autonomous_worker_interval_seconds"] = getattr(s, 'autonomous_worker_interval_seconds', 0)
+    diag["run_on_start_received"] = run_on_start_seen
+    # Session & keywords
+    try: diag["has_valid_session"] = ctx.has_valid_session()
+    except Exception: diag["has_valid_session"] = False
+    try: diag["keywords"] = s.keywords
+    except Exception: diag["keywords"] = []
+    # Filters
+    filter_keys = [
+        'filter_language_strict','filter_recruitment_only','filter_require_author_and_permalink',
+        'filter_exclude_job_seekers','filter_france_only','filter_legal_domain_only'
+    ]
+    diag["filters"] = {k: (_b(getattr(s,k)) if hasattr(s,k) else None) for k in filter_keys}
+    diag["recruitment_signal_threshold"] = getattr(s, 'recruitment_signal_threshold', None)
+    # Paths
+    def _path_meta(p:str|None):
+        out={"exists":False}
+        if not p: return out
+        try:
+            pp=_PathDiag(p); out["path"]=str(pp); out["exists"]=pp.exists()
+            if pp.exists():
+                try: out["size_bytes"]=pp.stat().st_size
+                except Exception: pass
+        except Exception: pass
+        return out
+    paths={
+        "sqlite": _path_meta(getattr(s,'sqlite_path',None)),
+        "storage_state": _path_meta(getattr(s,'storage_state',None)),
+        "screenshot_dir": _path_meta(getattr(s,'screenshot_dir',None)),
+    }
+    try:
+        scd = getattr(s,'screenshot_dir',None)
+        if scd and _PathDiag(scd).exists():
+            paths["screenshot_dir"]["png_count"] = len(list(_PathDiag(scd).glob('*.png')))
+    except Exception: pass
+    diag["paths"] = paths
+    # SQLite counts
+    diag["sqlite"] = {"posts":0,"favorites":0,"deleted":0,"demo_posts":0,"real_posts":0,"only_demo":False}
+    try:
+        sp = getattr(s,'sqlite_path',None)
+        if sp and _PathDiag(sp).exists():
+            conn=_sq_diag.connect(sp)
+            with conn:
+                r=conn.execute("SELECT COUNT(*) FROM posts").fetchone(); diag["sqlite"]["posts"]=int(r[0]) if r else 0
+                try:
+                    rdemo = conn.execute("SELECT COUNT(*) FROM posts WHERE LOWER(author)='demo_recruteur' OR LOWER(keyword)='demo_recruteur'").fetchone()
+                    if rdemo: diag["sqlite"]["demo_posts"] = int(rdemo[0])
+                    diag["sqlite"]["real_posts"] = max(0, diag["sqlite"]["posts"] - diag["sqlite"]["demo_posts"])
+                    diag["sqlite"]["only_demo"] = (diag["sqlite"]["posts"] > 0 and diag["sqlite"]["real_posts"] == 0)
+                except Exception: pass
+                try:
+                    rf=conn.execute("SELECT COUNT(*) FROM post_flags WHERE is_favorite=1").fetchone();
+                    if rf: diag["sqlite"]["favorites"]=int(rf[0])
+                except Exception: pass
+                try:
+                    rd=conn.execute("SELECT COUNT(*) FROM post_flags WHERE is_deleted=1").fetchone();
+                    if rd: diag["sqlite"]["deleted"]=int(rd[0])
+                except Exception: pass
+            conn.close()
+    except Exception: pass
+    # Environment (whitelist)
+    env_keys = [
+        'PLAYWRIGHT_MOCK_MODE','PLAYWRIGHT_DISABLE_STRICT_FILTERS','AUTO_ENABLE_MOCK_ON_PLAYWRIGHT_FAILURE',
+        'DEBUG_FILTER_SUMMARY','PLAYWRIGHT_DEBUG_VERBOSE','FILTER_LANGUAGE_STRICT','FILTER_RECRUITMENT_ONLY',
+        'FILTER_REQUIRE_AUTHOR_AND_PERMALINK','FILTER_EXCLUDE_JOB_SEEKERS','FILTER_FRANCE_ONLY','FILTER_LEGAL_DOMAIN_ONLY',
+        'SQLITE_PATH','SCRAPE_KEYWORDS','BLACKLISTED_KEYWORDS','FAST_FIRST_CYCLE'
+    ]
+    env_state={}
+    for ek in env_keys:
+        if any(x in ek.lower() for x in ("pass","token","secret")):
+            continue
+        if ek in _os_diag.environ:
+            env_state[ek]=_os_diag.environ.get(ek)
+    diag["env"] = env_state
+    # Explicit relaxed flag (easier to spot than scanning env list)
+    try:
+        diag["filters_relaxed"] = (os.environ.get("PLAYWRIGHT_DISABLE_STRICT_FILTERS", "0") == "1")  # type: ignore[name-defined]
+    except Exception:
+        diag["filters_relaxed"] = False
+    # Recent log excerpts
+    diag["recent_logs"] = []
+    try:
+        candidates=[]
+        lf=getattr(s,'log_file',None)
+        if lf: candidates.append(lf)
+        for guess in ("server.log","desktop.log"):
+            if guess not in candidates: candidates.append(guess)
+        keys=("sqlite_inserted","extract_filter_summary","keyword_extracted","playwright_launch_failed","post_container_selector_match")
+        for fp in candidates:
+            p=_PathDiag(fp)
+            if not p.exists():
+                continue
+            tail=p.read_text(encoding='utf-8', errors='ignore')[-6000:]
+            lines=tail.splitlines()
+            interesting=[ln for ln in lines if any(k in ln for k in keys)]
+            if interesting:
+                diag["recent_logs"].append({"file":str(p),"lines":interesting[-12:]})
+    except Exception: pass
+    diag_json = _json_diag.dumps(diag, ensure_ascii=False, indent=2)
     html = f"""
     <html><head><title>Diagnostics</title><meta charset='utf-8'/>
-    <style>body{{font-family:system-ui;padding:1.25rem;background:#0f172a;color:#e2e8f0}} h1{{margin-top:0;font-size:1.3rem}} .kv{{margin:.35rem 0}} code{{background:#1e293b;padding:2px 4px;border-radius:4px}} a{{color:#93c5fd}} .tag{{display:inline-block;padding:2px 6px;border-radius:4px;font-size:.65rem;letter-spacing:.5px;text-transform:uppercase;margin-left:.5rem}} .ok{{background:#166534;color:#dcfce7}} .warn{{background:#854d0e;color:#fef9c3}} .err{{background:#991b1b;color:#fee2e2}} button{{background:#2563eb;color:#fff;border:none;padding:.5rem .8rem;border-radius:6px;cursor:pointer;margin-top:.8rem}} button:hover{{background:#1d4ed8}} .group{{background:#1e293b;padding:1rem;border-radius:8px;margin-bottom:1rem}} .small{{font-size:.75rem;color:#94a3b8}} pre{{background:#1e293b;padding:.75rem;border-radius:6px;overflow:auto;font-size:.7rem}} .sep{{height:1px;background:#334155;margin:1.2rem 0}} </style>
+    <style>body{{font-family:system-ui;padding:1.25rem;background:#0f172a;color:#e2e8f0}} h1{{margin-top:0;font-size:1.3rem}} .kv{{margin:.35rem 0}} code{{background:#1e293b;padding:2px 4px;border-radius:4px}} a{{color:#93c5fd}} button{{background:#2563eb;color:#fff;border:none;padding:.5rem .8rem;border-radius:6px;cursor:pointer;margin-top:.8rem}} button:hover{{background:#1d4ed8}} .group{{background:#1e293b;padding:1rem;border-radius:8px;margin-bottom:1rem}} .small{{font-size:.75rem;color:#94a3b8}} textarea{{width:100%;height:420px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:.7rem;padding:.75rem;font-family:ui-monospace,monospace;}} .copy-btn{{position:absolute;top:.6rem;right:.6rem;background:#334155;border:none;color:#e2e8f0;padding:.3rem .6rem;border-radius:4px;font-size:.65rem;cursor:pointer}} .copy-btn:hover{{background:#475569}} .relative{{position:relative}} </style>
     </head><body>
-    <h1>Diagnostics système</h1>
+        <h1>Diagnostics système <span style='font-size:.6rem;letter-spacing:1px;background:#334155;padding:2px 6px;border-radius:4px;vertical-align:middle;'>DIAG_V2</span></h1>
     <div class='group'>
       <div class='kv'>Loop policy: <strong>{loop_policy}</strong></div>
       <div class='kv'>Run-on-start reçu: <strong>{'oui' if run_on_start_seen else 'non'}</strong></div>
       <div class='kv'>Playwright disponible: <strong style='color:{'#16a34a' if pw_available else '#dc2626'}'>{str(pw_available).lower()}</strong></div>
-      <div class='kv'>Playwright prêt (navigateurs): <strong style='color:{'#16a34a' if pw_ready else '#dc2626'}'>{str(pw_ready).lower()}</strong></div>
+      <div class='kv'>Playwright prêt: <strong style='color:{'#16a34a' if pw_ready else '#dc2626'}'>{str(pw_ready).lower()}</strong></div>
       <form method='post' action='/admin/playwright/reinstall' onsubmit="return confirm('Relancer installation Playwright ?');"><button type='submit'>Réinstaller Playwright (Chromium)</button></form>
-      <p class='small'>La réinstallation tente d'appeler <code>playwright install chromium</code> dans l'environnement courant. Les logs seront visibles dans server.log / desktop.log.</p>
+      <p class='small'>La réinstallation exécute <code>playwright install chromium</code>. Voir server.log / desktop.log.</p>
       <p><a href='/'>&larr; Retour Dashboard</a></p>
+    </div>
+        <div class='group'>
+            <h2 style='margin:0 0 .5rem;font-size:1rem;'>Filtres stricts extraction</h2>
+            <p style='margin:.3rem 0'>Etat actuel: <strong style='color:{'#16a34a' if diag.get('filters_relaxed') else '#fbbf24'}'>{'RELAXÉS (bypass)' if diag.get('filters_relaxed') else 'ACTIFS (stricts)'}</strong></p>
+            <form method='post' action='/admin/filters/relax' style='display:inline' onsubmit="return confirm('Désactiver temporairement les filtres stricts ?');">
+                <button type='submit' {'disabled' if diag.get('filters_relaxed') else ''}>Relaxer filtres</button>
+            </form>
+            <form method='post' action='/admin/filters/strict' style='display:inline;margin-left:.5rem;' onsubmit="return confirm('Réactiver les filtres stricts ?');">
+                <button type='submit' {'disabled' if not diag.get('filters_relaxed') else ''}>Activer filtres stricts</button>
+            </form>
+            <p class='small' style='margin-top:.6rem;'>Lorsque les filtres sont relaxés (<code>PLAYWRIGHT_DISABLE_STRICT_FILTERS=1</code>), tous les posts extraits sont conservés (champ raw.filters_bypassed=1) sauf erreurs critiques. Réactivez-les après diagnostic.</p>
+        </div>
+    <div class='group relative'>
+      <h2 style='margin:0 0 .75rem;font-size:1rem;'>Bloc complet à copier</h2>
+      <button class='copy-btn' onclick="const ta=document.getElementById('diagjson'); ta.select(); document.execCommand('copy'); this.textContent='Copié!'; setTimeout(()=>this.textContent='Copier',1800);">Copier</button>
+      <textarea id='diagjson' readonly>{diag_json}</textarea>
+      <p class='small' style='margin-top:.75rem;'>Contient: flags, filtres, mots-clés, compteurs SQLite, env whiteliste, extraits de logs récents. Aucun secret.</p>
     </div>
     </body></html>
     """
     return HTMLResponse(html)
+
+# Lightweight duplicate of internal collection logic to expose raw JSON (helps quand la page HTML ancienne est encore dans un binaire).
+@router.get("/diagnostics.json")
+async def diagnostics_json(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    import json as _json_diag, sqlite3 as _sq_diag, os as _os_diag
+    from pathlib import Path as _PathDiag
+    s = ctx.settings
+    def _b(v):
+        try: return bool(v)
+        except Exception: return False
+    diag: dict[str, Any] = {
+        "app_name": getattr(s,'app_name',None),
+        "loop_policy": asyncio.get_event_loop_policy().__class__.__name__ if hasattr(asyncio,'get_event_loop_policy') else None,  # type: ignore
+        "mock_mode": _b(getattr(s,'playwright_mock_mode',False)),
+        "scraping_enabled": _b(getattr(s,'scraping_enabled',False)),
+        "disabled_flag": _b(getattr(s,'disable_scraper',False)),
+        "fast_first_cycle": _b(getattr(s,'fast_first_cycle',False)),
+        "autonomous_worker_interval_seconds": getattr(s,'autonomous_worker_interval_seconds',0),
+        "keywords": getattr(s,'keywords',[]),
+        "recruitment_signal_threshold": getattr(s,'recruitment_signal_threshold',None),
+    }
+    filter_keys=['filter_language_strict','filter_recruitment_only','filter_require_author_and_permalink','filter_exclude_job_seekers','filter_france_only','filter_legal_domain_only']
+    diag['filters']={k: (_b(getattr(s,k)) if hasattr(s,k) else None) for k in filter_keys}
+    # Paths
+    def _pm(p):
+        out={'exists':False}
+        if not p: return out
+        try:
+            pp=_PathDiag(p); out['path']=str(pp); out['exists']=pp.exists();
+            if pp.exists(): out['size_bytes']=pp.stat().st_size
+        except Exception: pass
+        return out
+    paths={'sqlite':_pm(getattr(s,'sqlite_path',None)),'storage_state':_pm(getattr(s,'storage_state',None)),'screenshot_dir':_pm(getattr(s,'screenshot_dir',None))}
+    diag['paths']=paths
+    # SQLite counts
+    diag['sqlite']={'posts':0,'favorites':0,'deleted':0}
+    try:
+        sp=getattr(s,'sqlite_path',None)
+        if sp and _PathDiag(sp).exists():
+            conn=_sq_diag.connect(sp)
+            with conn:
+                r=conn.execute('SELECT COUNT(*) FROM posts').fetchone(); diag['sqlite']['posts']=int(r[0]) if r else 0
+                try:
+                    rdemo = conn.execute("SELECT COUNT(*) FROM posts WHERE LOWER(author)='demo_recruteur' OR LOWER(keyword)='demo_recruteur'").fetchone()
+                    if rdemo:
+                        demo_ct = int(rdemo[0])
+                        diag['sqlite']['demo_posts'] = demo_ct
+                        diag['sqlite']['real_posts'] = max(0, diag['sqlite']['posts'] - demo_ct)
+                        diag['sqlite']['only_demo'] = (diag['sqlite']['posts'] > 0 and diag['sqlite'].get('real_posts',0)==0)
+                except Exception: pass
+                try: rf=conn.execute('SELECT COUNT(*) FROM post_flags WHERE is_favorite=1').fetchone(); diag['sqlite']['favorites']=int(rf[0]) if rf else 0
+                except Exception: pass
+                try: rd=conn.execute('SELECT COUNT(*) FROM post_flags WHERE is_deleted=1').fetchone(); diag['sqlite']['deleted']=int(rd[0]) if rd else 0
+                except Exception: pass
+            conn.close()
+    except Exception: pass
+    # Env whitelist
+    env_keys=['PLAYWRIGHT_MOCK_MODE','PLAYWRIGHT_DISABLE_STRICT_FILTERS','AUTO_ENABLE_MOCK_ON_PLAYWRIGHT_FAILURE','DEBUG_FILTER_SUMMARY','PLAYWRIGHT_DEBUG_VERBOSE','FILTER_LANGUAGE_STRICT','FILTER_RECRUITMENT_ONLY','FILTER_REQUIRE_AUTHOR_AND_PERMALINK','FILTER_EXCLUDE_JOB_SEEKERS','FILTER_FRANCE_ONLY','FILTER_LEGAL_DOMAIN_ONLY','SQLITE_PATH','SCRAPE_KEYWORDS','BLACKLISTED_KEYWORDS','FAST_FIRST_CYCLE']
+    env={}
+    for ek in env_keys:
+        if ek in _os_diag.environ: env[ek]=_os_diag.environ.get(ek)
+    diag['env']=env
+    try:
+        diag['filters_relaxed'] = (_os_diag.environ.get('PLAYWRIGHT_DISABLE_STRICT_FILTERS','0') == '1')
+    except Exception:
+        diag['filters_relaxed'] = False
+    return JSONResponse(diag)
+
+# ------------------------------------------------------------
+# Admin: toggle strict extraction filters at runtime (no restart)
+# ------------------------------------------------------------
+@router.post("/admin/filters/{mode}")
+async def admin_toggle_filters(mode: str, ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    import os as _os
+    mode_norm = mode.lower()
+    if mode_norm not in ("relax","strict"):
+        raise HTTPException(status_code=400, detail="Mode invalide (attendu: relax|strict)")
+    if mode_norm == "relax":
+        _os.environ["PLAYWRIGHT_DISABLE_STRICT_FILTERS"] = "1"
+        ctx.logger.warning("filters_relaxed_enabled")
+    else:
+        _os.environ["PLAYWRIGHT_DISABLE_STRICT_FILTERS"] = "0"
+        ctx.logger.info("filters_relaxed_disabled")
+    return {"status":"ok","filters_relaxed": _os.environ.get("PLAYWRIGHT_DISABLE_STRICT_FILTERS") == "1"}
+
+@router.post("/admin/purge_demo_posts")
+async def admin_purge_demo_posts(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Supprime immédiatement les posts de démonstration (author/keyword demo_recruteur) + flags orphelins.
+
+    Utile quand la base ne contient que du contenu mock qui masque l'état réel.
+    """
+    import sqlite3, time
+    start=time.time()
+    sp = getattr(ctx.settings,'sqlite_path',None)
+    if not sp or not Path(sp).exists():
+        raise HTTPException(status_code=400, detail="SQLite introuvable")
+    conn = sqlite3.connect(sp)
+    removed = 0; orphan_flags = 0
+    try:
+        with conn:
+            removed = conn.execute("DELETE FROM posts WHERE LOWER(author)='demo_recruteur' OR LOWER(keyword)='demo_recruteur'").rowcount
+            try:
+                orphan_flags = conn.execute("DELETE FROM post_flags WHERE post_id NOT IN (SELECT id FROM posts)").rowcount
+            except Exception:
+                pass
+    except Exception as exc:
+        ctx.logger.warning("purge_demo_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail="Erreur purge")
+    finally:
+        conn.close()
+    dur = round(time.time()-start,3)
+    try:
+        ctx.logger.info("purge_demo_complete", removed=removed, orphan_flags=orphan_flags, duration=dur)
+    except Exception:
+        pass
+    return {"removed": removed, "orphan_flags": orphan_flags, "duration_seconds": dur}
 
 # ------------------------------------------------------------
 # On-demand Playwright (re)installation endpoint

@@ -1,4 +1,4 @@
-"""Orchestrator: choisit le mode (mock / sync / async) et uniformise les posts.
+"""Orchestrator: choisit le mode (sync / async) et uniformise les posts.
 
 Retourne toujours une liste de dict simplifiés:
   {id, keyword, author, text, language, published_at, collected_at, permalink, raw, company}
@@ -7,7 +7,6 @@ Le calcul de content_hash pourra être ajouté ici (optionnel pour stockage).
 from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
-from .mock import generate_mock_posts
 from .ids import content_hash, canonical_permalink
 from .. import utils
 
@@ -23,11 +22,7 @@ async def run_orchestrator(keywords: list[str], ctx, *, async_batch_callable: Ca
     mode = select_mode(ctx)
     posts: list[dict[str, Any]] = []
     now_iso = datetime.now(timezone.utc).isoformat()
-    if mode == "mock":
-        for kw in keywords:
-            generated = generate_mock_posts(kw, min(ctx.settings.max_mock_posts, ctx.settings.max_posts_per_keyword), ctx.settings, ctx.settings.recruitment_signal_threshold)
-            posts.extend(generated)
-    elif mode == "sync":
+    if mode == "sync":
         sync_posts = await run_sync_playwright(keywords, ctx)
         if not sync_posts and (ctx.settings and getattr(ctx.settings, 'playwright_headless_scrape', True)):
             # Optionally fabricate placeholder posts so tests / pipeline can assert sync path executed
@@ -91,7 +86,17 @@ async def run_orchestrator(keywords: list[str], ctx, *, async_batch_callable: Ca
 
 def select_mode(ctx) -> str:
     if getattr(ctx.settings, 'playwright_mock_mode', False):
-        return "mock"
+        # Mock mode is no longer supported. Force async path and emit a warning once.
+        logger = getattr(ctx, "logger", None)
+        if logger:
+            try:
+                logger.warning("mock_mode_disabled", note="playwright_mock_mode ignored; real scraping only")
+            except Exception:
+                pass
+        try:
+            setattr(ctx.settings, 'playwright_mock_mode', False)
+        except Exception:
+            pass
     if should_force_sync():
         return "sync"
     return "async"

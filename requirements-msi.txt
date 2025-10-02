@@ -1,0 +1,13 @@
+# Packaging dependencies for Windows EXE/MSI builds
+#
+# Usage:
+#   pip install -r requirements-msi.txt
+#
+# This installs the base runtime, desktop wrapper extras, and build tooling
+# needed by build_windows.ps1 / build_msi.ps1.
+-r requirements.txt
+-r desktop/requirements-desktop.txt
+
+# PyInstaller + helpers
+pyinstaller==6.10.0
+pillow==10.4.0
