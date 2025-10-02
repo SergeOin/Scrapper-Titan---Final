@@ -216,6 +216,44 @@ ruff check . --fix
 black .
 ```
 
+### 🔥 Smoke Test (Mode Mock)
+
+Objectif : valider rapidement que le pipeline (context → job → stockage → meta) fonctionne sans navigateur réel.
+
+Script : `scripts/smoke_test.py` (réutilisé au lieu de créer `smoke_mock.py`).
+
+Pré‑requis : `PLAYWRIGHT_MOCK_MODE=1` et quelques mots-clés.
+
+Exécution PowerShell :
+
+```powershell
+$Env:PLAYWRIGHT_MOCK_MODE='1'
+$Env:SCRAPE_KEYWORDS='python;data'
+python scripts/smoke_test.py
+```
+
+Sortie attendue (logs) : entrée `smoke_test_summary` avec `posts>0`.
+
+Codes de retour :
+
+| Code | Signification |
+|------|---------------|
+| 0 | Succès (≥1 post mock stocké) |
+| 2 | Exécution ok mais 0 post (anormal en mock, investiguer filtres) |
+| 3 | Exception inattendue |
+
+Intégration CI recommandée : étape dédiée avant suite complète (rapide <15s). Exemple (GitHub Actions) :
+
+```yaml
+  - name: Smoke test
+    run: |
+      export PLAYWRIGHT_MOCK_MODE=1
+      export SCRAPE_KEYWORDS='python;data'
+      python scripts/smoke_test.py
+```
+
+Baseline durée sera consignée dans `docs/REFRACTOR_PLAN.md` Sprint 1 lorsque mesurée.
+
 ---
  
 ## 📊 Observabilité
