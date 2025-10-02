@@ -720,21 +720,9 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                 ctx.logger.warning("auto_mock_mode_enabled", reason="empty_async_result")
                 posts_dicts = await run_orchestrator(kw_list, ctx, async_batch_callable=process_keywords_batched)
                 mode = 'mock'
-        # 4. Déduplication
-        deduped = []
-        seen = set()
-        for p in posts_dicts:
-            perma = p.get('permalink')
-            if perma:
-                key = f"perma|{perma}"
-            elif p.get('author') and p.get('published_at'):
-                key = f"authdate|{p.get('author')}|{p.get('published_at')}"
-            else:
-                key = f"hash|{p.get('content_hash') or content_hash(p.get('author'), p.get('text'))}"
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(p)
+        # 4. Déduplication (extrait vers runtime.dedup)
+        from scraper.runtime.dedup import deduplicate  # import local pour éviter coût si mock simple
+        deduped = deduplicate(posts_dicts)
         # 5. Materialisation Post
         materialized: list[Post] = []
         for d in deduped:
