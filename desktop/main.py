@@ -24,6 +24,7 @@ import ctypes.wintypes as wintypes  # type: ignore[attr-defined]
 from pathlib import Path
 import json
 import threading as _threading
+import platform
 
 import asyncio
 from typing import Any
@@ -60,6 +61,18 @@ APP_MUTEX_NAME = "Local\\TitanScraperMutex_v2"
 WEBVIEW2_BOOTSTRAP_URL = os.getenv(
     "WEBVIEW2_BOOTSTRAP_URL",
     "https://go.microsoft.com/fwlink/p/?LinkId=2124703",
+)
+WEBVIEW2_STANDALONE_URL_X86 = os.getenv(
+    "WEBVIEW2_STANDALONE_URL_X86",
+    "https://go.microsoft.com/fwlink/p/?LinkId=2124704",
+)
+WEBVIEW2_STANDALONE_URL_X64 = os.getenv(
+    "WEBVIEW2_STANDALONE_URL_X64",
+    "https://go.microsoft.com/fwlink/p/?LinkId=2124705",
+)
+WEBVIEW2_STANDALONE_URL_ARM64 = os.getenv(
+    "WEBVIEW2_STANDALONE_URL_ARM64",
+    "https://go.microsoft.com/fwlink/p/?LinkId=2124706",
 )
 
 
@@ -499,12 +512,15 @@ def _webview2_runtime_installed() -> bool:
             except Exception:
                 return False
 
-        # Per-machine
-        if _has_key(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F1B5F0A6-C3B0-4AB5-9D24-BA61A1B3C047}"):
-            return True
-        # Per-user
-        if _has_key(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F1B5F0A6-C3B0-4AB5-9D24-BA61A1B3C047}"):
-            return True
+        key_paths = [
+            r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F1B5F0A6-C3B0-4AB5-9D24-BA61A1B3C047}",
+            r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F1B5F0A6-C3B0-4AB5-9D24-BA61A1B3C047}",
+        ]
+        for path in key_paths:
+            if _has_key(winreg.HKEY_LOCAL_MACHINE, path):
+                return True
+            if _has_key(winreg.HKEY_CURRENT_USER, path):
+                return True
     except Exception:
         return False
     return False
@@ -523,67 +539,91 @@ def _install_webview2_if_missing(exe_base: Path, user_base: Path, *, interactive
         return True
     log = logging.getLogger("desktop")
     marker = user_base / "webview2_install_marker.json"
+    now = time.time()
     if marker.exists():
         try:
             import json as _json
+
             data = _json.loads(marker.read_text(encoding="utf-8"))
             ts = float(data.get("ts", 0))
-            if time.time() - ts < 24 * 3600:  # less than 24h ago
-                log.info("webview2_recent_attempt_skip")
+            success = bool(data.get("success"))
+            age = now - ts
+            if success and age < 3 * 3600:
+                log.info("webview2_recent_success_cooldown age=%.1fs", age)
+                return False
+            if not success and age < 10 * 60:
+                log.info("webview2_recent_failure_cooldown age=%.1fs", age)
                 return False
         except Exception:
-            pass
+            log.warning("webview2_marker_parse_failed", exc_info=True)
 
     try:
+        from urllib.parse import urlparse
+
+        cache_dir = user_base / "cache" / "webview2"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        def _download_to(url: str, target: Path) -> None:
+            import urllib.request as _urlreq  # lazy import to avoid startup penalty
+            import shutil as _shutil
+            import tempfile as _tempfile
+
+            log.info("webview2_download_start url=%s target=%s", url, target)
+            with _urlreq.urlopen(url, timeout=90) as resp:
+                status = getattr(resp, "status", 200)
+                if status >= 400:
+                    raise RuntimeError(f"HTTP {status}")
+                tmp_file = _tempfile.NamedTemporaryFile(delete=False, dir=cache_dir, suffix=".tmp")
+                try:
+                    with tmp_file:
+                        _shutil.copyfileobj(resp, tmp_file)
+                    os.replace(tmp_file.name, target)
+                finally:
+                    try:
+                        Path(tmp_file.name).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+            log.info("webview2_download_complete bytes=%s target=%s", target.stat().st_size, target)
+
+        def _resolve_standalone_url() -> str | None:
+            arch = platform.machine().lower()
+            if arch in ("amd64", "x86_64"):
+                return WEBVIEW2_STANDALONE_URL_X64
+            if arch in ("arm64", "aarch64"):
+                return WEBVIEW2_STANDALONE_URL_ARM64
+            return WEBVIEW2_STANDALONE_URL_X86
+
         candidates: list[Path] = []
         meipass = Path(getattr(sys, "_MEIPASS", exe_base))  # type: ignore[attr-defined]
         candidates.append(exe_base / "_internal" / "MicrosoftEdgeWebView2Setup.exe")
         candidates.append(exe_base / "MicrosoftEdgeWebView2Setup.exe")
         candidates.append(meipass / "MicrosoftEdgeWebView2Setup.exe")
         candidates.append(_project_root() / "build" / "MicrosoftEdgeWebView2Setup.exe")
-        cache_dir = user_base / "cache" / "webview2"
         cached_bootstrapper = cache_dir / "MicrosoftEdgeWebView2Setup.exe"
         candidates.append(cached_bootstrapper)
         setup = next((p for p in candidates if p.exists()), None)
-        if not setup:
-            # Try downloading the official bootstrapper as a last resort (approx. 2 MB).
-            try:
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                import urllib.request as _urlreq  # lazy import to avoid startup penalty
-                import shutil as _shutil
-                import tempfile as _tempfile
 
-                log.info("webview2_download_start url=%s", WEBVIEW2_BOOTSTRAP_URL)
-                with _urlreq.urlopen(WEBVIEW2_BOOTSTRAP_URL, timeout=70) as resp:
-                    status = getattr(resp, "status", 200)
-                    if status >= 400:
-                        raise RuntimeError(f"HTTP {status}")
-                    tmp_file = _tempfile.NamedTemporaryFile(delete=False, dir=cache_dir, suffix=".tmp")
-                    try:
-                        with tmp_file:
-                            _shutil.copyfileobj(resp, tmp_file)
-                        os.replace(tmp_file.name, cached_bootstrapper)
-                    finally:
-                        try:
-                            Path(tmp_file.name).unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                size = cached_bootstrapper.stat().st_size
-                log.info("webview2_download_complete bytes=%s target=%s", size, cached_bootstrapper)
-                setup = cached_bootstrapper if size > 0 else None
+        if setup is None:
+            try:
+                _download_to(WEBVIEW2_BOOTSTRAP_URL, cached_bootstrapper)
+                setup = cached_bootstrapper if cached_bootstrapper.exists() else None
             except Exception:
-                log.exception("webview2_download_failed")
-                if interactive:
-                    _message_box(
-                        APP_DISPLAY_NAME,
-                        (
-                            "Impossible de télécharger automatiquement Microsoft Edge WebView2 Runtime.\n"
-                            "Veuillez installer manuellement 'Microsoft Edge WebView2 Runtime' puis relancer l'application."
-                        ),
-                    )
-                log.error("webview2_installer_missing")
-                return False
-        if setup is None or not setup.exists():
+                log.exception("webview2_download_failed_bootstrapper")
+                setup = None
+
+        offline_url = _resolve_standalone_url()
+        offline_path: Path | None = None
+        if offline_url:
+            name = Path(urlparse(offline_url).path).name or "MicrosoftEdgeWebView2RuntimeInstaller.exe"
+            offline_path = cache_dir / name
+
+        installers: list[tuple[str, Path, str | None]] = []
+        if setup is not None and setup.exists():
+            installers.append(("bootstrap", setup, WEBVIEW2_BOOTSTRAP_URL if setup == cached_bootstrapper else None))
+        if offline_path is not None:
+            installers.append(("standalone", offline_path, offline_url))
+
+        if not installers:
             if interactive:
                 _message_box(
                     APP_DISPLAY_NAME,
@@ -592,106 +632,165 @@ def _install_webview2_if_missing(exe_base: Path, user_base: Path, *, interactive
                         "Veuillez installer manuellement 'Microsoft Edge WebView2 Runtime' puis relancer l'application."
                     ),
                 )
-            log.error("webview2_installer_missing_after_download")
+            log.error("webview2_installer_candidates_empty")
             return False
 
-        # Progress window (Tkinter) -----------------------------------------------------------
-        progress_close: callable | None = None
-        progress_root = None  # type: ignore
-        progress_var = None   # will hold tk.IntVar
-        if interactive:
-            try:
-                import tkinter as tk
-                from tkinter import ttk
-
-                def _open_progress():  # pragma: no cover (UI helper)
-                    root = tk.Tk()
-                    root.title(f"{APP_DISPLAY_NAME} - WebView2")
-                    root.geometry("420x140")
-                    root.resizable(False, False)
-                    lbl = ttk.Label(root, text="Installation de WebView2 en cours...", anchor="center", wraplength=400)
-                    lbl.pack(pady=12)
-                    # Pseudo progress: determinate bar increments while polling; switches to full at success
-                    local_var = tk.IntVar(value=0)
-                    pb = ttk.Progressbar(root, mode="determinate", maximum=100, variable=local_var)
-                    pb.pack(fill="x", padx=16, pady=8)
-                    note = ttk.Label(root, text="Une seule fois. Merci de patienter.", foreground="#555")
-                    note.pack(pady=(0, 8))
-                    root.update_idletasks()
-                    return root, local_var
-
-                _progress_root, progress_var = _open_progress()
-                progress_root = _progress_root
-
-                def _close():
-                    try:
-                        _progress_root.destroy()
-                    except Exception:
-                        pass
-                progress_close = _close
-            except Exception:
-                progress_close = None  # fallback to no progress window
-
-        # Run installer in thread
-        import subprocess
-        import threading as _th
-
-        done_flag = {"done": False}
-
-        def _run_install():
-            try:
-                subprocess.run([str(setup), "/silent", "/install"], check=False)
-            finally:
-                done_flag["done"] = True
-
-        t = _th.Thread(target=_run_install, daemon=True)
-        t.start()
-
-        # Poll with UI updates up to 90s
-        start = time.time()
-        tick = 0
-        while time.time() - start < 90:
-            if _webview2_runtime_installed():
-                break
-            if done_flag["done"]:
-                # If installer finished but runtime still not detected, wait a bit more
-                time.sleep(2)
-                if _webview2_runtime_installed():
-                    break
-            # Keep UI responsive
+        def _run_installer_once(installer_path: Path) -> tuple[bool, dict[str, Any]]:
+            # Progress window ---------------------------------------------------------------
+            progress_close: callable | None = None
+            progress_root = None  # type: ignore
+            progress_var = None   # will hold tk.IntVar
             if interactive:
                 try:
-                    if progress_root is not None:
+                    import tkinter as tk
+                    from tkinter import ttk
+
+                    def _open_progress():  # pragma: no cover (UI helper)
+                        root = tk.Tk()
+                        root.title(f"{APP_DISPLAY_NAME} - WebView2")
+                        root.geometry("420x140")
+                        root.resizable(False, False)
+                        lbl = ttk.Label(root, text="Installation de WebView2 en cours...", anchor="center", wraplength=400)
+                        lbl.pack(pady=12)
+                        local_var = tk.IntVar(value=0)
+                        pb = ttk.Progressbar(root, mode="determinate", maximum=100, variable=local_var)
+                        pb.pack(fill="x", padx=16, pady=8)
+                        note = ttk.Label(root, text="Une seule fois. Merci de patienter.", foreground="#555")
+                        note.pack(pady=(0, 8))
+                        root.update_idletasks()
+                        return root, local_var
+
+                    _progress_root, progress_var_local = _open_progress()
+                    progress_root = _progress_root
+                    progress_var = progress_var_local
+
+                    def _close():
+                        try:
+                            _progress_root.destroy()
+                        except Exception:
+                            pass
+                    progress_close = _close
+                except Exception:
+                    progress_close = None  # fallback to no progress window
+
+            log.info("webview2_installer_path=%s", installer_path)
+
+            import subprocess
+            import threading as _th
+
+            done_flag = {"done": False}
+            proc_info: dict[str, Any] = {"returncode": None, "stdout": None, "stderr": None}
+
+            def _run_install():
+                try:
+                    proc = subprocess.run(
+                        [str(installer_path), "/silent", "/install"],
+                        check=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                    proc_info["returncode"] = proc.returncode
+                    if proc.stdout:
+                        proc_info["stdout"] = proc.stdout.strip()[:2000]
+                    if proc.stderr:
+                        proc_info["stderr"] = proc.stderr.strip()[:2000]
+                finally:
+                    done_flag["done"] = True
+
+            t = _th.Thread(target=_run_install, daemon=True)
+            t.start()
+
+            # Poll with UI updates up to 90s
+            start = time.time()
+            tick = 0
+            while time.time() - start < 90:
+                if _webview2_runtime_installed():
+                    break
+                if done_flag["done"]:
+                    time.sleep(2)
+                    if _webview2_runtime_installed():
+                        break
+                if interactive and progress_root is not None:
+                    try:
                         tick += 1
-                        # Increment progress up to 95% while waiting
                         if progress_var is not None:
                             cur = progress_var.get()
                             if cur < 95:
                                 progress_var.set(min(95, cur + 1))
                         progress_root.update()
+                    except Exception:
+                        progress_root = None
+                time.sleep(0.4)
+
+            if progress_close:
+                try:
+                    if progress_var is not None and progress_root is not None:
+                        progress_var.set(100)
+                        progress_root.update()
+                    progress_close()
                 except Exception:
-                    # Window probably closed by user; stop updating
-                    progress_root = None
-            time.sleep(0.4)
+                    pass
 
-        if progress_close:
-            try:
-                if progress_var is not None and progress_root is not None:
-                    progress_var.set(100)
-                    progress_root.update()
-                progress_close()
-            except Exception:
-                pass
+            present_now = _webview2_runtime_installed()
+            log.info(
+                "webview2_install_complete present=%s returncode=%s stdout_snip=%s stderr_snip=%s",
+                present_now,
+                proc_info.get("returncode"),
+                (proc_info.get("stdout") or "").replace("\n", " | ") if proc_info.get("stdout") else "",
+                (proc_info.get("stderr") or "").replace("\n", " | ") if proc_info.get("stderr") else "",
+            )
+            return present_now, proc_info
 
-        # Record attempt time
+        last_proc: dict[str, Any] | None = None
+        last_installer: Path | None = None
+        last_kind: str | None = None
+        present = False
+
+        for kind, installer_path, source_url in installers:
+            if kind != "bootstrap":
+                try:
+                    if not installer_path.exists() or installer_path.stat().st_size == 0:
+                        if source_url:
+                            _download_to(source_url, installer_path)
+                except Exception:
+                    log.exception("webview2_download_failed_%s", kind)
+                    continue
+
+            present, proc_info = _run_installer_once(installer_path)
+            last_proc = proc_info
+            last_installer = installer_path
+            last_kind = kind
+            if present:
+                log.info("webview2_install_success kind=%s", kind)
+                break
+            else:
+                log.warning(
+                    "webview2_install_attempt_failed kind=%s returncode=%s", kind, proc_info.get("returncode")
+                )
+
+        present_final = present or _webview2_runtime_installed()
+        if not present_final and interactive:
+            _message_box(
+                APP_DISPLAY_NAME,
+                (
+                    "L'installation automatique de Microsoft Edge WebView2 a échoué.\n"
+                    "Veuillez installer manuellement 'Microsoft Edge WebView2 Runtime' puis relancer l'application."
+                ),
+            )
         try:
-            marker.write_text('{"ts": %f}' % time.time(), encoding="utf-8")
+            marker_payload = {
+                "ts": time.time(),
+                "success": present_final,
+                "installer": str(last_installer) if last_installer else "",
+                "returncode": None if not last_proc else last_proc.get("returncode"),
+                "kind": last_kind or "",
+            }
+            marker.write_text(json.dumps(marker_payload), encoding="utf-8")
         except Exception:
-            pass
+            log.warning("webview2_marker_write_failed", exc_info=True)
 
-        present = _webview2_runtime_installed()
-        log.info("webview2_install_complete present=%s", present)
-        return present
+        return present_final
     except Exception:
         log.exception("Failed to install WebView2")
         return False
