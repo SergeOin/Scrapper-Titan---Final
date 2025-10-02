@@ -786,6 +786,14 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                 ctx.settings.max_scroll_steps = original_scroll_steps
                 setattr(ctx, '_fast_cycle_done', True)
         return len(materialized)
+
+    # ===== Unreachable Legacy Block Notice (Sprint 1 Annotation) =====
+    # NOTE: The code below this return is legacy and never executes because
+    # of the early `return len(materialized)` above. It will be removed or
+    # refactored in Sprint 2 when extracting the runtime/pipeline modules.
+    # Do NOT add new logic here; place new orchestration code before the
+    # return or in dedicated future modules. (Ref: docs/ARCHITECTURE_CURRENT.md)
+    # ==================================================================
     # Filter out blacklisted keywords (case-insensitive)
     try:
         bl_raw = getattr(ctx.settings, 'blacklisted_keywords_raw', '') or ''

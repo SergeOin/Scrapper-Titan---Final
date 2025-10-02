@@ -1,13 +1,13 @@
 # LinkedIn Scraper & Minimal Dashboard
 
-> Usage interne uniquement. Respect strict des CGU LinkedIn. Ce projet fournit un worker de scraping découplé d'un serveur FastAPI avec un mini dashboard pour visualiser les posts collectés et déclencher un nouveau scrape de façon contrôlée.
+> Usage interne uniquement. Respect strict des CGU LinkedIn. Ce projet fournit un worker de scraping découplé d'un serveur FastAPI avec un mini dashboard pour visualiser les posts collectés. Le bouton manuel de déclenchement a été retiré : on utilise désormais `POST /trigger` (script / API) ou l'intervalle autonome / worker dédié.
 
 ---
 ## 🎯 Objectifs
 - Scraping de posts LinkedIn à partir de mots-clés ciblés (recherche)
 - Stockage principal MongoDB (Atlas), fallback automatique SQLite ou CSV
 - Worker asynchrone (séparé du serveur) + file/queue Redis pour jobs
-- Dashboard FastAPI minimal (table paginée + stats + bouton "Forcer scrape")
+- Dashboard FastAPI minimal (table paginée + stats) — plus de bouton de déclenchement dans l'UI
 - Cache TTL & verrou anti-concurrence pour éviter sur-scraping
 - Logging structuré JSON + rotation + métriques Prometheus `/metrics`
 - Tests unitaires (pytest), linting Ruff, format Black, typage mypy
@@ -15,6 +15,12 @@
 
 ---
 ## 🧱 Architecture (vue d'ensemble)
+
+Documentation complémentaire :
+
+- Architecture actuelle détaillée (snapshot pré‑refactor) : `docs/ARCHITECTURE_CURRENT.md`
+- Plan de refactor multi-sprints : `docs/REFRACTOR_PLAN.md`
+
 ```
 project/
 │-- scraper/
@@ -39,23 +45,45 @@ project/
 ```
 
 ---
-## ⚙️ Flux Fonctionnel
-1. L'utilisateur (interne) ouvre le dashboard ⇒ voit les posts + stats (dernier run, total, état queue)
-2. Il clique sur "Forcer scrape" (POST) ⇒ push d'un job keyword(s) dans Redis
-3. Le worker (process séparé) consomme la queue ⇒ Playwright + login via `storage_state.json`
-4. Le worker applique les sélecteurs (abstraction testée) ⇒ extrait posts (texte, auteur, date, langue, score heuristique)
-5. Stockage MongoDB (ou fallback) + mise à jour métadonnées (last_run, counts)
-6. Logs JSON + snapshots d'erreur (screenshots) + métriques incrementées
-7. Le dashboard affiche les nouvelles données via pagination / query params.
+
+## ⚙️ Flux Fonctionnel (mise à jour sans bouton manuel)
+
+1. L'utilisateur ouvre le dashboard ⇒ posts réels visibles (les posts démo sont exclus) + stats.
+2. Un job est lancé via :
+   - `POST /trigger` (curl / script / Postman / console navigateur)
+   - le worker autonome (`AUTONOMOUS_WORKER_INTERVAL_SECONDS > 0`)
+   - un worker séparé consommant Redis.
+3. Worker ⇒ Playwright + session (`storage_state.json`).
+4. Extraction + application des filtres stricts (langue, recrutement, auteur/permalink, France, exclusion job-seekers) sauf si relaxés.
+5. Stockage Mongo ou fallback; mise à jour meta.
+6. Logs + screenshots + métriques.
+7. Dashboard rafraîchi via SSE (`/stream`) ou polling.
+
+### Déclenchement manuel (exemples)
+
+PowerShell :
+
+```powershell
+Invoke-RestMethod -Method POST -Uri http://localhost:8000/trigger -Headers @{ 'X-Trigger-From'='manual' }
+```
+
+Python :
+
+```python
+import requests; requests.post('http://localhost:8000/trigger', headers={'X-Trigger-From':'manual'})
+```
 
 ---
 ## 🗄️ Stockage
+
 Ordre de priorité :
+
 1. MongoDB (Motor + collection `posts` & `meta`) – backend principal
 2. SQLite (fichier local `fallback.sqlite3`) si Mongo indisponible
 3. CSV (append dans `exports/fallback_posts.csv`) si SQLite échoue
 
 Schéma persistant actuel (champs de score supprimés) :
+
 ```jsonc
 {
   "_id": "hash(post_url|timestamp)",
@@ -73,7 +101,9 @@ Schéma persistant actuel (champs de score supprimés) :
 ```
 
 ---
+ 
 ## 🔒 Sécurité & Conformité
+
 - Variables sensibles uniquement via `.env` (jamais commit) : credentials, URIs
 - Aucune redistribution publique des données collectées
 - Respect des limitations implicites (sleep jitter, random UA)
@@ -83,7 +113,9 @@ Schéma persistant actuel (champs de score supprimés) :
 - HTTPS géré en amont (reverse proxy) — possibilité future d'ajouter TLS local
 
 ---
+ 
 ## 📦 Variables d'environnement (voir `.env.example`)
+
 | Variable | Description | Exemple |
 |----------|-------------|---------|
 | `MONGO_URI` | URI MongoDB Atlas | `mongodb+srv://user:pass@cluster/db` |
@@ -115,7 +147,9 @@ Schéma persistant actuel (champs de score supprimés) :
 | `PLAYWRIGHT_MOCK_MODE` | Mode simulation (aucune navigation réelle) | `0` |
 
 ---
+ 
 ## 🚀 Démarrage Local (Windows PowerShell)
+
 ```powershell
 python -m venv .venv
 . .venv\Scripts\Activate.ps1
@@ -133,16 +167,20 @@ python scripts/run_worker.py
 # Lancer serveur + worker ensemble (démo rapide)
 python scripts/run_all.py
 ```
-Accéder au dashboard: http://127.0.0.1:8000/
+Accéder au dashboard: <http://127.0.0.1:8000/>
 
 Déclencher manuellement un job (sans UI) :
+
 ```powershell
 python scripts\run_once.py --keywords "python;ai"
 ```
 
 ---
+ 
 ## 🐳 Docker
+
 Build & run :
+
 ```bash
 docker build -t linkedin-scraper .
 # Créer un réseau si usage conteneurs Redis/Mongo
@@ -152,12 +190,14 @@ docker build -t linkedin-scraper .
 docker run --rm -p 8000:8000 --env-file .env linkedin-scraper
 ```
 Le worker peut être un second conteneur (même image) avec commande override :
+
 ```bash
 docker run --rm --env-file .env linkedin-scraper python -m scraper.worker
 ```
 Pour Playwright dans Docker : Chromium installé au build + dépendances system (voir `Dockerfile`).
 
 ---
+ 
 ## 🧪 Qualité & Tests
 Commandes :
 ```powershell
@@ -177,6 +217,7 @@ black .
 ```
 
 ---
+ 
 ## 📊 Observabilité
 | Aspect | Détails |
 |--------|---------|
@@ -186,24 +227,25 @@ black .
 | Screenshots | Capturés sur échecs critiques Playwright dans `screenshots/` |
 | Traces futures | OpenTelemetry (roadmap) |
 
+ 
 ### Métriques exposées
 | Nom | Type | Description |
 |-----|------|-------------|
-| `scrape_jobs_total{status=success|error}` | Counter | Nombre de jobs traités par statut |
+| `scrape_jobs_total` (label `status`) | Counter | Nombre de jobs traités par statut |
 | `scrape_posts_extracted_total` | Counter | Total de posts extraits (par job) |
 | `scrape_duration_seconds` | Histogram | Durée des jobs de scraping |
 | `scrape_mock_posts_extracted_total` | Counter | Posts synthétiques générés (mode mock) |
-| `scrape_storage_attempts_total{backend,result}` | Counter | Succès/erreurs par backend (mongo/sqlite/csv) |
+| `scrape_storage_attempts_total` (labels `backend,result`) | Counter | Succès/erreurs par backend (mongo/sqlite/csv) |
 | `scrape_queue_depth` | Gauge | Profondeur actuelle de la file de jobs Redis |
 | `scrape_job_failures_total` | Counter | Nombre de jobs échoués (exceptions) |
-| `scrape_step_duration_seconds{step}` | Histogram | Durée de sous-étapes (mongo_insert, sqlite_insert, etc.) |
+| `scrape_step_duration_seconds` (label `step`) | Histogram | Durée de sous-étapes (mongo_insert, sqlite_insert, etc.) |
 | `scrape_rate_limit_wait_seconds_total` | Counter | Secondes cumulées d'attente dues au rate limiting |
 | `scrape_rate_limit_tokens` | Gauge | Jetons disponibles (bucket courant) |
 | `api_rate_limit_rejections_total` | Counter | Requêtes API rejetées (limitation IP) |
 | `scrape_scroll_iterations_total` | Counter | Nombre total d'itérations de scroll exécutées |
-| `scrape_extraction_incomplete_total` | Counter | Extractions arrêtées sous le seuil `MIN_POSTS_TARGET` |
-| `scrape_recruitment_posts_total` | Counter | Posts détectés recrutement (heuristique interne, score non stocké) |
-| `scrape_filtered_posts_total{reason}` | Counter | Posts rejetés (reason: recruitment, author_perma, langue, domaine ...) |
+| `scrape_extraction_incomplete_total` | Counter | Extractions arrêtées (< `MIN_POSTS_TARGET`) |
+| `scrape_recruitment_posts_total` | Counter | Posts détectés recrutement |
+| `scrape_filtered_posts_total` (label `reason`) | Counter | Posts rejetés (recruitment, author_perma, langue, domaine ...) |
 
 Endpoints opérationnels additionnels :
 | Endpoint | Méthode | Description |
@@ -212,6 +254,10 @@ Endpoints opérationnels additionnels :
 | `/shutdown` | POST | Arrêt contrôlé (token + éventuellement basic auth) |
 | `/debug/auth` | GET | Diagnostic session Playwright (storage_state, modes) |
 | `/debug/last_batch` | GET | Derniers posts (auteur, company, keyword, timestamps) pour debug extraction |
+| `/api/debug/raw_posts` | GET | Vue brute SQLite (inclure démo: `?include_demo=1`) |
+| `/admin/filters/relax` | POST | Bypass filtres stricts extraction (désactive langage/recrutement/auteur/permalink/France/job seekers) |
+| `/admin/filters/strict` | POST | Réactive filtres stricts |
+| `/admin/purge_demo_posts` | POST | Purge `demo_recruteur` + flags orphelins |
 | `/api/stats` | GET | Statistiques runtime agrégées (mock_mode, intervalle autonome, posts_count, âge last_run, queue_depth) |
 | `/api/version` | GET | Métadonnées build (commit, timestamp) pour traçabilité |
 | `/metrics.json` | GET | Fallback JSON si Prometheus non consommable (mode démo / sandbox) |
@@ -420,6 +466,11 @@ Retirer la désactivation TLS aussitôt que la chaîne de confiance est corrigé
 > Prochain fichier suggéré : `.env.example` ou squelette code (`bootstrap.py`). Dis-moi si on poursuit.
 
 ---
+### 🔗 Documentation Technique Additionnelle
+- Snapshot architecture courante : `docs/ARCHITECTURE_CURRENT.md`
+- Roadmap refactor : `docs/REFRACTOR_PLAN.md`
+
+---
 ### ℹ️ Endpoint `/api/stats`
 Expose un sous-ensemble d'informations runtime pratiques pour monitoring léger (différent de `/health`):
 ```jsonc
@@ -501,6 +552,38 @@ Effets :
 - Champs `raw.mode = "mock"` pour traçabilité.
 - Idéal pour valider pipeline stockage / API sans réseau externe.
 Limites : pas de vérification de sélecteurs ni réalisme de contenu.
+
+### Gestion des posts de démonstration
+- Les posts dont `author` ou `keyword` == `demo_recruteur` sont exclus de `/api/posts` et du dashboard.
+- Diagnostics expose `sqlite.demo_posts`, `sqlite.real_posts`, `sqlite.only_demo`.
+- Inspection brute : `/api/debug/raw_posts?include_demo=1`.
+- Purge : `python scripts/purge_mock_posts.py --purge` ou `POST /admin/purge_demo_posts`.
+
+### Premier cycle réel (checklist)
+1. Purger contenu démo (voir ci-dessus).
+2. (Option) Relaxer filtres: `POST /admin/filters/relax`.
+3. `POST /trigger`.
+4. Vérifier `/diagnostics.json` → `real_posts > 0`.
+5. `POST /admin/filters/strict`.
+
+### Toggle runtime filtres
+```text
+POST /admin/filters/relax   # PLAYWRIGHT_DISABLE_STRICT_FILTERS=1
+POST /admin/filters/strict  # PLAYWRIGHT_DISABLE_STRICT_FILTERS=0
+```
+Flag visible dans diagnostics (`filters_relaxed`); posts relaxés portent `raw.filters_bypassed=1`.
+
+### Purge script / endpoint
+Script:
+```powershell
+python scripts/purge_mock_posts.py          # dry-run
+python scripts/purge_mock_posts.py --purge  # suppression
+```
+Endpoint:
+```powershell
+Invoke-RestMethod -Method POST http://localhost:8000/admin/purge_demo_posts
+```
+Réponse: `{ removed, orphan_flags, duration_seconds }`.
 
 Personnalisation :
 `MAX_MOCK_POSTS` limite configurable (par défaut 5). Métrique associée : `scrape_mock_posts_extracted_total`.
