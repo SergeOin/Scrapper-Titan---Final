@@ -3,6 +3,8 @@ from scraper.bootstrap import Settings, AppContext, configure_logging
 from scraper.worker import process_keyword
 import structlog
 
+pytestmark = pytest.mark.mock_long
+
 @pytest.mark.asyncio
 async def test_mock_respects_max_limit():
     settings = Settings(playwright_mock_mode=True, max_mock_posts=2, max_posts_per_keyword=10)  # type: ignore[arg-type]

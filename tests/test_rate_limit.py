@@ -31,6 +31,7 @@ async def test_token_bucket_parallel_consumers():
     assert w3 > 0
 
 @pytest.mark.asyncio
+@pytest.mark.mock_long
 async def test_integration_mock_mode_rate_limit(monkeypatch):
     # Force mock mode and small bucket to exercise path
     from scraper import bootstrap

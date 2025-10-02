@@ -2,6 +2,8 @@ import os, pytest
 from scraper.bootstrap import get_context
 from scraper.core.orchestrator import select_mode, run_orchestrator
 
+pytestmark = pytest.mark.mock_long
+
 @pytest.mark.asyncio
 async def test_orchestrator_mock_mode(monkeypatch):
     monkeypatch.setenv("PLAYWRIGHT_MOCK_MODE","1")

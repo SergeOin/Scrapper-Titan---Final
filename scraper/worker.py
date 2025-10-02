@@ -27,6 +27,7 @@ import os
 import sqlite3
 import time
 import re as _re  # local lightweight regex (avoid repeated imports)
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -59,6 +60,7 @@ from .core.ids import canonical_permalink, content_hash
 from .core.maintenance import purge_and_vacuum
 from . import utils
 from .runtime import JobResult, RuntimePost
+from .runtime import mock as runtime_mock
 from .runtime.pipeline import finalize_job_result
 try:
     from server.events import broadcast, EventType  # type: ignore
@@ -84,11 +86,75 @@ except Exception:
 # ------------------------------------------------------------
 # Lightweight recovery & navigation helpers (previously lost in refactor)
 # ------------------------------------------------------------
-async def _recover_browser(pw, ctx: AppContext, logger):  # type: ignore[no-untyped-def]
-    """Attempt to launch a Chromium browser and return (browser, page).
+@dataclass
+class PlaywrightSessionHandle:
+    browser: Any | None
+    context: Any
+    page: Any
 
-    Provides a single retry path using persistent user-data dir if normal launch fails.
-    """
+    async def close(self) -> None:
+        with contextlib.suppress(Exception):
+            if hasattr(self.page, "is_closed") and not self.page.is_closed():
+                await self.page.close()
+        with contextlib.suppress(Exception):
+            await self.context.close()
+        if self.browser and self.browser is not self.context:
+            with contextlib.suppress(Exception):
+                await self.browser.close()
+
+
+async def _hydrate_context_from_storage(context, storage_state_data: Optional[dict[str, Any]], logger) -> bool:  # type: ignore[no-untyped-def]
+    if not storage_state_data:
+        return False
+    cookies = storage_state_data.get("cookies") or []
+    normalized = []
+    for raw in cookies:
+        try:
+            name = raw["name"]
+            value = raw["value"]
+        except KeyError:
+            continue
+        domain = raw.get("domain") or ".linkedin.com"
+        path = raw.get("path") or "/"
+        same_site = raw.get("sameSite")
+        if isinstance(same_site, str):
+            low = same_site.lower()
+            if low in ("no_restriction", "none"):
+                same_site = "None"
+            elif low == "lax":
+                same_site = "Lax"
+            elif low == "strict":
+                same_site = "Strict"
+            else:
+                same_site = None
+        cookie = {
+            "name": name,
+            "value": value,
+            "domain": domain,
+            "path": path,
+            "secure": bool(raw.get("secure", True)),
+            "httpOnly": bool(raw.get("httpOnly", False)),
+        }
+        if same_site:
+            cookie["sameSite"] = same_site
+        expires = raw.get("expires")
+        if isinstance(expires, (int, float)):
+            cookie["expires"] = expires
+        normalized.append(cookie)
+    if not normalized:
+        return False
+    try:
+        await context.add_cookies(normalized)
+        logger.debug("storage_state_cookies_applied", count=len(normalized))
+        return True
+    except Exception as exc:  # pragma: no cover - diagnostic only
+        logger.warning("storage_state_cookie_apply_failed", error=str(exc))
+        return False
+
+
+async def _recover_browser(pw, ctx: AppContext, logger):  # type: ignore[no-untyped-def]
+    """Attempt to launch a Chromium browser and return a ready PlaywrightSessionHandle."""
+
     launch_args = [
         "--disable-dev-shm-usage",
         "--no-sandbox",
@@ -98,10 +164,25 @@ async def _recover_browser(pw, ctx: AppContext, logger):  # type: ignore[no-unty
     ]
     headless = bool(ctx.settings.playwright_headless_scrape)
     user_data_dir = None
+    storage_state_data: Optional[dict[str, Any]] = None
+    storage_state_path = Path(ctx.settings.storage_state)
+    if storage_state_path.exists():
+        try:
+            storage_state_data = json.loads(storage_state_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            if not getattr(ctx, "_storage_state_parse_warned", False):
+                logger.warning("storage_state_parse_failed", path=str(storage_state_path), error=str(exc))
+                setattr(ctx, "_storage_state_parse_warned", True)
+    else:
+        if not getattr(ctx, "_storage_state_missing_warned", False):
+            logger.warning("storage_state_missing", path=str(storage_state_path))
+            setattr(ctx, "_storage_state_missing_warned", True)
     try:
         browser = await pw.chromium.launch(headless=headless, args=launch_args)  # type: ignore[attr-defined]
-        page = await browser.new_page()
-        return browser, page
+        context = await browser.new_context()
+        await _hydrate_context_from_storage(context, storage_state_data, logger)
+        page = await context.new_page()
+        return PlaywrightSessionHandle(browser=browser, context=context, page=page)
     except Exception as first_exc:  # pragma: no cover - fallback path
         logger.warning("browser_primary_launch_failed", error=str(first_exc))
         try:
@@ -113,12 +194,13 @@ async def _recover_browser(pw, ctx: AppContext, logger):  # type: ignore[no-unty
             from tempfile import mkdtemp
             user_data_dir = Path(mkdtemp(prefix="pw_ud_"))
         try:
-            browser = await pw.chromium.launch_persistent_context(  # type: ignore[attr-defined]
+            context = await pw.chromium.launch_persistent_context(  # type: ignore[attr-defined]
                 user_data_dir=str(user_data_dir), headless=headless, args=launch_args
             )
-            page = browser.pages[0] if browser.pages else await browser.new_page()
+            await _hydrate_context_from_storage(context, storage_state_data, logger)
+            page = context.pages[0] if context.pages else await context.new_page()
             logger.info("browser_recovered_persistent")
-            return browser, page
+            return PlaywrightSessionHandle(browser=None, context=context, page=page)
         except Exception as second_exc:
             logger.error("browser_recovery_failed", error=str(second_exc))
             try:
@@ -191,18 +273,19 @@ async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> 
                         except Exception as e:  # pragma: no cover
                             logger.warning("event_loop_policy_upgrade_failed", error=str(e), previous=pol)
                     logger.info("playwright_launch_attempt", attempt=launch_attempts, policy=pol)
+                handle: PlaywrightSessionHandle | None = None
                 async with async_playwright() as pw:
                     # Apply a timeout to recovery to avoid hanging indefinitely if Chromium crashes silently
                     timeout_seconds = int(os.environ.get("PLAYWRIGHT_RECOVER_TIMEOUT_SECONDS", "15"))
                     try:
-                        recovery = await asyncio.wait_for(_recover_browser(pw, ctx, logger), timeout=timeout_seconds)
+                        handle = await asyncio.wait_for(_recover_browser(pw, ctx, logger), timeout=timeout_seconds)
                     except asyncio.TimeoutError:
                         logger.error("browser_launch_timeout", timeout_seconds=timeout_seconds)
-                        recovery = None
-                    if recovery is None:
+                        handle = None
+                    if handle is None:
                         logger.warning("skip_batch_recovery_failed", batch=batch)
                         break
-                    browser, page = recovery
+                    page = handle.page
                     try:
                         for idx, keyword in enumerate(batch):
                             if ctx.settings.adaptive_pause_every > 0 and results and (len(results) // ctx.settings.max_posts_per_keyword) % ctx.settings.adaptive_pause_every == 0 and (len(results) // ctx.settings.max_posts_per_keyword) != 0:
@@ -210,11 +293,14 @@ async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> 
                                 await asyncio.sleep(ctx.settings.adaptive_pause_seconds)
                             if page.is_closed():
                                 logger.warning("page_closed_detected", action="attempt_recovery")
-                                rec = await _recover_browser(pw, ctx, logger)
-                                if rec is None:
+                                if handle:
+                                    with contextlib.suppress(Exception):
+                                        await handle.close()
+                                handle = await _recover_browser(pw, ctx, logger)
+                                if handle is None:
                                     logger.error("page_recovery_failed", keyword=keyword)
                                     break
-                                browser, page = rec
+                                page = handle.page
                             if ctx.token_bucket:
                                 await ctx.token_bucket.consume(1)
                                 SCRAPE_RATE_LIMIT_TOKENS.set(ctx.token_bucket.tokens)
@@ -246,8 +332,10 @@ async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> 
                                 await page.screenshot(path=str(end_shot))
                                 logger.info("batch_screenshot", path=str(end_shot))
                     finally:
-                        with contextlib.suppress(Exception):
-                            await browser.close()
+                        if handle:
+                            with contextlib.suppress(Exception):
+                                await handle.close()
+                            handle = None
                 last_error = None  # success
                 break
             except NotImplementedError as ne:
@@ -619,8 +707,13 @@ async def process_keyword(keyword: str, ctx: AppContext, *, first_keyword: bool 
     try:
         # Mock mode short-circuit (generate synthetic posts without browser)
         if ctx.settings.playwright_mock_mode:
-            logger.warning("mock_mode_disabled", note="playwright_mock_mode ignored; real scraping required")
-            return []
+            try:
+                mock_posts = runtime_mock.generate_posts(keyword, ctx)
+                logger.info("mock_posts_generated", count=len(mock_posts))
+                return mock_posts
+            except Exception as exc:
+                logger.error("mock_generation_failed", error=str(exc))
+                return []
         return []
     finally:
         if span_ctx is not None:  # pragma: no cover

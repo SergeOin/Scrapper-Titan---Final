@@ -57,6 +57,10 @@ def _project_root() -> Path:
 APP_INTERNAL_NAME = "TitanScraper"  # stable internal identifier for dirs / files
 APP_DISPLAY_NAME = "Titan Scraper"  # user-facing name
 APP_MUTEX_NAME = "Local\\TitanScraperMutex_v2"
+WEBVIEW2_BOOTSTRAP_URL = os.getenv(
+    "WEBVIEW2_BOOTSTRAP_URL",
+    "https://go.microsoft.com/fwlink/p/?LinkId=2124703",
+)
 
 
 def _acquire_windows_mutex(name: str = APP_MUTEX_NAME):
@@ -506,7 +510,7 @@ def _webview2_runtime_installed() -> bool:
     return False
 
 
-def _install_webview2_if_missing(exe_base: Path, user_base: Path) -> None:
+def _install_webview2_if_missing(exe_base: Path, user_base: Path, *, interactive: bool = True) -> bool:
     """Install WebView2 runtime (Windows) if absent, with a small progress window and caching.
 
     Creates a marker file in user data dir after a successful install attempt to avoid spamming
@@ -514,9 +518,9 @@ def _install_webview2_if_missing(exe_base: Path, user_base: Path) -> None:
     suppresses repeated installer execution within 24h if runtime still missing.
     """
     if not _is_windows():
-        return
+        return True
     if _webview2_runtime_installed():
-        return
+        return True
     log = logging.getLogger("desktop")
     marker = user_base / "webview2_install_marker.json"
     if marker.exists():
@@ -526,7 +530,7 @@ def _install_webview2_if_missing(exe_base: Path, user_base: Path) -> None:
             ts = float(data.get("ts", 0))
             if time.time() - ts < 24 * 3600:  # less than 24h ago
                 log.info("webview2_recent_attempt_skip")
-                return
+                return False
         except Exception:
             pass
 
@@ -537,52 +541,96 @@ def _install_webview2_if_missing(exe_base: Path, user_base: Path) -> None:
         candidates.append(exe_base / "MicrosoftEdgeWebView2Setup.exe")
         candidates.append(meipass / "MicrosoftEdgeWebView2Setup.exe")
         candidates.append(_project_root() / "build" / "MicrosoftEdgeWebView2Setup.exe")
+        cache_dir = user_base / "cache" / "webview2"
+        cached_bootstrapper = cache_dir / "MicrosoftEdgeWebView2Setup.exe"
+        candidates.append(cached_bootstrapper)
         setup = next((p for p in candidates if p.exists()), None)
         if not setup:
-            _message_box(
-                APP_DISPLAY_NAME,
-                (
-                    "Composant Microsoft Edge WebView2 manquant et installateur introuvable.\n"
-                    "Veuillez installer manuellement 'Microsoft Edge WebView2 Runtime' puis relancer l'application."
-                ),
-            )
-            return
+            # Try downloading the official bootstrapper as a last resort (approx. 2 MB).
+            try:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                import urllib.request as _urlreq  # lazy import to avoid startup penalty
+                import shutil as _shutil
+                import tempfile as _tempfile
+
+                log.info("webview2_download_start url=%s", WEBVIEW2_BOOTSTRAP_URL)
+                with _urlreq.urlopen(WEBVIEW2_BOOTSTRAP_URL, timeout=70) as resp:
+                    status = getattr(resp, "status", 200)
+                    if status >= 400:
+                        raise RuntimeError(f"HTTP {status}")
+                    tmp_file = _tempfile.NamedTemporaryFile(delete=False, dir=cache_dir, suffix=".tmp")
+                    try:
+                        with tmp_file:
+                            _shutil.copyfileobj(resp, tmp_file)
+                        os.replace(tmp_file.name, cached_bootstrapper)
+                    finally:
+                        try:
+                            Path(tmp_file.name).unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                size = cached_bootstrapper.stat().st_size
+                log.info("webview2_download_complete bytes=%s target=%s", size, cached_bootstrapper)
+                setup = cached_bootstrapper if size > 0 else None
+            except Exception:
+                log.exception("webview2_download_failed")
+                if interactive:
+                    _message_box(
+                        APP_DISPLAY_NAME,
+                        (
+                            "Impossible de télécharger automatiquement Microsoft Edge WebView2 Runtime.\n"
+                            "Veuillez installer manuellement 'Microsoft Edge WebView2 Runtime' puis relancer l'application."
+                        ),
+                    )
+                log.error("webview2_installer_missing")
+                return False
+        if setup is None or not setup.exists():
+            if interactive:
+                _message_box(
+                    APP_DISPLAY_NAME,
+                    (
+                        "Composant Microsoft Edge WebView2 manquant et installateur introuvable.\n"
+                        "Veuillez installer manuellement 'Microsoft Edge WebView2 Runtime' puis relancer l'application."
+                    ),
+                )
+            log.error("webview2_installer_missing_after_download")
+            return False
 
         # Progress window (Tkinter) -----------------------------------------------------------
         progress_close: callable | None = None
         progress_root = None  # type: ignore
         progress_var = None   # will hold tk.IntVar
-        try:
-            import tkinter as tk
-            from tkinter import ttk
+        if interactive:
+            try:
+                import tkinter as tk
+                from tkinter import ttk
 
-            def _open_progress():  # pragma: no cover (UI helper)
-                root = tk.Tk()
-                root.title(f"{APP_DISPLAY_NAME} - WebView2")
-                root.geometry("420x140")
-                root.resizable(False, False)
-                lbl = ttk.Label(root, text="Installation de WebView2 en cours...", anchor="center", wraplength=400)
-                lbl.pack(pady=12)
-                # Pseudo progress: determinate bar increments while polling; switches to full at success
-                local_var = tk.IntVar(value=0)
-                pb = ttk.Progressbar(root, mode="determinate", maximum=100, variable=local_var)
-                pb.pack(fill="x", padx=16, pady=8)
-                note = ttk.Label(root, text="Une seule fois. Merci de patienter.", foreground="#555")
-                note.pack(pady=(0, 8))
-                root.update_idletasks()
-                return root, local_var
+                def _open_progress():  # pragma: no cover (UI helper)
+                    root = tk.Tk()
+                    root.title(f"{APP_DISPLAY_NAME} - WebView2")
+                    root.geometry("420x140")
+                    root.resizable(False, False)
+                    lbl = ttk.Label(root, text="Installation de WebView2 en cours...", anchor="center", wraplength=400)
+                    lbl.pack(pady=12)
+                    # Pseudo progress: determinate bar increments while polling; switches to full at success
+                    local_var = tk.IntVar(value=0)
+                    pb = ttk.Progressbar(root, mode="determinate", maximum=100, variable=local_var)
+                    pb.pack(fill="x", padx=16, pady=8)
+                    note = ttk.Label(root, text="Une seule fois. Merci de patienter.", foreground="#555")
+                    note.pack(pady=(0, 8))
+                    root.update_idletasks()
+                    return root, local_var
 
-            _progress_root, progress_var = _open_progress()
-            progress_root = _progress_root
+                _progress_root, progress_var = _open_progress()
+                progress_root = _progress_root
 
-            def _close():
-                try:
-                    _progress_root.destroy()
-                except Exception:
-                    pass
-            progress_close = _close
-        except Exception:
-            progress_close = None  # fallback to no progress window
+                def _close():
+                    try:
+                        _progress_root.destroy()
+                    except Exception:
+                        pass
+                progress_close = _close
+            except Exception:
+                progress_close = None  # fallback to no progress window
 
         # Run installer in thread
         import subprocess
@@ -611,18 +659,19 @@ def _install_webview2_if_missing(exe_base: Path, user_base: Path) -> None:
                 if _webview2_runtime_installed():
                     break
             # Keep UI responsive
-            try:
-                if progress_root is not None:
-                    tick += 1
-                    # Increment progress up to 95% while waiting
-                    if progress_var is not None:
-                        cur = progress_var.get()
-                        if cur < 95:
-                            progress_var.set(min(95, cur + 1))
-                    progress_root.update()
-            except Exception:
-                # Window probably closed by user; stop updating
-                progress_root = None
+            if interactive:
+                try:
+                    if progress_root is not None:
+                        tick += 1
+                        # Increment progress up to 95% while waiting
+                        if progress_var is not None:
+                            cur = progress_var.get()
+                            if cur < 95:
+                                progress_var.set(min(95, cur + 1))
+                        progress_root.update()
+                except Exception:
+                    # Window probably closed by user; stop updating
+                    progress_root = None
             time.sleep(0.4)
 
         if progress_close:
@@ -640,9 +689,12 @@ def _install_webview2_if_missing(exe_base: Path, user_base: Path) -> None:
         except Exception:
             pass
 
-        log.info("webview2_install_complete present=%s", _webview2_runtime_installed())
+        present = _webview2_runtime_installed()
+        log.info("webview2_install_complete present=%s", present)
+        return present
     except Exception:
         log.exception("Failed to install WebView2")
+        return False
 
 
 def main():
@@ -746,7 +798,7 @@ def main():
                 new_sqlite.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(legacy_sqlite, new_sqlite)
                 logging.getLogger("desktop").info(
-                    "sqlite_legacy_migrated", source=str(legacy_sqlite), target=str(new_sqlite)
+                    "sqlite_legacy_migrated source=%s target=%s", str(legacy_sqlite), str(new_sqlite)
                 )
         except Exception:
             logging.getLogger("desktop").warning("sqlite_migration_failed", exc_info=True)
@@ -767,14 +819,14 @@ def main():
         storage_state_path = os.environ.get("STORAGE_STATE")
         session_store_path = os.environ.get("SESSION_STORE_PATH")
         log.info(
-            "startup_paths",
-            templates_existing=existing,
-            templates_missing=missing,
-            storage_state=storage_state_path,
-            storage_state_exists=bool(storage_state_path and Path(storage_state_path).exists()),
-            session_store=session_store_path,
-            session_store_exists=bool(session_store_path and Path(session_store_path).exists()),
-            cwd=str(Path.cwd()),
+            "startup_paths existing=%s missing=%s storage_state=%s storage_state_exists=%s session_store=%s session_store_exists=%s cwd=%s",
+            existing,
+            missing,
+            storage_state_path,
+            bool(storage_state_path and Path(storage_state_path).exists()),
+            session_store_path,
+            bool(session_store_path and Path(session_store_path).exists()),
+            str(Path.cwd()),
         )
     except Exception:
         pass
@@ -794,7 +846,21 @@ def main():
         log.error("pywebview_import_failed early_diagnostic error=%s", e)
 
     exe_base = Path(sys.executable).parent if getattr(sys, "frozen", False) else _project_root()
-    _install_webview2_if_missing(exe_base, user_base)
+    ui_mode = "webview"
+    if _webview2_runtime_installed():
+        _install_webview2_if_missing(exe_base, user_base)
+    else:
+        ui_mode = "browser"
+        log.warning("webview2_runtime_missing_fallback_browser")
+
+        def _bg_install_webview():  # pragma: no cover
+            try:
+                result = _install_webview2_if_missing(exe_base, user_base, interactive=False)
+                log.info("webview2_background_install_complete success=%s", result)
+            except Exception:
+                log.exception("webview2_background_install_failed")
+
+        threading.Thread(target=_bg_install_webview, name="webview2-install", daemon=True).start()
 
     # Preflight import of the FastAPI app. If a heavy dependency (numpy/pandas) fails, we still try to start;
     # the export route will handle missing pandas gracefully.
@@ -941,8 +1007,9 @@ def main():
     _threading.Thread(target=_health_watchdog, name="health-watchdog", daemon=True).start()
 
     try:
-        import webview  # type: ignore
-        window = webview.create_window(title, html=LOADING_HTML, width=1200, height=800, resizable=True, minimized=False)
+        if ui_mode == "webview":
+            import webview  # type: ignore
+            window = webview.create_window(title, html=LOADING_HTML, width=1200, height=800, resizable=True, minimized=False)
 
         def _after_start():  # pragma: no cover (GUI callback)
             # Wait for server readiness then load real dashboard
@@ -1107,6 +1174,91 @@ def main():
                     "Impossible d'ouvrir la fenêtre intégrée. Un navigateur externe a été tenté.",
                 )
                 return
+        else:
+            log.info("browser_mode_ui_start")
+            try:
+                import tkinter as tk
+            except Exception as exc:
+                log.warning("tkinter_unavailable_browser_mode", error=str(exc))
+                try:
+                    import webbrowser
+                    if _wait_for_server(base_url, timeout=20.0):
+                        webbrowser.open(base_url + "/")
+                    else:
+                        webbrowser.open(base_url + "/health")
+                except Exception:
+                    log.exception("browser_mode_open_failed")
+                time.sleep(3)
+            else:
+                status_var = tk.StringVar(value="Initialisation du serveur local…")
+                root = tk.Tk()
+                root.title(f"{APP_DISPLAY_NAME} – mode navigateur")
+                root.geometry("460x220")
+                root.resizable(False, False)
+
+                frame = tk.Frame(root, padx=18, pady=16)
+                frame.pack(fill="both", expand=True)
+
+                header = tk.Label(frame, text="Titan Scraper se lance en arrière-plan", font=("Segoe UI", 12, "bold"))
+                header.pack(anchor="w")
+
+                msg = tk.Label(
+                    frame,
+                    text=(
+                        "Le composant Microsoft Edge WebView2 n'est pas encore installé.\n"
+                        "Le tableau de bord s'ouvre dans votre navigateur pendant que l'installation se termine."
+                    ),
+                    justify="left",
+                    wraplength=420,
+                )
+                msg.pack(anchor="w", pady=(8, 14))
+
+                status_lbl = tk.Label(frame, textvariable=status_var, justify="left", wraplength=420, fg="#2f6fb1")
+                status_lbl.pack(anchor="w")
+
+                button_frame = tk.Frame(frame)
+                button_frame.pack(anchor="w", pady=(18, 0))
+
+                def _open_dashboard():
+                    try:
+                        import webbrowser
+                        webbrowser.open(base_url + "/")
+                    except Exception:
+                        log.exception("browser_mode_manual_open_failed")
+
+                open_btn = tk.Button(button_frame, text="Ouvrir le tableau de bord", command=_open_dashboard)
+                open_btn.pack(side="left")
+
+                def _cancel():
+                    root.destroy()
+
+                close_btn = tk.Button(button_frame, text="Fermer", command=_cancel)
+                close_btn.pack(side="left", padx=(12, 0))
+
+                def _set_status(text: str):
+                    root.after(0, lambda: status_var.set(text))
+
+                def _launch_browser_thread():  # pragma: no cover
+                    ready = _wait_for_server(base_url, timeout=25.0)
+                    try:
+                        import webbrowser
+                        if ready:
+                            _set_status("Ouverture du tableau de bord dans votre navigateur…")
+                            webbrowser.open(base_url + "/")
+                        else:
+                            _set_status("Le serveur met du temps à répondre. Ouverture de /health.")
+                            webbrowser.open(base_url + "/health")
+                    except Exception:
+                        log.exception("browser_mode_auto_open_failed")
+
+                threading.Thread(target=_launch_browser_thread, name="browser-mode-open", daemon=True).start()
+
+                def _on_close():
+                    root.destroy()
+
+                root.protocol("WM_DELETE_WINDOW", _on_close)
+                root.mainloop()
+            log.info("browser_mode_ui_end")
     except Exception:
         logging.getLogger("desktop").exception("Unexpected failure creating the UI window")
     finally:

@@ -21,8 +21,15 @@ except Exception:  # pragma: no cover
 async def run_orchestrator(keywords: list[str], ctx, *, async_batch_callable: Callable[[list[str], Any], Awaitable[list[Any]]]) -> list[dict[str, Any]]:
     mode = select_mode(ctx)
     posts: list[dict[str, Any]] = []
+    raw_posts: list[Any] = []
     now_iso = datetime.now(timezone.utc).isoformat()
-    if mode == "sync":
+
+    if mode == "mock":
+        from ..runtime import mock as runtime_mock
+
+        for kw in keywords:
+            raw_posts.extend(runtime_mock.generate_posts(kw, ctx))
+    elif mode == "sync":
         sync_posts = await run_sync_playwright(keywords, ctx)
         if not sync_posts and (ctx.settings and getattr(ctx.settings, 'playwright_headless_scrape', True)):
             # Optionally fabricate placeholder posts so tests / pipeline can assert sync path executed
@@ -40,15 +47,19 @@ async def run_orchestrator(keywords: list[str], ctx, *, async_batch_callable: Ca
                         "permalink": None,
                         "raw": {"mode": "sync", "placeholder": True},
                     })
+            raw_posts = []
         else:
-            for d in sync_posts:
+            raw_posts = list(sync_posts or [])
+            for d in raw_posts:
                 d.setdefault("collected_at", now_iso)
                 d.setdefault("keyword", d.get("keyword") or (keywords[0] if keywords else ""))
                 d.setdefault("author", d.get("author") or "Unknown")
                 posts.append(d)
+            raw_posts = []  # already materialised into posts
     else:  # async
         raw_posts = await async_batch_callable(keywords, ctx)
-        # raw_posts may be list[Post] dataclass objects from worker; adapt to dict
+
+    if mode != "sync" or not posts:
         for rp in raw_posts:
             if hasattr(rp, "id"):
                 d = {
@@ -86,17 +97,7 @@ async def run_orchestrator(keywords: list[str], ctx, *, async_batch_callable: Ca
 
 def select_mode(ctx) -> str:
     if getattr(ctx.settings, 'playwright_mock_mode', False):
-        # Mock mode is no longer supported. Force async path and emit a warning once.
-        logger = getattr(ctx, "logger", None)
-        if logger:
-            try:
-                logger.warning("mock_mode_disabled", note="playwright_mock_mode ignored; real scraping only")
-            except Exception:
-                pass
-        try:
-            setattr(ctx.settings, 'playwright_mock_mode', False)
-        except Exception:
-            pass
+        return "mock"
     if should_force_sync():
         return "sync"
     return "async"

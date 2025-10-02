@@ -5,6 +5,8 @@ from scraper import worker as worker_mod
 from scraper.worker import process_keyword, Post
 import structlog
 
+pytestmark = pytest.mark.mock_long
+
 @pytest.mark.asyncio
 async def test_process_keyword_mock_mode(monkeypatch):
     # Rely on field population by name (populate_by_name=True in config)
