@@ -8,6 +8,20 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Added
 - (placeholder) Future enhancements will be listed here.
 
+## [1.3.1] - 2025-10-03
+### Added
+- Manifest `DOWNLOADS.txt` automatique listant MSI, DMG et binaires Windows dans la Release.
+- Intégration MSI + DMG directement dans le workflow tag (réordonnancement pour inclure le manifest avant création de la Release).
+
+### Changed
+- Réorganisation du workflow `build-release` : génération checksums + manifest avant attachement des assets.
+
+### Fixed
+- Asset manifest auparavant généré après la Release (non inclus) – maintenant présent.
+
+### Internal
+- Nettoyage étapes superflues d’upload manifest.
+
 ## [1.3.0] - 2025-10-03
 ### Added
 - Legal domain classification stabilization with stricter heuristic (negation-aware recruitment phrase requirement).
@@ -43,5 +57,6 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Overview
 Initial public-internal MVP iterations: multi-backend storage (Mongo/SQLite/CSV), recruitment signal metric, basic dashboard, Prometheus metrics, fallback logic, mock mode, packaging groundwork.
 
-[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.1
 [1.3.0]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.0

@@ -140,6 +140,20 @@ jobs:
         with:
           name: checksums
           path: checksum/checksums.txt
+      - name: Generate download manifest
+        run: |
+          echo "TitanScraper / LinkedInScraper - Assets ${GITHUB_REF_NAME}" > artifacts/DOWNLOADS.txt
+          echo "" >> artifacts/DOWNLOADS.txt
+          echo "MSI Windows :" >> artifacts/DOWNLOADS.txt
+          ls -1 artifacts/windows-binaries/build/msi/*.msi 2>/dev/null >> artifacts/DOWNLOADS.txt || true
+          echo "" >> artifacts/DOWNLOADS.txt
+          echo "Binaire Windows (dossier dist) :" >> artifacts/DOWNLOADS.txt
+          ls -1 artifacts/windows-binaries/dist/LinkedInScraper/* 2>/dev/null >> artifacts/DOWNLOADS.txt || true
+          echo "" >> artifacts/DOWNLOADS.txt
+          echo "DMG macOS :" >> artifacts/DOWNLOADS.txt
+          ls -1 artifacts/macos-binaries/build/*.dmg 2>/dev/null >> artifacts/DOWNLOADS.txt || true
+          echo "" >> artifacts/DOWNLOADS.txt
+          echo "SHA256 checksums dans checksums.txt" >> artifacts/DOWNLOADS.txt
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -152,5 +166,11 @@ jobs:
             artifacts/windows-binaries/dist/LinkedInScraper/**
             artifacts/macos-binaries/build/*.dmg
             checksum/checksums.txt
+            artifacts/DOWNLOADS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload manifest artifact (duplicate copy)
+        uses: actions/upload-artifact@v4
+        with:
+          name: downloads-manifest
+          path: artifacts/DOWNLOADS.txt
