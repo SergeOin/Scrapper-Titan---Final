@@ -147,6 +147,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Debug list downloaded artifacts (initial)
+        run: |
+          echo '--- Tree of artifacts (depth 4) ---'
+          find artifacts -maxdepth 4 -type f -printf '%P\n' | sort
+          echo '--- End tree ---'
       - name: Generate checksums
         run: |
           set -e
