@@ -8,6 +8,17 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Added
 - (placeholder) Future enhancements will be listed here.
 
+## [1.3.4] - 2025-10-03
+### Fixed
+- Release missing MSI/ZIP assets: corrected artifact globs to include `dist/msi/*.msi` (actual output path) plus portable ZIP in publish step.
+
+### Added
+- Portable ZIP now explicitly attached to Release assets list.
+
+### Internal
+- Fallback legacy path `build/msi/*.msi` kept for safety while transition confirmed.
+
+
 ## [1.3.3] - 2025-10-03
 ### Added
 - Archive portable Windows (`TitanScraper-<version>-portable.zip`).
@@ -83,7 +94,8 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Overview
 Initial public-internal MVP iterations: multi-backend storage (Mongo/SQLite/CSV), recruitment signal metric, basic dashboard, Prometheus metrics, fallback logic, mock mode, packaging groundwork.
 
-[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.3...HEAD
+[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.4...HEAD
+[1.3.4]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.4
 [1.3.3]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.3
 [1.3.2]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.2
 [1.3.1]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.1

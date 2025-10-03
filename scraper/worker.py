@@ -299,6 +299,12 @@ class Post:
     # Keep score in-memory for tests/metrics, but do not persist to storage
     score: Optional[float] = None
     raw: dict[str, Any] | None = None
+    # Legal classification enrichment (must be defined due to slots=True)
+    intent: Optional[str] = None
+    relevance_score: Optional[float] = None
+    confidence: Optional[float] = None
+    keywords_matched: Optional[list[str]] = None
+    location_ok: Optional[bool] = None
 
 
 # ------------------------------------------------------------

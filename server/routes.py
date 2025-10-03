@@ -714,11 +714,48 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
                 except Exception:
                     pass
                 _ensure_post_flags(conn)
-                base_q = (
-                    "SELECT p.id as _id, p.keyword, p.author, p.author_profile, p.company, p.text, p.published_at, p.collected_at, "
-                    "p.permalink, COALESCE(f.is_favorite,0) AS is_favorite, COALESCE(f.is_deleted,0) AS is_deleted "
-                    "FROM posts p LEFT JOIN post_flags f ON f.post_id = p.id"
-                )
+                # Dynamic column projection: tolerate minimal schemas used in tests
+                try:
+                    col_rows = conn.execute("PRAGMA table_info(posts)").fetchall()
+                    existing_cols = {r[1] for r in col_rows}
+                except Exception:
+                    existing_cols = set()
+                wanted = [
+                    ("id", "p.id as _id"),
+                    ("keyword", "p.keyword"),
+                    ("author", "p.author"),
+                    ("author_profile", "p.author_profile"),  # optional
+                    ("company", "p.company"),
+                    ("text", "p.text"),
+                    ("published_at", "p.published_at"),
+                    ("collected_at", "p.collected_at"),
+                    ("permalink", "p.permalink"),
+                    ("intent", "p.intent"),
+                    ("relevance_score", "p.relevance_score"),
+                    ("confidence", "p.confidence"),
+                    ("keywords_matched", "p.keywords_matched"),
+                    ("location_ok", "p.location_ok"),
+                    ("raw_json", "p.raw_json"),
+                ]
+                select_parts: list[str] = []
+                for logical, expr in wanted:
+                    base_name = logical if logical != "id" else "id"
+                    if base_name in existing_cols:
+                        select_parts.append(expr)
+                    else:
+                        # Provide NULL alias for missing optional columns
+                        alias = logical if logical != "id" else "_id"
+                        if logical == "id":
+                            # id we always expect; ensure fallback
+                            select_parts.append("p.id as _id")
+                        elif logical == "author_profile":
+                            select_parts.append("NULL as author_profile")
+                        else:
+                            select_parts.append(f"NULL as {logical}")
+                # Flags columns appended
+                select_parts.append("COALESCE(f.is_favorite,0) AS is_favorite")
+                select_parts.append("COALESCE(f.is_deleted,0) AS is_deleted")
+                base_q = "SELECT " + ", ".join(select_parts) + " FROM posts p LEFT JOIN post_flags f ON f.post_id = p.id"
                 params: list[Any] = []
                 # Base WHERE pour exclure posts démo + corbeille
                 where_clauses = [
@@ -814,6 +851,9 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
                                 classification.setdefault("_derived", False)
                         if raw_obj:
                             classification["raw_fragment"] = raw_obj.get("raw") or raw_obj
+                        # Guarantee presence even if empty
+                        if not classification.get("intent") and not classification.get("keywords_matched"):
+                            classification.setdefault("note", "derived_empty")
                         item["classification_debug"] = classification
                     rows.append(item)
     except Exception as exc:  # pragma: no cover

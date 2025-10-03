@@ -424,6 +424,11 @@ class AppContext:
     # Daily quota tracking
     daily_post_count: int = 0
     daily_post_date: Optional[str] = None
+    # Legal domain daily quota & discard tracking (must be explicit due to slots)
+    legal_daily_date: Optional[str] = None
+    legal_daily_count: int = 0
+    legal_daily_discard_intent: int = 0
+    legal_daily_discard_location: int = 0
     # quick helper
     def has_valid_session(self) -> bool:
         try:

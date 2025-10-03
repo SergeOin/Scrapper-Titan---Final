@@ -57,7 +57,8 @@ jobs:
           name: windows-binaries
           path: |
             dist/TitanScraper/**
-            build/msi/*.msi
+            dist/msi/*.msi
+            build/msi/*.msi # (fallback if script output path changes)
             build/*-portable.zip
   build-macos:
     runs-on: macos-latest
@@ -164,6 +165,7 @@ jobs:
           echo "TitanScraper - Assets ${GITHUB_REF_NAME}" > artifacts/DOWNLOADS.txt
           echo "" >> artifacts/DOWNLOADS.txt
           echo "MSI Windows :" >> artifacts/DOWNLOADS.txt
+          ls -1 artifacts/windows-binaries/dist/msi/*.msi 2>/dev/null >> artifacts/DOWNLOADS.txt || true
           ls -1 artifacts/windows-binaries/build/msi/*.msi 2>/dev/null >> artifacts/DOWNLOADS.txt || true
           echo "" >> artifacts/DOWNLOADS.txt
           echo "Binaire Windows (dossier dist) :" >> artifacts/DOWNLOADS.txt
@@ -195,8 +197,10 @@ jobs:
           prerelease: false
           body: ${{ steps.changelog.outputs.body }}
           files: |
+            artifacts/windows-binaries/dist/msi/*.msi
             artifacts/windows-binaries/build/msi/*.msi
             artifacts/windows-binaries/dist/TitanScraper/**
+            artifacts/windows-binaries/build/*-portable.zip
             artifacts/macos-binaries/dist/*.dmg
             checksum/checksums.txt
             artifacts/DOWNLOADS.txt

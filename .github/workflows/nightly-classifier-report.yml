@@ -36,9 +36,25 @@ jobs:
           path: |
             classifier_report.json
             body.txt
-      - name: Create issue (idempotent best-effort)
-        uses: peter-evans/create-issue-from-file@v5
-        with:
-          title: 'Nightly Classifier Report'
-          content-filepath: body.txt
-          labels: report,automation
+      - name: Prepare issue update payload
+        run: |
+          python -c "import json,pathlib;body=pathlib.Path('body.txt').read_text(encoding='utf-8') if pathlib.Path('body.txt').exists() else 'Nightly report body missing.';payload={'title':'Nightly Classifier Report','body':body+'\n\n(Automated update - do not edit manually)','labels':['report','automation']};pathlib.Path('payload.json').write_text(json.dumps(payload),encoding='utf-8');print('Payload prepared for Issue #1 update.')"
+      - name: Update Issue #1 (if exists)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          if curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/1 | grep -q 200; then
+            echo "Issue #1 exists – updating body.";
+            curl -s -X PATCH -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/1 -d @payload.json > /dev/null || echo "Warning: failed to patch issue #1";
+          else
+            echo "Issue #1 does not exist. Please create an issue titled 'Nightly Classifier Report' manually once. Skipping update.";
+          fi
+      - name: Prune duplicate Nightly issues (close extras)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          echo "Searching for duplicate Nightly Classifier Report issues..."
+          curl -s -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" "https://api.github.com/search/issues?q=repo:${GITHUB_REPOSITORY}+is:issue+in:title+%22Nightly+Classifier+Report%22" > search.json || echo '{"items":[]}' > search.json
+          python -c "import json,os,subprocess;data=json.load(open('search.json'));dups=[i['number'] for i in data.get('items',[]) if i.get('number')!=1];\nprint('Duplicates to close:' if dups else 'No duplicates found.', dups);[subprocess.run(['bash','-lc',f\"curl -s -X PATCH -H 'Authorization: Bearer {os.environ['GITHUB_TOKEN']}' -H 'Accept: application/vnd.github+json' https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/issues/{n} -d '{{\\\"state\\\":\\\"closed\\\",\\\"state_reason\\\":\\\"not_planned\\\"}}' > /dev/null\"]) for n in dups]"

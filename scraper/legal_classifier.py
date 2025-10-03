@@ -122,7 +122,27 @@ def classify_legal_post(text: str, *, language: str = "fr", intent_threshold: fl
     if matched and all(m in {"fiscal","droit","legal","juridique"} for m in matched):
         legal_score *= 0.55  # generic penalty
 
-    recruit_hits = [p for p in RECRUITMENT_PHRASES if p in low]
+    # Recruitment phrase detection with negation guard (avoid 'sans offre d\'emploi')
+    recruit_hits: list[str] = []
+    NEGATION_TOKENS = ["sans","pas","aucune","aucun","ni"]
+    for phrase in RECRUITMENT_PHRASES:
+        start = 0
+        while True:
+            idx = low.find(phrase, start)
+            if idx == -1:
+                break
+            # Check left context (up to 12 chars back) for negation token boundary
+            left_ctx = low[max(0, idx-14):idx].strip()
+            negated = False
+            for neg in NEGATION_TOKENS:
+                # token appears near end of left context and separated by space or start
+                if left_ctx.endswith(" "+neg) or left_ctx.endswith(neg) or left_ctx.endswith("'"+neg):
+                    negated = True
+                    break
+            if not negated:
+                recruit_hits.append(phrase)
+                break  # count phrase once
+            start = idx + len(phrase)
     negative_hits = [n for n in NEGATIVE_CONTEXT_PHRASES if n in low]
     recruit_score = min(1.0, math.log1p(len(recruit_hits)) / math.log1p(5))
 
@@ -130,6 +150,9 @@ def classify_legal_post(text: str, *, language: str = "fr", intent_threshold: fl
     # Early negative context penalty: if negative phrases detected and no recruitment phrases, heavily downscale combined
     if negative_hits and not recruit_hits:
         combined *= 0.25
+    # If no recruitment phrase survived the negation filter, force intent=autre (fully conservative policy per tests)
+    if not recruit_hits:
+        return LegalClassification("autre", combined, (1 if matched and lang_ok and location_ok else 0)/4.0, matched, location_ok)
 
     # Additional conservative gates:
     # 1. If only very generic legal stems matched (e.g. just 'droit' or 'fiscal') and no recruitment phrase, downgrade.
