@@ -1,11 +1,20 @@
 Param(
-  [string]$Name = 'TitanScraperDashboard',
+  [string]$Name = 'Titan Scraper',
   [string]$Manufacturer = 'Titan Partners',
   [string]$Version = '1.0.0',
-  [string]$ExeName = ''
+  [string]$ExeName = '',
+  [string]$InstallFolderName = '',
+  [string]$ProgramMenuName = ''
 )
 
 if(-not $ExeName -or $ExeName.Trim() -eq '') { $ExeName = "$Name.exe" }
+$sanitized = ($Name -replace '[^A-Za-z0-9]', '')
+if(-not $InstallFolderName -or $InstallFolderName.Trim() -eq ''){
+  $InstallFolderName = if($sanitized){ $sanitized } else { 'TitanScraper' }
+}
+if(-not $ProgramMenuName -or $ProgramMenuName.Trim() -eq ''){
+  $ProgramMenuName = $Name
+}
 
 $exe = Join-Path (Join-Path $PSScriptRoot '..') (Join-Path 'dist' $ExeName)
 if(!(Test-Path $exe)){
@@ -68,10 +77,10 @@ ${iconXml}
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFilesFolder">
-        <Directory Id="INSTALLFOLDER" Name="$Name" />
+        <Directory Id="INSTALLFOLDER" Name="$InstallFolderName" />
       </Directory>
       <Directory Id="ProgramMenuFolder">
-        <Directory Id="AppProgramMenu" Name="$Name" />
+        <Directory Id="AppProgramMenu" Name="$ProgramMenuName" />
       </Directory>
     </Directory>
 
@@ -79,7 +88,7 @@ ${iconXml}
     <ComponentGroup Id="AppComponents" Directory="INSTALLFOLDER">
       <Component Id="cmpMain" Guid="{A3E3AC9F-6DD4-4E65-93D8-4F8A2B4D1001}">
         <File Id="filExe" Source="$resolvedExe" KeyPath="yes" />
-        <Shortcut Id="StartMenuShortcut" Advertise="yes" Directory="AppProgramMenu" Name="$Name" WorkingDirectory="INSTALLFOLDER" />
+        <Shortcut Id="StartMenuShortcut" Advertise="yes" Directory="AppProgramMenu" Name="$ProgramMenuName" WorkingDirectory="INSTALLFOLDER" />
         <RemoveFolder Id="RemoveAppProgramMenu" Directory="AppProgramMenu" On="uninstall" />
       </Component>
     </ComponentGroup>

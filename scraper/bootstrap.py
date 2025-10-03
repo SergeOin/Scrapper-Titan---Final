@@ -160,6 +160,7 @@ class Settings(BaseSettings):
     filter_require_author_and_permalink: bool = Field(True, alias="FILTER_REQUIRE_AUTHOR_AND_PERMALINK")
     # Domain filtering (e.g., ensure post text contains at least one legal keyword)
     filter_legal_domain_only: bool = Field(False, alias="FILTER_LEGAL_DOMAIN_ONLY")
+    auto_favorite_opportunities: bool = Field(False, alias="AUTO_FAVORITE_OPPORTUNITIES")
     # Batch & resilience settings
     keywords_session_batch_size: int = Field(8, alias="KEYWORDS_SESSION_BATCH_SIZE")
     adaptive_pause_every: int = Field(0, alias="ADAPTIVE_PAUSE_EVERY")  # 0 = disabled
@@ -185,6 +186,10 @@ class Settings(BaseSettings):
     # Daily quota objective (e.g. ensure at least X posts collected per active day)
     daily_post_target: int = Field(50, alias="DAILY_POST_TARGET")
     daily_post_soft_target: int = Field(40, alias="DAILY_POST_SOFT_TARGET")
+    # Legal domain classification & quota
+    legal_daily_post_cap: int = Field(50, alias="LEGAL_DAILY_POST_CAP")  # Hard cap persisted posts per UTC day for legal intent
+    legal_intent_threshold: float = Field(0.35, alias="LEGAL_INTENT_THRESHOLD")  # Threshold for classify_legal_post combined score
+    legal_keywords_override: str | None = Field(None, alias="LEGAL_KEYWORDS")  # Optional semicolon list to extend/override builtin
 
     # Risk & pacing heuristics (anti-ban)
     risk_auth_suspect_threshold: int = Field(2, alias="RISK_AUTH_SUSPECT_THRESHOLD")
@@ -388,6 +393,20 @@ SCRAPE_FILTERED_POSTS = Counter(
     "scrape_filtered_posts_total", "Posts filtered out before persistence", labelnames=("reason",)
 )
 
+# Legal domain classification metrics
+LEGAL_POSTS_TOTAL = Counter(
+    "legal_posts_total", "Total legal-domain posts retained after classification"
+)
+LEGAL_POSTS_DISCARDED_TOTAL = Counter(
+    "legal_posts_discarded_total", "Posts discarded by legal classifier", labelnames=("reason",)
+)
+LEGAL_INTENT_CLASSIFICATIONS_TOTAL = Counter(
+    "legal_intent_classifications_total", "Intent decisions taken by classifier", labelnames=("intent",)
+)
+LEGAL_DAILY_CAP_REACHED = Counter(
+    "legal_daily_cap_reached_total", "Times the legal daily cap was reached"
+)
+
 
 # ------------------------------------------------------------
 # Context dataclass
@@ -450,7 +469,11 @@ async def init_mongo(settings: Settings, logger: structlog.BoundLogger) -> Optio
         # If pointing to a local default instance (localhost:27017), treat as optional and avoid noisy error logs.
         uri = settings.mongo_uri or ""
         if (("localhost" in uri) or ("127.0.0.1" in uri)) and (":27017" in uri):
-            logger.debug("mongo_unavailable_local_fallback", error=str(exc))
+            logger.warning(
+                "mongo_unavailable_local_fallback",
+                error=str(exc),
+                hint="Démarrez MongoDB ou définissez DISABLE_MONGO=1 pour rester sur SQLite",
+            )
         else:
             logger.error("mongo_connection_failed", error=str(exc))
         return None
@@ -471,7 +494,11 @@ async def init_redis(settings: Settings, logger: structlog.BoundLogger) -> Optio
         # If pointing to a local default instance (localhost:6379), treat as optional and avoid noisy error logs.
         url = settings.redis_url or ""
         if (("localhost" in url) or ("127.0.0.1" in url)) and (":6379" in url):
-            logger.debug("redis_unavailable_local_fallback", error=str(exc))
+            logger.warning(
+                "redis_unavailable_local_fallback",
+                error=str(exc),
+                hint="Lancez Redis ou exportez DISABLE_REDIS=1 pour désactiver la queue",
+            )
         else:
             logger.error("redis_connection_failed", error=str(exc))
         return None
@@ -569,6 +596,18 @@ async def bootstrap(force: bool = False) -> AppContext:
             redis=redis_client,
             token_bucket=token_bucket,
         )
+        # Initialize legal quota tracking attributes (used in worker classification quota logic)
+        for attr, default in [
+            ("legal_daily_date", None),
+            ("legal_daily_count", 0),
+            ("legal_daily_discard_intent", 0),
+            ("legal_daily_discard_location", 0),
+        ]:
+            if not hasattr(ctx, attr):
+                try:
+                    setattr(ctx, attr, default)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
         # Pre-initialize risk counters (avoid attribute errors in early worker loop)
         try:
             setattr(ctx, "_risk_auth_suspect", 0)

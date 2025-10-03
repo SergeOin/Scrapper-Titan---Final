@@ -13,6 +13,64 @@
 - Tests unitaires (pytest), linting Ruff, format Black, typage mypy
 - Docker multi-stage prêt pour déploiement serveur Linux (Playwright installé)
 
+### Extension Domaine Juridique (Classification)
+Pipeline intégré de qualification des posts juridiques en France :
+* Filtrage langue FR + heuristique géographique France (détection mots FR + mentions FR/Paris/provinces)
+* Classifieur heuristique (`scraper/legal_classifier.py`) ⇒ intent `recherche_profil` vs `autre`
+* Scoring `relevance_score` (0..1) + `confidence` + `keywords_matched` (liste dé-dupliquée)
+* Limite dure quotidienne `LEGAL_DAILY_POST_CAP` (par défaut 50) – métrique `legal_daily_cap_reached_total`
+* Cap visible via endpoint `/api/legal_stats` + barre de progression sur le dashboard
+* Filtrage API & UI: query param `?intent=recherche_profil|autre`
+* Script de purge ciblée par intent: `python scripts/purge_intent.py --intent recherche_profil`
+* Champs persistés (Mongo / SQLite colonnes dédiées / CSV fallback enrichi) :
+  - `intent`
+  - `relevance_score`
+  - `confidence`
+  - `keywords_matched`
+  - `location_ok`
+* Nouvelles colonnes SQLite (migration auto best‑effort) : `intent`, `relevance_score`, `confidence`, `keywords_matched`, `location_ok`
+* Métriques Prometheus :
+  - `legal_posts_total`
+  - `legal_posts_discarded_total{reason="intent|location"}`
+  - `legal_intent_classifications_total{intent}`
+  - `legal_daily_cap_reached_total`
+* Paramètres environnement spécifiques :
+  | Variable | Rôle | Défaut |
+  |----------|------|--------|
+  | `LEGAL_DAILY_POST_CAP` | Nombre max de posts légaux persistés / jour UTC | 50 |
+  | `LEGAL_INTENT_THRESHOLD` | Seuil score combiné pour passer en `recherche_profil` | 0.35 |
+  | `LEGAL_KEYWORDS` | (Optionnel) liste ; séparée de mots-clés métiers pour override/extension | — |
+  | `FILTER_LEGAL_DOMAIN_ONLY` | Si `1`, force le worker à ne garder que le domaine juridique (pré-filtrage) | 0 |
+* Objet classification (exemple) :
+```jsonc
+{
+  "intent": "recherche_profil",
+  "relevance_score": 0.74,
+  "confidence": 0.78,
+  "keywords_matched": ["avocat", "juriste"],
+  "location_ok": true
+}
+```
+* Endpoint stats journalières :
+```bash
+GET /api/legal_stats
+→ {
+  "date": "2025-10-03",
+  "accepted": 31,
+  "discarded_intent": 14,
+  "discarded_location": 3,
+  "discarded_total": 17,
+  "total_classified": 48,
+  "cap": 50,
+  "cap_remaining": 19,
+  "cap_progress": 0.62,
+  "rejection_rate": 0.3542,
+  "intent_threshold": 0.35
+}
+```
+* Paramètre debug `include_raw=1` (API `/api/posts`) pour exposer le bloc `classification_debug` (intent, scores, keywords) – omis par défaut pour réduire la taille.
+* Conformité: voir `COMPLIANCE.md` (minimisation, usage interne, absence de techniques de contournement)
+
 ---
 ## 🧱 Architecture (vue d'ensemble)
 ```
@@ -281,6 +339,86 @@ Usage interne privé (pas de distribution publique).
 ---
 ## ✅ Statut
 MVP fonctionnel livré : worker Playwright, stockage multi-niveaux, API & dashboard, métriques, logging structuré + rotation, tests de base. Prochaines étapes optionnelles : durcir sélecteurs, enrichir CI/CD, ajout d'une stratégie anti-CAPTCHA.
+
+---
+## 🧩 Installation (Binaires Desktop / Serveur Local)
+
+Des installateurs sont produits automatiquement à chaque tag `v*` via GitHub Actions (workflow `build-release`).
+
+### Windows (.msi)
+1. Télécharger `LinkedInScraper_<version>.msi` depuis **Releases**.
+2. Lancer l'installateur (scope machine par défaut).
+3. Un raccourci bureau "LinkedInScraper" est créé.
+4. Démarrer l'application puis ouvrir http://127.0.0.1:8000
+5. Première exécution : téléchargement éventuel de Chromium Playwright (réseau requis).
+
+### macOS (.dmg)
+1. Télécharger `LinkedInScraper_<version>.dmg`.
+2. Glisser l'application dans `Applications`.
+3. Si Gatekeeper bloque : clic droit → Ouvrir.
+4. Accéder ensuite à http://127.0.0.1:8000
+
+### Mises à jour
+Installer simplement la nouvelle version (.msi ou .dmg). Sauvegarder `fallback.sqlite3` si vous utilisez le mode sans Mongo.
+
+### Variables d'environnement
+Placer un fichier `.env` à côté de l'exécutable ou définir dans l'environnement système :
+```
+MONGO_URI=...
+SCRAPE_KEYWORDS=avocat;juriste
+LEGAL_DAILY_POST_CAP=50
+INTERNAL_AUTH_USER=admin
+INTERNAL_AUTH_PASS=ChangeMe!
+```
+
+### Stockage local
+Sans `MONGO_URI`, un fichier `fallback.sqlite3` est créé dans le dossier courant.
+
+### Désinstallation
+Windows : Paramètres → Applications → LinkedInScraper → Désinstaller.
+macOS : Supprimer l'app dans Applications + supprimer les artefacts locaux si désiré.
+
+### Génération locale rapide
+Windows :
+```powershell
+pwsh scripts/packaging/build_installer_windows.ps1 -Version 1.2.3
+```
+macOS :
+```bash
+VERSION=1.2.3 bash scripts/packaging/macos/build_dmg.sh
+```
+Le binaire combine serveur + worker via un « entrypoint » unifié (`entrypoint.py`) qui démarre simultanément le serveur FastAPI et le worker et respawne le worker en cas de crash (cooldown 300s configurable via `WORKER_RESPAWN_COOLDOWN_SECONDS`).
+
+### Limitations
+* Navigateurs Playwright non embarqués (taille) → téléchargement runtime.
+* Non signé (macOS) → avertissement Gatekeeper.
+* MSI minimal (pas de mise à jour auto). Un mode Service Windows intégré est maintenant fourni (voir ci‑dessous).
+
+### Mode Service Windows (Exécution en arrière-plan)
+
+Pour exécuter en tâche de fond permanente sur Windows :
+
+1. Installer l'application (MSI) ou construire l'exécutable.
+2. Ouvrir une console PowerShell administrateur.
+3. Lancer :
+  ```powershell
+  scripts\windows_service_install.ps1 -ExePath "C:\Program Files\LinkedInScraper\TitanScraper.exe"
+  ```
+4. Le service (par défaut `TitanScraper`) se lance automatiquement au boot.
+
+Pour le retirer :
+```powershell
+scripts\windows_service_uninstall.ps1
+```
+
+Variables d'environnement : définissez-les au niveau système (ou placez un `.env` à côté de l'exécutable — chargé automatiquement par l'entrypoint). Si vous devez personnaliser davantage, créez un batch wrapper et modifiez le service via `sc.exe config`.
+
+### Entrypoint unifié (Source vs Binaire)
+
+- En développement : `python entrypoint.py`
+- Ancien script combiné (`scripts/run_all.py`) reste support de secours mais le spec PyInstaller privilégie désormais `entrypoint.py`.
+- Avantages : respawn du worker, chargement `.env`, centralisation logs.
+
 
 ---
 ## 🌐 Déploiement Gratuit / Low-Cost

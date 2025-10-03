@@ -33,7 +33,7 @@
   .favorite-toggle.active { color:#facc15; }
   .delete-post { color:#dc2626; }
   .delete-post:hover { color:#b91c1c; }
-  .actions-cell { display:flex; gap:0.35rem; align-items:center; justify-content:center; }
+  .actions-cell { display:grid; grid-auto-flow:column; place-items:center; gap:0.35rem; }
   th.actions-head, td.actions-cell { text-align:center; }
   /* Ensure actions column content is vertically centered and doesn't wrap */
   td.actions-cell { vertical-align:middle; white-space:nowrap; }
@@ -63,6 +63,8 @@
     /* Inline badges and sublines */
     .pill { display:inline-block; padding:2px 6px; border-radius:999px; font-size:.7rem; line-height:1; border:1px solid #cbd5e1; background:#eef2f5; color:#334155; }
     .pill-opp { background:#dcfce7; border-color:#86efac; color:#166534; font-weight:600; }
+    .pill-intent-rp { background:#1e3a8a; color:#fff; border-color:#1e3a8a; font-weight:600; }
+    .pill-intent-autre { background:#64748b; color:#fff; border-color:#64748b; }
     .meta-sub { display:block; font-size:.75rem; color:#64748b; margin-top:2px; }
   </style>
 </head>
@@ -491,11 +493,38 @@
   <form id="searchForm" action="/" method="get" style="margin-top:1rem; display:flex; gap:.5rem; align-items:center;">
     <input type="text" name="q" placeholder="Rechercher (texte, auteur, entreprise, mot-clé)" value="{{ q or '' }}" style="flex:1; padding:.5rem .6rem; border:1px solid #cbd5e1; border-radius:6px;" />
     <input type="hidden" name="limit" value="{{ limit }}" />
+    <select name="intent" style="padding:.5rem .6rem; border:1px solid #cbd5e1; border-radius:6px; background:#fff;">
+      <option value="" {% if not intent %}selected{% endif %}>Intent: tous</option>
+      <option value="recherche_profil" {% if intent=='recherche_profil' %}selected{% endif %}>recherche_profil</option>
+      <option value="autre" {% if intent=='autre' %}selected{% endif %}>autre</option>
+    </select>
     <button type="submit">Rechercher</button>
     {% if q %}
-      <a href="/?limit={{ limit }}" style="font-size:.85rem;">Effacer</a>
+      <a href="/?limit={{ limit }}{% if intent %}&intent={{ intent }}{% endif %}" style="font-size:.85rem;">Effacer</a>
     {% endif %}
   </form>
+  <div id="legalStatsBar" style="margin-top:.75rem; font-size:.7rem; color:#334155;"></div>
+  <script>
+    async function refreshLegalStats(){
+      try {
+        const r = await fetch('/api/legal_stats', {credentials:'include'});
+        if(!r.ok) return;
+        const data = await r.json();
+        const el = document.getElementById('legalStatsBar');
+        if(!el) return;
+        const pct = Math.min(100, Math.round((data.cap_progress||0)*100));
+        const rej = Math.round((data.rejection_rate||0)*1000)/10;
+        el.innerHTML = `<div style="display:flex;align-items:center;gap:.5rem;">`+
+          `<div style=\"flex:1; background:#e2e8f0; border-radius:999px; height:8px; position:relative; overflow:hidden;\">`+
+          `<div style=\"position:absolute;left:0;top:0;height:100%;width:${pct}%;background:${pct>=100?'#dc2626':'#2563eb'};transition:width .4s;\"></div>`+
+          `</div>`+
+          `<span>${data.accepted}/${data.cap} (${pct}%) · rejet: ${rej}%</span>`+
+          `</div>`;
+      } catch(_) {}
+    }
+    refreshLegalStats();
+    setInterval(refreshLegalStats, 15000);
+  </script>
   <!-- Top-right actions moved into header -->
   <!-- Note: En cas de doublons visibles, ils sont généralement dus à des posts sans lien canonique (permalink). Le worker applique déjà une déduplication stricte par lien puis (auteur + date). -->
   <table>
@@ -503,17 +532,17 @@
       <tr>
         {% set nextDir = 'asc' if sort_dir=='desc' else 'desc' %}
         <th>
-          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=keyword&sort_dir={{ 'desc' if sort_by!='keyword' else nextDir }}">Keyword{% if sort_by=='keyword' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
+          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if intent %}&intent={{ intent }}{% endif %}&sort_by=keyword&sort_dir={{ 'desc' if sort_by!='keyword' else nextDir }}">Keyword{% if sort_by=='keyword' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
         </th>
         <th>
-          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=author&sort_dir={{ 'desc' if sort_by!='author' else nextDir }}">Auteur{% if sort_by=='author' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
+          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if intent %}&intent={{ intent }}{% endif %}&sort_by=author&sort_dir={{ 'desc' if sort_by!='author' else nextDir }}">Auteur{% if sort_by=='author' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
         </th>
         <th>
-          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=company&sort_dir={{ 'desc' if sort_by!='company' else nextDir }}">Entreprise{% if sort_by=='company' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
+          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if intent %}&intent={{ intent }}{% endif %}&sort_by=company&sort_dir={{ 'desc' if sort_by!='company' else nextDir }}">Entreprise{% if sort_by=='company' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
         </th>
         <th>Texte</th>
         <th>
-          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=published_at&sort_dir={{ 'desc' if sort_by!='published_at' else nextDir }}">Date{% if sort_by=='published_at' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
+          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if intent %}&intent={{ intent }}{% endif %}&sort_by=published_at&sort_dir={{ 'desc' if sort_by!='published_at' else nextDir }}">Date{% if sort_by=='published_at' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
         </th>
   <th>Lien</th>
   <th>Statut</th>
@@ -529,7 +558,17 @@
     {% set cc = post.company_norm or post.company %}
     {% if cc and (cc|lower) != (post.author|lower) %}{{ cc }}{% else %}—{% endif %}
   </td>
-        <td class="wrap">{% if post.opportunity %}<span class="pill pill-opp" title="Signal de recrutement détecté">Opportunité</span> {% endif %}{{ post.text[:500] }}{% if post.text|length > 500 %}…{% endif %}</td>
+        <td class="wrap">
+          {% if post.intent %}
+            {% if post.intent == 'recherche_profil' %}
+              <span class="pill pill-intent-rp" title="Intent classé: recherche_profil">recherche_profil</span>
+            {% else %}
+              <span class="pill pill-intent-autre" title="Intent classé: autre">autre</span>
+            {% endif %}
+          {% endif %}
+          {% if post.opportunity %}<span class="pill pill-opp" title="Signal de recrutement détecté">Opportunité</span> {% endif %}
+          {{ post.text[:500] }}{% if post.text|length > 500 %}…{% endif %}
+        </td>
   <td>{{ (post.published_at or post.collected_at)|fmt_date }}</td>
           <td>
             {% if post.permalink %}
@@ -554,7 +593,7 @@
   </table>
   <nav class="pagination">
     {% for page_num in range(1, total_pages + 1) %}
-      <a href="/?page={{ page_num }}&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}" class="{% if page_num == page %}active{% endif %}">{{ page_num }}</a>
+      <a href="/?page={{ page_num }}&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if intent %}&intent={{ intent }}{% endif %}" class="{% if page_num == page %}active{% endif %}">{{ page_num }}</a>
     {% endfor %}
   </nav>
   <a id="floatingTrash" class="floating-trash" href="/corbeille" title="Ouvrir la corbeille">

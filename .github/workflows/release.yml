@@ -1,0 +1,142 @@
+name: build-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Cache Playwright Browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install WiX Toolset
+        uses: wixtoolset/wix-action@v1.1
+      - name: Build EXE + MSI
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          Write-Host "Building version $version"
+          # Generate icon if missing
+          if (!(Test-Path build/icon.ico) -and (Test-Path 'Titan Scraper logo.png')) {
+            py -3 scripts/util_make_icon.py -i 'Titan Scraper logo.png' -o build/icon.ico
+          }
+          pwsh scripts/packaging/build_installer_windows.ps1 -Version $version -PyInstallerSpec linkedin_scraper.spec -ProductName LinkedInScraper
+          Get-ChildItem build -Recurse | Write-Host
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-binaries
+          path: |
+            dist/LinkedInScraper/**
+            build/msi/*.msi
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Cache Playwright Browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build app + DMG
+        run: |
+          chmod +x scripts/packaging/macos/build_dmg.sh
+          VERSION="${GITHUB_REF_NAME#v}" SPEC_FILE=linkedin_scraper.spec bash scripts/packaging/macos/build_dmg.sh
+          ls -R build || true
+      # Signing / Notarization template (commented to avoid secret lint issues until secrets are configured)
+      # To enable: replace SECRET_* placeholders with real ${{ secrets.* }} references and uncomment blocks.
+      # - name: Import signing certificate
+      #   run: |
+      #     echo "$SECRET_MACOS_CERT_P12_B64" | base64 --decode > signing_cert.p12
+      #     security create-keychain -p temp build.keychain
+      #     security import signing_cert.p12 -k build.keychain -P "$SECRET_MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+      #     security list-keychain -d user -s build.keychain
+      #     security unlock-keychain -p temp build.keychain
+      #     security set-key-partition-list -S apple-tool:,apple: -s -k temp build.keychain
+      # - name: Codesign .app bundle
+      #   run: |
+      #     APP=$(find dist -maxdepth 2 -name '*.app' | head -n1)
+      #     codesign --force --deep --timestamp --options runtime --sign "Developer ID Application" "$APP"
+      #     codesign --verify --deep --strict "$APP" || true
+      # - name: Notarize app
+      #   run: |
+      #     APP=$(find dist -maxdepth 2 -name '*.app' | head -n1)
+      #     ZIP=app_for_notarization.zip
+      #     ditto -c -k --keepParent "$APP" "$ZIP"
+      #     xcrun notarytool submit "$ZIP" --apple-id "$SECRET_APPLE_NOTARIZATION_APPLE_ID" --team-id "$SECRET_APPLE_NOTARIZATION_TEAM_ID" --password "$SECRET_APPLE_NOTARIZATION_PASSWORD" --wait || echo "Notarization failed or skipped"
+      #     xcrun stapler staple "$APP" || echo "Stapler failed"
+      # - name: Codesign DMG (optional)
+      #   run: |
+      #     DMG=$(find build -maxdepth 1 -name '*.dmg' | head -n1)
+      #     if [ -n "$DMG" ]; then codesign --force --timestamp --sign "Developer ID Application" "$DMG" || echo "DMG sign skipped"; fi
+      # - name: Codesign & Notarize (optional)
+      #   env:
+      #     MAC_IDENTITY_NAME: ${{ secrets.MAC_IDENTITY_NAME }}
+      #     MAC_SIGNING_CERT_P12: ${{ secrets.MAC_SIGNING_CERT_P12 }}
+      #     MAC_SIGNING_CERT_PASSWORD: ${{ secrets.MAC_SIGNING_CERT_PASSWORD }}
+      #     MAC_NOTARIZATION_APPLE_ID: ${{ secrets.MAC_NOTARIZATION_APPLE_ID }}
+      #     MAC_NOTARIZATION_PASSWORD: ${{ secrets.MAC_NOTARIZATION_PASSWORD }}
+      #     MAC_TEAM_ID: ${{ secrets.MAC_TEAM_ID }}
+      #   run: |
+      #     if [ -n "$MAC_IDENTITY_NAME" ] && [ -n "$MAC_SIGNING_CERT_P12" ] && [ -n "$MAC_SIGNING_CERT_PASSWORD" ]; then
+      #       echo "$MAC_SIGNING_CERT_P12" | base64 --decode > signing_cert.p12
+      #       security create-keychain -p temp build.keychain
+      #       security import signing_cert.p12 -k build.keychain -P "$MAC_SIGNING_CERT_PASSWORD" -T /usr/bin/codesign
+      #       security list-keychain -d user -s build.keychain
+      #       security unlock-keychain -p temp build.keychain
+      #       /usr/bin/codesign --force --deep --timestamp --options runtime --sign "$MAC_IDENTITY_NAME" dist/LinkedInScraper/LinkedInScraper || true
+      #     else
+      #       echo "Codesign secrets absent -> skipping signing"; fi
+      #     if [ -n "$MAC_NOTARIZATION_APPLE_ID" ] && [ -n "$MAC_NOTARIZATION_PASSWORD" ] && [ -n "$MAC_TEAM_ID" ]; then
+      #       echo "Submitting for notarization (simplified)" || true
+      #       # xcrun notarytool submit build/*.dmg --apple-id "$MAC_NOTARIZATION_APPLE_ID" --password "$MAC_NOTARIZATION_PASSWORD" --team-id "$MAC_TEAM_ID" --wait || true
+      #     else
+      #       echo "Notarization secrets absent -> skipping"; fi
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-binaries
+          path: |
+            dist/LinkedInScraper/**
+            build/*.dmg
+  create-release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/windows-binaries/build/msi/*.msi
+            artifacts/windows-binaries/dist/LinkedInScraper/**
+            artifacts/macos-binaries/build/*.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

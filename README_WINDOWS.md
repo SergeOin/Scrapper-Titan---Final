@@ -20,9 +20,9 @@ python scripts/run_once.py --keywords 'Juriste'
 ## Construction d'un EXE (PyInstaller)
 Prérequis: Python + pip.
 ```powershell
-.\scripts\build_exe.ps1 -Name 'TitanScraperDashboard'
+.\scripts\build_exe.ps1 -Name 'Titan Scraper'
 ```
-Le binaire est généré dans `dist\TitanScraperDashboard.exe`.
+Le binaire est généré dans `dist\Titan Scraper.exe`.
 
 Notes:
 - Le premier run réel peut nécessiter les navigateurs Playwright: 
@@ -33,9 +33,9 @@ Notes:
 ## Construction d'un MSI (WiX Toolset)
 Prérequis: WiX v3 (candle.exe, light.exe dans PATH).
 ```powershell
-.\scripts\build_msi.ps1 -Name 'TitanScraperDashboard' -Manufacturer 'Titan Partners' -Version '1.0.0'
+.\scripts\build_msi.ps1 -Name 'Titan Scraper' -Manufacturer 'Titan Partners' -Version '1.0.0'
 ```
-Le MSI est produit dans `dist\msi\TitanScraperDashboard-1.0.0.msi` et installe un raccourci menu Démarrer qui lance l'EXE.
+Le MSI est produit dans `dist\msi\Titan Scraper-1.0.0.msi` et installe un raccourci menu Démarrer qui lance l'EXE.
 
 ## Limitations et conseils
 - Le packaging EXE/MSI embarque l'appli; pour le scraping réel, assurez-vous que `storage_state.json` est fourni et que Playwright a ses navigateurs installés.

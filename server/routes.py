@@ -66,6 +66,7 @@ if not _TEMPLATE_DIR.exists():  # Fallback strategies for frozen/shortcut launch
             # PyInstaller may also unpack to _MEIPASS – include it
             meipass = Path(getattr(_sys, "_MEIPASS", exe_dir))  # type: ignore[attr-defined]
             candidates.append(meipass / "server" / "templates")
+            candidates.append(exe_dir / "_internal" / "server" / "templates")
     except Exception:
         pass
     # 3. Walk upwards a few levels (defensive) looking for server/templates
@@ -589,7 +590,7 @@ def _fetch_deleted_posts(ctx) -> list[dict[str, Any]]:
             rows.append(dict(r))
     return rows
 
-async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_by: Optional[str] = None, sort_dir: Optional[str] = None) -> list[dict[str, Any]]:
+async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_by: Optional[str] = None, sort_dir: Optional[str] = None, intent: Optional[str] = None, include_raw: bool = False) -> list[dict[str, Any]]:
     q = _sanitize_query(q)
     sort_field, sort_direction = _normalize_sort(sort_by, sort_dir)
     rows: list[dict[str, Any]] = []
@@ -678,8 +679,13 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
                     {"company": {"$regex": q, "$options": "i"}},
                     {"keyword": {"$regex": q, "$options": "i"}},
                 ]
+            if intent and intent in ("recherche_profil","autre"):
+                mf["intent"] = intent
             # Exclude raw + legacy score fields
-            cursor = coll.find(mf, {"raw": 0, "score": 0, "recruitment_score": 0}).sort(sort_field, sort_direction).skip(skip).limit(limit)
+            projection = {"score": 0, "recruitment_score": 0}
+            if not include_raw:
+                projection["raw"] = 0
+            cursor = coll.find(mf, projection).sort(sort_field, sort_direction).skip(skip).limit(limit)
             rows = []
             async for doc in cursor:
                 try:
@@ -740,6 +746,19 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
                         where_clauses.append("(p.text LIKE ? OR p.author LIKE ? OR p.company LIKE ? OR p.keyword LIKE ?)")
                         pat = f"%{q}%"
                         params.extend([pat, pat, pat, pat])
+                if intent and intent in ("recherche_profil","autre"):
+                    # Prefer explicit column if present else fallback raw_json LIKE
+                    try:
+                        col_rows = conn.execute("PRAGMA table_info(posts)").fetchall()
+                        col_names = {r[1] for r in col_rows}
+                    except Exception:
+                        col_names = set()
+                    if 'intent' in col_names:
+                        where_clauses.append("COALESCE(p.intent,'') = ?")
+                        params.append(intent)
+                    else:
+                        where_clauses.append("p.raw_json LIKE ?")
+                        params.append(f'%"intent": "{intent}"%')
                 if where_clauses:
                     base_q += " WHERE " + " AND ".join(where_clauses)
                 # Order by requested field
@@ -761,6 +780,41 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
                                 item["company_norm"] = cn
                     except Exception:
                         pass
+                    # Attach raw/classification debug if requested and columns exist (attempt to parse raw_json)
+                    if include_raw:
+                        try:
+                            if 'raw_json' in item and item['raw_json']:
+                                raw_obj = _json.loads(item['raw_json'])
+                            else:
+                                raw_obj = {}
+                        except Exception:
+                            raw_obj = {}
+                        # SQLite explicit columns may already hold values; ensure classification sub-dict
+                        classification = {
+                            "intent": item.get("intent"),
+                            "relevance_score": item.get("relevance_score"),
+                            "confidence": item.get("confidence"),
+                            "keywords_matched": item.get("keywords_matched"),
+                            "location_ok": item.get("location_ok"),
+                        }
+                        # On-demand lightweight reclassification if fields absent
+                        if not classification.get("intent"):
+                            try:
+                                from scraper.legal_classifier import classify_legal_post  # local import to avoid startup cost
+                                lc = classify_legal_post(item.get("text") or "", language=item.get("language") or "fr", intent_threshold=0.35)
+                                classification.update({
+                                    "intent": lc.intent,
+                                    "relevance_score": lc.relevance_score,
+                                    "confidence": lc.confidence,
+                                    "keywords_matched": lc.keywords_matched,
+                                    "location_ok": lc.location_ok,
+                                    "_derived": True,
+                                })
+                            except Exception:
+                                classification.setdefault("_derived", False)
+                        if raw_obj:
+                            classification["raw_fragment"] = raw_obj.get("raw") or raw_obj
+                        item["classification_debug"] = classification
                     rows.append(item)
     except Exception as exc:  # pragma: no cover
         ctx.logger.warning("sqlite_fallback_query_failed", error=str(exc))
@@ -1025,6 +1079,7 @@ async def dashboard(
     page: int = Query(1, ge=1),
     limit: int = Query(default_factory=_default_limit, ge=1, le=200),
     q: Optional[str] = Query(None),
+    intent: Optional[str] = Query(None, description="Filtrer par intent (recherche_profil/autre)"),
     sort_by: Optional[str] = Query(None),
     sort_dir: Optional[str] = Query(None),
     ctx=Depends(get_auth_context),
@@ -1033,7 +1088,7 @@ async def dashboard(
     _ls=Depends(require_linkedin_session),  # require linkedin session
 ):
     skip = (page - 1) * limit
-    posts = await fetch_posts(ctx, skip=skip, limit=limit, q=q, sort_by=sort_by, sort_dir=sort_dir)
+    posts = await fetch_posts(ctx, skip=skip, limit=limit, q=q, sort_by=sort_by, sort_dir=sort_dir, intent=intent, include_raw=False)
     meta = await fetch_meta(ctx)
     trash_count = _count_deleted(ctx)
     # Compute naive total pages if meta count known
@@ -1052,6 +1107,7 @@ async def dashboard(
             "limit": limit,
             "total_pages": total_pages,
             "q": _sanitize_query(q) or "",
+            "intent": intent or "",
             "autonomous_interval": ctx.settings.autonomous_worker_interval_seconds,
             "login_initial_wait_seconds": ctx.settings.login_initial_wait_seconds,
             "sort_by": (sort_by or "collected_at"),
@@ -1068,6 +1124,7 @@ async def dashboard_demo(
     page: int = Query(1, ge=1),
     limit: int = Query(default_factory=_default_limit, ge=1, le=200),
     q: Optional[str] = Query(None),
+    intent: Optional[str] = Query(None),
     sort_by: Optional[str] = Query(None),
     sort_dir: Optional[str] = Query(None),
     ctx=Depends(get_auth_context),
@@ -1080,7 +1137,7 @@ async def dashboard_demo(
     except Exception:
         return RedirectResponse("/", status_code=302)
     skip = (page - 1) * limit
-    posts = await fetch_posts(ctx, skip=skip, limit=limit, q=q, sort_by=sort_by, sort_dir=sort_dir)
+    posts = await fetch_posts(ctx, skip=skip, limit=limit, q=q, sort_by=sort_by, sort_dir=sort_dir, intent=intent, include_raw=False)
     meta = await fetch_meta(ctx)
     trash_count = _count_deleted(ctx)
     if _sanitize_query(q):
@@ -1098,6 +1155,7 @@ async def dashboard_demo(
             "limit": limit,
             "total_pages": total_pages,
             "q": _sanitize_query(q) or "",
+            "intent": intent or "",
             "autonomous_interval": ctx.settings.autonomous_worker_interval_seconds,
             "login_initial_wait_seconds": ctx.settings.login_initial_wait_seconds,
             "sort_by": (sort_by or "collected_at"),
@@ -1255,11 +1313,12 @@ async def api_posts(
     sort_by: Optional[str] = Query(None),
     sort_dir: Optional[str] = Query(None),
     ctx=Depends(get_auth_context),
+    include_raw: Optional[int] = Query(0, description="Inclure bloc classification_debug et raw minimal si =1"),
     # min_score removed
 ):
     skip = (page - 1) * limit
-    posts = await fetch_posts(ctx, skip=skip, limit=limit, q=q, sort_by=sort_by, sort_dir=sort_dir)
-    return {"page": page, "limit": limit, "items": posts}
+    posts = await fetch_posts(ctx, skip=skip, limit=limit, q=q, sort_by=sort_by, sort_dir=sort_dir, include_raw=bool(include_raw))
+    return {"page": page, "limit": limit, "items": posts, "include_raw": bool(include_raw)}
 
 
 @router.post("/api/posts/{post_id}/favorite")
@@ -1959,6 +2018,43 @@ async def api_stats(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
         except Exception:  # pragma: no cover
             data["queue_depth"] = None
     return data
+
+
+@router.get("/api/legal_stats")
+async def api_legal_stats(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Aggregated legal-domain classification statistics for current UTC day.
+
+    Returns counts and rates based on in-memory tracking + persistent counts.
+    Note: In-memory counters reset when process restarts (acceptable for daily view).
+    """
+    from datetime import date
+    today = date.today().isoformat()
+    # Ensure date roll-over resets discard counters
+    if getattr(ctx, 'legal_stats_date', None) != today:
+        setattr(ctx, 'legal_stats_date', today)
+        setattr(ctx, 'legal_daily_discard_intent', 0)
+        setattr(ctx, 'legal_daily_discard_location', 0)
+    accepted = getattr(ctx, 'legal_daily_count', 0)
+    discard_intent = getattr(ctx, 'legal_daily_discard_intent', 0)
+    discard_location = getattr(ctx, 'legal_daily_discard_location', 0)
+    discarded = discard_intent + discard_location
+    total_classified = accepted + discarded
+    cap = ctx.settings.legal_daily_post_cap
+    progress = (accepted / cap) if cap else 0.0
+    rejection_rate = (discarded / total_classified) if total_classified else 0.0
+    return {
+        "date": today,
+        "accepted": accepted,
+        "discarded_intent": discard_intent,
+        "discarded_location": discard_location,
+        "discarded_total": discarded,
+        "total_classified": total_classified,
+        "cap": cap,
+        "cap_remaining": max(0, cap - accepted),
+        "cap_progress": round(progress, 4),
+        "rejection_rate": round(rejection_rate, 4),
+        "intent_threshold": ctx.settings.legal_intent_threshold,
+    }
 
 
 @router.get("/api/version")

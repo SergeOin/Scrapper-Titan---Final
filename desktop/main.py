@@ -27,6 +27,122 @@ import threading as _threading
 
 import asyncio
 from typing import Any
+import base64
+
+try:
+    import ctypes
+    import ctypes.wintypes as _wt
+except Exception:
+    pass
+
+# -----------------------
+# Secure-ish credential storage helpers (Windows DPAPI)
+# -----------------------
+def _dpapi_protect(raw: bytes) -> bytes:
+    """Protect bytes using Windows DPAPI (Current User scope). Fallback: return raw."""
+    if not _is_windows():
+        return raw
+    try:
+        class DATA_BLOB(ctypes.Structure):  # type: ignore
+            _fields_ = [("cbData", _wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+        CryptProtectData = ctypes.windll.crypt32.CryptProtectData  # type: ignore[attr-defined]
+        CryptProtectData.argtypes = [ctypes.POINTER(DATA_BLOB), _wt.LPCWSTR, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, _wt.DWORD, ctypes.POINTER(DATA_BLOB)]
+        inp = DATA_BLOB(len(raw), ctypes.cast(ctypes.create_string_buffer(raw, len(raw)), ctypes.POINTER(ctypes.c_char)))
+        out = DATA_BLOB()
+        if CryptProtectData(ctypes.byref(inp), None, None, None, None, 0, ctypes.byref(out)):
+            try:
+                buf = ctypes.string_at(out.pbData, out.cbData)
+                ctypes.windll.kernel32.LocalFree(out.pbData)  # type: ignore[attr-defined]
+                return buf
+            except Exception:
+                return raw
+        return raw
+    except Exception:
+        return raw
+
+def _dpapi_unprotect(enc: bytes) -> bytes:
+    if not _is_windows():
+        return enc
+    try:
+        class DATA_BLOB(ctypes.Structure):  # type: ignore
+            _fields_ = [("cbData", _wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+        CryptUnprotectData = ctypes.windll.crypt32.CryptUnprotectData  # type: ignore[attr-defined]
+        CryptUnprotectData.argtypes = [ctypes.POINTER(DATA_BLOB), ctypes.POINTER(_wt.LPWSTR), ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, _wt.DWORD, ctypes.POINTER(DATA_BLOB)]
+        inp = DATA_BLOB(len(enc), ctypes.cast(ctypes.create_string_buffer(enc, len(enc)), ctypes.POINTER(ctypes.c_char)))
+        out = DATA_BLOB()
+        if CryptUnprotectData(ctypes.byref(inp), None, None, None, None, 0, ctypes.byref(out)):
+            try:
+                buf = ctypes.string_at(out.pbData, out.cbData)
+                ctypes.windll.kernel32.LocalFree(out.pbData)  # type: ignore[attr-defined]
+                return buf
+            except Exception:
+                return enc
+        return enc
+    except Exception:
+        return enc
+
+def _credentials_file(base_dir: Path) -> Path:
+    return base_dir / "credentials.json"
+
+def _load_saved_credentials(base_dir: Path) -> dict | None:
+    p = _credentials_file(base_dir)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        if not data.get("auto_login"):
+            return None
+        email = data.get("email")
+        pw_prot = data.get("password_protected")
+        if not email or not pw_prot:
+            return None
+        try:
+            raw = base64.b64decode(pw_prot)
+        except Exception:
+            return None
+        pwd = _dpapi_unprotect(raw).decode("utf-8", errors="ignore")
+        if not pwd:
+            return None
+        return {"email": email, "password": pwd, "version": data.get("version", 1)}
+    except Exception:
+        logging.getLogger("desktop").warning("credentials_load_failed", exc_info=True)
+        return None
+
+def _attempt_auto_login_if_configured(base_url: str, user_base: Path) -> bool:
+    """Attempt a silent login using saved credentials if the current session is invalid.
+
+    Returns True if login succeeded (session became valid), else False.
+    """
+    log = logging.getLogger("desktop")
+    creds = _load_saved_credentials(user_base)
+    if not creds:
+        return False
+    try:
+        import requests
+        # Re-check status quickly (avoid re-login if already valid)
+        r = requests.get(f"{base_url}/api/session/status", timeout=3)
+        if r.status_code == 200 and r.json().get("valid"):
+            return True
+        payload = {"email": creds["email"], "password": creds["password"]}
+        resp = requests.post(f"{base_url}/api/session/login", data=payload, timeout=45)
+        if resp.status_code == 200:
+            # Confirm now valid
+            st = requests.get(f"{base_url}/api/session/status", timeout=5)
+            if st.status_code == 200 and st.json().get("valid"):
+                log.info("auto_login_success email=%s", creds["email"])
+                return True
+        log.warning("auto_login_failed status=%s", resp.status_code if 'resp' in locals() else 'n/a')
+    except Exception as exc:
+        log.warning("auto_login_exception error=%s", exc)
+    return False
+import base64
+
+try:
+    import win32crypt  # type: ignore
+except Exception:  # pragma: no cover
+    win32crypt = None  # type: ignore
 
 
 def _is_windows() -> bool:
@@ -128,13 +244,23 @@ else:
     except Exception:
         pass
 
-
 def _ensure_event_loop_policy():
+    """Set a robust event loop policy.
+
+    Playwright (and asyncio subprocess usage in general) requires a Proactor based loop on
+    modern Windows Python versions. The previous implementation allowed selecting a selector
+    loop via WIN_LOOP env which led to NotImplementedError in packaged mode when spawning
+    subprocesses (observed in server.log). We now force Proactor on Windows. On non-Windows
+    platforms default loop is retained.
+    """
     if _is_windows():
         try:
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
         except Exception:
-            pass
+            logging.getLogger("desktop").exception("event_loop_policy_set_failed")
+
+# Ensure correct event loop policy early (after definition so symbol exists)
+_ensure_event_loop_policy()
 
 
 def _find_free_port(preferred: int = 8000, max_tries: int = 20) -> int:
@@ -352,6 +478,7 @@ def _start_server_thread(host: str, port: int) -> ServerHandle:
 
     def _run():
         try:
+            _ensure_event_loop_policy()
             # Blocks until should_exit is true
             asyncio.run(server.serve())
         except Exception:
@@ -387,6 +514,138 @@ def _probe_health(host: str, port: int, timeout: float = 1.5) -> bool:
         return r.status_code == 200
     except Exception:
         return False
+
+
+def _determine_initial_view(base_url: str, *, timeout: float = 4.0) -> str:
+    """Decide which route the desktop window should open first.
+
+    Returns ``"/"`` when the LinkedIn session looks valid, otherwise returns the login route with
+    a reason query parameter. Any network errors fall back to the dashboard to avoid blocking the
+    UI on transient issues.
+    """
+    log = logging.getLogger("desktop")
+    # Fast local heuristic: if storage_state.json missing => login
+    storage_state = os.environ.get("STORAGE_STATE")
+    if storage_state and not Path(storage_state).exists():
+        log.info("initial_view_no_storage_state redirect_login path=%s", storage_state)
+        return "/login?reason=session_required"
+    try:
+        import requests
+        resp = requests.get(f"{base_url}/api/session/status", timeout=timeout)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("valid"):
+                log.info(
+                    "session_status_valid cookies=%s has_li_at=%s has_jsessionid=%s",
+                    data.get("cookies_count"),
+                    data.get("has_li_at"),
+                    data.get("has_jsessionid"),
+                )
+                return "/"
+            # Decide more precise reason
+            reason = "session_required"
+            if data.get("li_at_expired"):
+                reason = "session_expired"
+            log.info(
+                "session_status_invalid_redirect cookies=%s has_li_at=%s reason=%s",
+                data.get("cookies_count"), data.get("has_li_at"), reason
+            )
+            return f"/login?reason={reason}"
+        log.warning("session_status_unexpected_status status=%s", resp.status_code)
+        return "/login?reason=probe_http_%s" % resp.status_code
+    except Exception as exc:
+        # Force login instead of silently allowing dashboard
+        log.warning("session_status_probe_failed forcing_login error=%s", exc)
+        return "/login?reason=probe_error"
+    # Should not reach; safe fallback is login
+    return "/login?reason=unknown"
+
+
+# ----------------------------
+# Credentials (desktop auto-login)
+# ----------------------------
+def _dpapi_protect(raw: bytes) -> str:
+    """Protect bytes using Windows DPAPI; returns base64 string. Fallback: base64(clear)."""
+    if win32crypt is None or not _is_windows():  # pragma: no cover - non Windows path
+        return base64.b64encode(raw).decode("utf-8")
+    try:  # type: ignore[attr-defined]
+        import win32crypt as _w
+        blob = _w.CryptProtectData(raw, None, None, None, None, 0)
+        return base64.b64encode(blob[1]).decode("utf-8")
+    except Exception:
+        return base64.b64encode(raw).decode("utf-8")
+
+
+def _dpapi_unprotect(token: str) -> bytes | None:
+    if not token:
+        return None
+    data = base64.b64decode(token)
+    if win32crypt is None or not _is_windows():  # pragma: no cover
+        return data
+    try:  # type: ignore[attr-defined]
+        import win32crypt as _w
+        blob = _w.CryptUnprotectData(data, None, None, None, 0)
+        return blob[1]
+    except Exception:
+        return data
+
+
+def _credentials_file(user_base: Path) -> Path:
+    return user_base / "credentials.json"
+
+
+def _load_saved_credentials(user_base: Path) -> dict | None:
+    p = _credentials_file(user_base)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        if not data.get("auto_login"):
+            return None
+        email = data.get("email")
+        pwd_token = data.get("password_protected")
+        if not email or not pwd_token:
+            return None
+        dec = _dpapi_unprotect(pwd_token)
+        if not dec:
+            return None
+        password = dec.decode("utf-8", errors="ignore")
+        return {"email": email, "password": password}
+    except Exception:
+        return None
+
+
+def _attempt_auto_login_if_configured(user_base: Path, base_url: str, timeout: float = 25.0) -> bool:
+    """If credentials.json exists with auto_login=true, try a one-shot login.
+
+    Returns True if session became valid afterwards, else False. Silent on all exceptions.
+    """
+    creds = _load_saved_credentials(user_base)
+    log = logging.getLogger("desktop")
+    if not creds:
+        return False
+    try:
+        import requests
+        log.info("auto_login_attempt_start email=%s", creds.get("email"))
+        resp = requests.post(
+            f"{base_url}/api/session/login",
+            data={"email": creds["email"], "password": creds["password"]},
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            log.warning("auto_login_failed status=%s", resp.status_code)
+            return False
+        # Re-check session validity
+        check = requests.get(f"{base_url}/api/session/status", timeout=6)
+        if check.status_code == 200 and check.json().get("valid"):
+            log.info("auto_login_success")
+            return True
+        log.warning("auto_login_post_check_invalid")
+    except Exception as exc:  # pragma: no cover - best effort
+        log.warning("auto_login_exception error=%s", exc)
+    return False
 
 
 def _ensure_runtime_dirs(base: Path):
@@ -440,45 +699,102 @@ def _webview2_runtime_installed() -> bool:
     try:
         import winreg
 
-        def _has_key(root, path):
-            try:
-                with winreg.OpenKey(root, path) as _:
-                    return True
-            except Exception:
-                return False
+        guid = r"{F1B5F0A6-C3B0-4AB5-9D24-BA61A1B3C047}"
+        reg_checks: list[tuple[int, str, int]] = [
+            (winreg.HKEY_CURRENT_USER, fr"SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{guid}", winreg.KEY_READ),
+            (winreg.HKEY_LOCAL_MACHINE, fr"SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{guid}", winreg.KEY_READ),
+        ]
 
-        # Per-machine
-        if _has_key(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F1B5F0A6-C3B0-4AB5-9D24-BA61A1B3C047}"):
-            return True
-        # Per-user
-        if _has_key(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F1B5F0A6-C3B0-4AB5-9D24-BA61A1B3C047}"):
-            return True
-    except Exception:
+        # Include alternate registry views (32/64-bit) commonly used by the WebView2 installer
+        if hasattr(winreg, "KEY_WOW64_32KEY"):
+            reg_checks.append(
+                (
+                    winreg.HKEY_LOCAL_MACHINE,
+                    fr"SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{guid}",
+                    winreg.KEY_READ | winreg.KEY_WOW64_32KEY,
+                )
+            )
+        if hasattr(winreg, "KEY_WOW64_64KEY"):
+            reg_checks.append(
+                (
+                    winreg.HKEY_LOCAL_MACHINE,
+                    fr"SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{guid}",
+                    winreg.KEY_READ | winreg.KEY_WOW64_64KEY,
+                )
+            )
+            reg_checks.append(
+                (
+                    winreg.HKEY_LOCAL_MACHINE,
+                    fr"SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{guid}",
+                    winreg.KEY_READ | winreg.KEY_WOW64_64KEY,
+                )
+            )
+
+        for root, path, access in reg_checks:
+            try:
+                with winreg.OpenKey(root, path, 0, access):
+                    return True
+            except FileNotFoundError:
+                continue
+            except OSError:
+                continue
+
+    except ImportError:
         return False
+    except Exception:
+        logging.getLogger("desktop").warning("webview2_registry_probe_failed", exc_info=True)
+
+    # Fallback: detect the runtime files on disk
+    candidates: list[Path] = []
+    for env_var in ("PROGRAMFILES(X86)", "PROGRAMFILES", "LOCALAPPDATA"):
+        base = os.environ.get(env_var)
+        if not base:
+            continue
+        candidates.append(Path(base) / "Microsoft" / "EdgeWebView" / "Application")
+        candidates.append(Path(base) / "Microsoft" / "EdgeWebView" / "EBWebView")
+
+    for base in candidates:
+        try:
+            if not base.exists():
+                continue
+            for child in base.iterdir():
+                if not child.is_dir():
+                    continue
+                exe = child / "msedgewebview2.exe"
+                if exe.exists():
+                    return True
+        except FileNotFoundError:
+            continue
+        except PermissionError:
+            continue
+        except Exception:
+            logging.getLogger("desktop").debug("webview2_filesystem_probe_error base=%s", base, exc_info=True)
+
     return False
 
 
-def _install_webview2_if_missing(exe_base: Path, user_base: Path) -> None:
-    """Install WebView2 runtime (Windows) if absent, with a small progress window and caching.
+def _install_webview2_if_missing(exe_base: Path, user_base: Path) -> bool:
+    """Install WebView2 runtime (Windows) if absent.
 
-    Creates a marker file in user data dir after a successful install attempt to avoid spamming
-    multiple runs if detection is flaky. We still re-check registry each launch; marker only
-    suppresses repeated installer execution within 24h if runtime still missing.
+    Returns ``True`` when the runtime is detected at the end of the routine (including when it
+    was already installed). Returns ``False`` if we were unable to detect WebView2 after the
+    attempted installation. Always returns ``True`` on non-Windows platforms.
     """
     if not _is_windows():
-        return
+        return True
     if _webview2_runtime_installed():
-        return
+        return True
     log = logging.getLogger("desktop")
     marker = user_base / "webview2_install_marker.json"
     if marker.exists():
         try:
             import json as _json
+
             data = _json.loads(marker.read_text(encoding="utf-8"))
             ts = float(data.get("ts", 0))
-            if time.time() - ts < 24 * 3600:  # less than 24h ago
+            if time.time() - ts < 24 * 3600 and _webview2_runtime_installed():
                 log.info("webview2_recent_attempt_skip")
-                return
+                return True
         except Exception:
             pass
 
@@ -498,12 +814,11 @@ def _install_webview2_if_missing(exe_base: Path, user_base: Path) -> None:
                     "Veuillez installer manuellement 'Microsoft Edge WebView2 Runtime' puis relancer l'application."
                 ),
             )
-            return
+            return False
 
-        # Progress window (Tkinter) -----------------------------------------------------------
         progress_close: callable | None = None
         progress_root = None  # type: ignore
-        progress_var = None   # will hold tk.IntVar
+        progress_var = None
         try:
             import tkinter as tk
             from tkinter import ttk
@@ -515,7 +830,6 @@ def _install_webview2_if_missing(exe_base: Path, user_base: Path) -> None:
                 root.resizable(False, False)
                 lbl = ttk.Label(root, text="Installation de WebView2 en cours...", anchor="center", wraplength=400)
                 lbl.pack(pady=12)
-                # Pseudo progress: determinate bar increments while polling; switches to full at success
                 local_var = tk.IntVar(value=0)
                 pb = ttk.Progressbar(root, mode="determinate", maximum=100, variable=local_var)
                 pb.pack(fill="x", padx=16, pady=8)
@@ -532,48 +846,46 @@ def _install_webview2_if_missing(exe_base: Path, user_base: Path) -> None:
                     _progress_root.destroy()
                 except Exception:
                     pass
+
             progress_close = _close
         except Exception:
             progress_close = None  # fallback to no progress window
 
-        # Run installer in thread
         import subprocess
         import threading as _th
 
-        done_flag = {"done": False}
+        done_flag = {"done": False, "returncode": None, "error": None}
 
         def _run_install():
             try:
-                subprocess.run([str(setup), "/silent", "/install"], check=False)
+                result = subprocess.run([str(setup), "/silent", "/install"], check=False)
+                done_flag["returncode"] = getattr(result, "returncode", None)
+            except Exception as exc:
+                done_flag["error"] = str(exc)
             finally:
                 done_flag["done"] = True
 
         t = _th.Thread(target=_run_install, daemon=True)
         t.start()
 
-        # Poll with UI updates up to 90s
         start = time.time()
         tick = 0
         while time.time() - start < 90:
             if _webview2_runtime_installed():
                 break
             if done_flag["done"]:
-                # If installer finished but runtime still not detected, wait a bit more
                 time.sleep(2)
                 if _webview2_runtime_installed():
                     break
-            # Keep UI responsive
             try:
                 if progress_root is not None:
                     tick += 1
-                    # Increment progress up to 95% while waiting
                     if progress_var is not None:
                         cur = progress_var.get()
                         if cur < 95:
                             progress_var.set(min(95, cur + 1))
                     progress_root.update()
             except Exception:
-                # Window probably closed by user; stop updating
                 progress_root = None
             time.sleep(0.4)
 
@@ -586,15 +898,53 @@ def _install_webview2_if_missing(exe_base: Path, user_base: Path) -> None:
             except Exception:
                 pass
 
-        # Record attempt time
         try:
             marker.write_text('{"ts": %f}' % time.time(), encoding="utf-8")
         except Exception:
             pass
 
-        log.info("webview2_install_complete present=%s", _webview2_runtime_installed())
+        installed = _webview2_runtime_installed()
+        if not installed:
+            if progress_close:
+                try:
+                    progress_close()
+                except Exception:
+                    pass
+            log.warning(
+                "webview2_silent_install_failed returncode=%s error=%s",
+                done_flag.get("returncode"),
+                done_flag.get("error"),
+            )
+            _message_box(
+                APP_DISPLAY_NAME,
+                (
+                    "L'installation automatique de WebView2 n'a pas abouti. "
+                    "Une fenêtre officielle Microsoft va s'ouvrir pour terminer l'installation."
+                ),
+            )
+            try:
+                subprocess.run([str(setup), "/install"], check=False)
+            except Exception:
+                log.exception("webview2_manual_install_failed_to_launch")
+            # Grace period for interactive install to finish
+            for _ in range(30):
+                if _webview2_runtime_installed():
+                    installed = True
+                    break
+                time.sleep(1.0)
+            if not installed:
+                try:
+                    import webbrowser
+
+                    webbrowser.open("https://go.microsoft.com/fwlink/p/?LinkId=2124703")
+                except Exception:
+                    log.warning("webview2_manual_download_open_failed", exc_info=True)
+
+        log.info("webview2_install_complete present=%s", installed)
+        return installed
     except Exception:
         log.exception("Failed to install WebView2")
+        return _webview2_runtime_installed()
 
 
 def main():
@@ -642,6 +992,11 @@ def main():
         log.warning("win_named_mutex_denied_exit pid=%s silent_exit", os.getpid())
         return
 
+    # Ensure Playwright uses a stable, user-writable browser cache directory from the very beginning
+    # (must be set before any Playwright import occurs; avoids defaulting to the ephemeral _MEIPASS path)
+    browsers_dir = user_base / "pw-browsers"
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(browsers_dir))
+
     # Desktop defaults (can be overridden by env)
     os.environ.setdefault("APP_HOST", "127.0.0.1")
     # Pick a free port if 8000 busy
@@ -683,15 +1038,19 @@ def main():
         missing = [str(p) for p in tmpl_candidates if not p.exists()]
         storage_state_path = os.environ.get("STORAGE_STATE")
         session_store_path = os.environ.get("SESSION_STORE_PATH")
+        # NOTE: Avoid passing keyword args like structlog; standard logging.Logger.info does not
+        # accept arbitrary kwargs and this previously raised a TypeError in packaged (windowed)
+        # mode, aborting early before the UI window appeared.
         log.info(
-            "startup_paths",
-            templates_existing=existing,
-            templates_missing=missing,
-            storage_state=storage_state_path,
-            storage_state_exists=bool(storage_state_path and Path(storage_state_path).exists()),
-            session_store=session_store_path,
-            session_store_exists=bool(session_store_path and Path(session_store_path).exists()),
-            cwd=str(Path.cwd()),
+            "startup_paths templates_existing=%s templates_missing=%s storage_state=%s storage_state_exists=%s "
+            "session_store=%s session_store_exists=%s cwd=%s",
+            existing,
+            missing,
+            storage_state_path,
+            bool(storage_state_path and Path(storage_state_path).exists()),
+            session_store_path,
+            bool(session_store_path and Path(session_store_path).exists()),
+            str(Path.cwd()),
         )
     except Exception:
         pass
@@ -710,8 +1069,21 @@ def main():
     except Exception as e:  # noqa: F841
         log.error("pywebview_import_failed early_diagnostic error=%s", e)
 
+    # 1. WebView2 prerequisite check BEFORE starting server/UI logic
     exe_base = Path(sys.executable).parent if getattr(sys, "frozen", False) else _project_root()
-    _install_webview2_if_missing(exe_base, user_base)
+    log.info("prereq_check_webview2 start")
+    if not _install_webview2_if_missing(exe_base, user_base):
+        log.error("webview2_missing_after_attempt_abort")
+        _message_box(
+            APP_DISPLAY_NAME,
+            (
+                "Microsoft Edge WebView2 Runtime est requis pour lancer Titan Scraper.\n"
+                "L'installation automatique n'a pas abouti ou le runtime reste introuvable.\n"
+                "Installez WebView2 puis relancez l'application."
+            ),
+        )
+        return
+    log.info("prereq_check_webview2 ok")
 
     # Preflight import of the FastAPI app. If a heavy dependency (numpy/pandas) fails, we still try to start;
     # the export route will handle missing pandas gracefully.
@@ -866,7 +1238,15 @@ def main():
             try:
                 ok = _wait_for_server(base_url, timeout=25.0)
                 if ok:
-                    window.load_url(base_url + "/")
+                    target_path = _determine_initial_view(base_url)
+                    # If login required, attempt background auto-login (desktop credentials.json)
+                    if target_path.startswith("/login"):
+                        try:
+                            if _attempt_auto_login_if_configured(base_url, user_base):
+                                target_path = "/"  # session now valid
+                        except Exception:  # pragma: no cover
+                            logging.getLogger("desktop").warning("auto_login_wrapper_failed", exc_info=True)
+                    window.load_url(base_url + target_path)
                     try:
                         window.restore()
                         window.show()
@@ -878,7 +1258,8 @@ def main():
                     window.load_html("<h2 style='font-family:system-ui'>Serveur lent à démarrer – nouvelle tentative...</h2>")
                     again = _wait_for_server(base_url, timeout=15.0)
                     if again:
-                        window.load_url(base_url + "/")
+                        target_path = _determine_initial_view(base_url)
+                        window.load_url(base_url + target_path)
             except Exception:
                 logging.getLogger("desktop").exception("post_start_load_failed")
 

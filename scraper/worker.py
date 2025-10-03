@@ -28,7 +28,7 @@ import re as _re  # local lightweight regex (avoid repeated imports)
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, TYPE_CHECKING
 
 import structlog
 from filelock import FileLock, Timeout
@@ -49,9 +49,17 @@ from .bootstrap import (
     SCRAPE_EXTRACTION_INCOMPLETE,
     SCRAPE_RECRUITMENT_POSTS,
     SCRAPE_FILTERED_POSTS,
+    LEGAL_POSTS_TOTAL,
+    LEGAL_POSTS_DISCARDED_TOTAL,
+    LEGAL_INTENT_CLASSIFICATIONS_TOTAL,
+    LEGAL_DAILY_CAP_REACHED,
     get_context,
 )
 from . import utils
+from .legal_classifier import classify_legal_post, LEGAL_ROLE_KEYWORDS
+
+if TYPE_CHECKING:
+    from .bootstrap import Settings
 try:
     from server.events import broadcast, EventType  # type: ignore
 except Exception:  # pragma: no cover
@@ -335,6 +343,12 @@ async def store_posts(ctx: AppContext, posts: list[Post]) -> None:
                         "collected_at": p.collected_at,
                         # Scores removed from persistence
                         "raw": p.raw or {},
+                        # Legal classification enriched fields (optional presence)
+                        "intent": getattr(p, "intent", None),
+                        "relevance_score": getattr(p, "relevance_score", None),
+                        "confidence": getattr(p, "confidence", None),
+                        "keywords_matched": getattr(p, "keywords_matched", None),
+                        "location_ok": getattr(p, "location_ok", None),
                     }
                     docs.append(d)
                 if docs:
@@ -348,7 +362,7 @@ async def store_posts(ctx: AppContext, posts: list[Post]) -> None:
     # SQLite fallback
     try:
         with SCRAPE_STEP_DURATION.labels(step="sqlite_insert").time():
-            _store_sqlite(ctx.settings.sqlite_path, posts)
+            _store_sqlite(ctx.settings, posts)
         SCRAPE_STORAGE_ATTEMPTS.labels("sqlite", "success").inc()
         logger.info("sqlite_inserted", path=ctx.settings.sqlite_path, inserted=len(posts))
         return
@@ -368,11 +382,12 @@ async def store_posts(ctx: AppContext, posts: list[Post]) -> None:
     raise StorageError("All storage backends failed")
 
 
-def _store_sqlite(path: str, posts: list[Post]) -> None:
+def _store_sqlite(settings: "Settings", posts: list[Post]) -> None:
+    path = settings.sqlite_path
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     with conn:
-        # If legacy table exists with score columns, migrate to new layout without them.
+        # Create table (legacy layout first); new classification columns added via ALTER below
         conn.execute(
             """CREATE TABLE IF NOT EXISTS posts (
             id TEXT PRIMARY KEY,
@@ -426,7 +441,23 @@ def _store_sqlite(path: str, posts: list[Post]) -> None:
                 pass
         except Exception:
             pass
-        rows = []
+            # Add new classification columns if missing (idempotent)
+            for new_col, ddl in [
+                ("intent", "ALTER TABLE posts ADD COLUMN intent TEXT"),
+                ("relevance_score", "ALTER TABLE posts ADD COLUMN relevance_score REAL"),
+                ("confidence", "ALTER TABLE posts ADD COLUMN confidence REAL"),
+                ("location_ok", "ALTER TABLE posts ADD COLUMN location_ok INTEGER"),
+                ("keywords_matched", "ALTER TABLE posts ADD COLUMN keywords_matched TEXT"),
+            ]:
+                if new_col not in cols:
+                    try:
+                        conn.execute(ddl)
+                        cols.append(new_col)
+                    except Exception:
+                        pass
+        except Exception:
+            cols = []  # pragma: no cover
+        rows: list[tuple] = []
         seen_hashes = set()
         for p in posts:
             try:
@@ -442,22 +473,60 @@ def _store_sqlite(path: str, posts: list[Post]) -> None:
                 chash = f"{chash}_{abs(hash(p.id))%997}"  # deterministic short salt
             if chash:
                 seen_hashes.add(chash)
-            rows.append((
-                p.id,
-                p.keyword,
-                p.author,
-                p.author_profile,
-                getattr(p, 'company', None),
-                getattr(p, 'permalink', None),
-                p.text,
-                p.language,
-                p.published_at,
-                p.collected_at,
-                json.dumps(p.raw, ensure_ascii=False),
-                s_norm,
-                chash,
-            ))
-        conn.executemany("INSERT OR IGNORE INTO posts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            # Extend raw JSON with legal classification fields for SQLite/CSV schemas
+            raw_enriched = dict(p.raw or {})
+            if getattr(p, 'intent', None):
+                raw_enriched.setdefault('intent', p.intent)
+            if getattr(p, 'relevance_score', None) is not None:
+                raw_enriched.setdefault('relevance_score', p.relevance_score)
+            if getattr(p, 'confidence', None) is not None:
+                raw_enriched.setdefault('confidence', p.confidence)
+            if getattr(p, 'keywords_matched', None):
+                raw_enriched.setdefault('keywords_matched', p.keywords_matched)
+            if getattr(p, 'location_ok', None) is not None:
+                raw_enriched.setdefault('location_ok', p.location_ok)
+            # Prepare dynamic column insertion: ensure backward compatibility (works even if new columns absent)
+            base_values = {
+                "id": p.id,
+                "keyword": p.keyword,
+                "author": p.author,
+                "author_profile": p.author_profile,
+                "company": getattr(p, 'company', None),
+                "permalink": getattr(p, 'permalink', None),
+                "text": p.text,
+                "language": p.language,
+                "published_at": p.published_at,
+                "collected_at": p.collected_at,
+                "raw_json": json.dumps(raw_enriched, ensure_ascii=False),
+                "search_norm": s_norm,
+                "content_hash": chash,
+            }
+            # Optional classification columns if table has them
+            if 'intent' in cols:
+                base_values['intent'] = getattr(p, 'intent', None)
+            if 'relevance_score' in cols:
+                base_values['relevance_score'] = getattr(p, 'relevance_score', None)
+            if 'confidence' in cols:
+                base_values['confidence'] = getattr(p, 'confidence', None)
+            if 'location_ok' in cols:
+                loc_ok = getattr(p, 'location_ok', None)
+                base_values['location_ok'] = int(loc_ok) if isinstance(loc_ok, bool) else (loc_ok if loc_ok is not None else None)
+            if 'keywords_matched' in cols:
+                km = getattr(p, 'keywords_matched', None)
+                if isinstance(km, (list, tuple)):
+                    try:
+                        base_values['keywords_matched'] = json.dumps(list(km), ensure_ascii=False)
+                    except Exception:
+                        base_values['keywords_matched'] = None
+                elif isinstance(km, str):
+                    base_values['keywords_matched'] = km
+            rows.append(base_values)
+        if rows:
+            # Build statement per current columns subset present
+            col_names = list(rows[0].keys())
+            placeholders = ",".join(["?"] * len(col_names))
+            sql = f"INSERT OR IGNORE INTO posts ({','.join(col_names)}) VALUES ({placeholders})"
+            conn.executemany(sql, [tuple(r[c] for c in col_names) for r in rows])
     # Auto-favorite opportunity posts (unified predicate utils.is_opportunity)
         try:
             conn.execute("""CREATE TABLE IF NOT EXISTS post_flags (
@@ -469,23 +538,24 @@ def _store_sqlite(path: str, posts: list[Post]) -> None:
             )""")
         except Exception:
             pass
-        try:
-            from datetime import datetime as _dt, timezone as _tz
-            now_iso = _dt.now(_tz.utc).isoformat()
-            fav_rows = []
-            for p in posts:
-                try:
-                    threshold = 0.05
-                    if p.raw and isinstance(p.raw, dict):  # type: ignore[truthy-bool]
-                        threshold = p.raw.get('recruitment_threshold', threshold)  # type: ignore[arg-type]
-                    if utils.is_opportunity(p.text, threshold=threshold):
-                        fav_rows.append((p.id, 1, 0, now_iso, None))
-                except Exception:
-                    continue
-            if fav_rows:
-                conn.executemany("INSERT INTO post_flags(post_id,is_favorite,is_deleted,favorite_at,deleted_at) VALUES(?,?,?,?,?) ON CONFLICT(post_id) DO UPDATE SET is_favorite=excluded.is_favorite, favorite_at=excluded.favorite_at WHERE excluded.is_favorite=1", fav_rows)
-        except Exception:
-            pass
+        if getattr(settings, "auto_favorite_opportunities", False):
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                now_iso = _dt.now(_tz.utc).isoformat()
+                fav_rows = []
+                for p in posts:
+                    try:
+                        threshold = getattr(settings, "recruitment_signal_threshold", 0.05)
+                        if p.raw and isinstance(p.raw, dict):  # type: ignore[truthy-bool]
+                            threshold = p.raw.get('recruitment_threshold', threshold)  # type: ignore[arg-type]
+                        if utils.is_opportunity(p.text, threshold=threshold):
+                            fav_rows.append((p.id, 1, 0, now_iso, None))
+                    except Exception:
+                        continue
+                if fav_rows:
+                    conn.executemany("INSERT INTO post_flags(post_id,is_favorite,is_deleted,favorite_at,deleted_at) VALUES(?,?,?,?,?) ON CONFLICT(post_id) DO UPDATE SET is_favorite=excluded.is_favorite, favorite_at=excluded.favorite_at WHERE excluded.is_favorite=1", fav_rows)
+            except Exception:
+                pass
 
 
 def _store_csv(csv_path: Path, posts: list[Post]) -> None:
@@ -1249,7 +1319,66 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                 if key not in seen_keys:
                     seen_keys.add(key)
                     deduped.append(p)
-            all_new = deduped
+            # Apply legal classification & quota policy
+            classified: list[Post] = []
+            # Build dynamic legal keywords list (override/extend if provided)
+            provided = []
+            try:
+                if ctx.settings.legal_keywords_override:
+                    provided = [k.strip().lower() for k in ctx.settings.legal_keywords_override.split(';') if k.strip()]
+            except Exception:
+                provided = []
+            # simple cap tracking per UTC day
+            from datetime import date
+            today = date.today().isoformat()
+            if getattr(ctx, 'legal_daily_date', None) != today:
+                setattr(ctx, 'legal_daily_date', today)
+                setattr(ctx, 'legal_daily_count', 0)
+            daily_count = getattr(ctx, 'legal_daily_count', 0)
+            cap = ctx.settings.legal_daily_post_cap
+            for p in deduped:
+                # Only classify if French (existing filters may already narrow) – rely on stored language
+                lc = classify_legal_post(p.text, language=p.language, intent_threshold=ctx.settings.legal_intent_threshold)
+                LEGAL_INTENT_CLASSIFICATIONS_TOTAL.labels(lc.intent).inc()
+                if lc.intent != 'recherche_profil':
+                    LEGAL_POSTS_DISCARDED_TOTAL.labels('intent').inc()
+                    # Track daily discarded by intent
+                    try:
+                        ctx.legal_daily_discard_intent = getattr(ctx, 'legal_daily_discard_intent', 0) + 1  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                    continue
+                if not lc.location_ok:
+                    LEGAL_POSTS_DISCARDED_TOTAL.labels('location').inc()
+                    try:
+                        ctx.legal_daily_discard_location = getattr(ctx, 'legal_daily_discard_location', 0) + 1  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                    continue
+                # Enforce daily cap
+                if daily_count >= cap:
+                    LEGAL_DAILY_CAP_REACHED.inc()
+                    break
+                # Attach classification fields
+                # Company duplicate reduction: if company repeats twice like 'ACME ACME' keep single
+                if getattr(p, 'company', None):
+                    import re as _re_local
+                    comp = p.company.strip()
+                    toks = comp.split()
+                    if len(toks) % 2 == 0 and toks[:len(toks)//2] == toks[len(toks)//2:]:
+                        p.company = " ".join(toks[:len(toks)//2])
+                    # Collapse consecutive duplicate words
+                    p.company = _re_local.sub(r"\b(\w+)(\s+\1)+\b", r"\1", p.company, flags=_re_local.IGNORECASE)
+                setattr(p, 'intent', lc.intent)
+                setattr(p, 'relevance_score', lc.relevance_score)
+                setattr(p, 'confidence', lc.confidence)
+                setattr(p, 'keywords_matched', lc.keywords_matched)
+                setattr(p, 'location_ok', lc.location_ok)
+                classified.append(p)
+                daily_count += 1
+            setattr(ctx, 'legal_daily_count', daily_count)
+            LEGAL_POSTS_TOTAL.inc(len(classified))
+            all_new = classified
             # Count unknown authors
             for p in all_new:
                 if p.author == "Unknown":

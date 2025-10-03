@@ -49,10 +49,38 @@ If login to LinkedIn is required, use the in‑app “Login” page. Artifacts a
 
 ### Créer un installeur MSI (Windows)
 
-- Installer WiX Toolset v3 (ajouter `candle.exe`, `light.exe`, `heat.exe` au PATH).
-- Construire l’app (ci‑dessus), puis:
-  - `pwsh ./scripts/build_msi_folder.ps1 -Version 1.0.0`
-- Sortie: `dist/msi/TitanScraper-1.0.0.msi`
+Deux scénarios :
+
+1. MSI simple (emballe l'exécutable one‑file ou one‑folder minimal)
+2. MSI "folder" (harvest complet du dossier PyInstaller avec raccourcis Desktop + Menu Démarrer)
+
+Prérequis : Installer WiX Toolset v3 et ajouter `candle.exe`, `light.exe`, `heat.exe` au PATH.
+
+#### 1. MSI simple (one‑file)
+
+```
+pwsh ./scripts/build_msi.ps1 -Name 'TitanScraper' -Manufacturer 'Pierre LOGRE' -Version '1.0.0'
+```
+Sortie: `dist/msi/TitanScraper-1.0.0.msi`
+
+#### 2. MSI folder (recommandé, avec raccourcis)
+
+Construire d'abord le dossier PyInstaller (one‑folder) :
+```
+pwsh ./scripts/build_desktop_exe.ps1
+```
+Puis générer l'installeur avec les métadonnées demandées :
+```
+pwsh ./scripts/build_desktop_msi.ps1 -Name 'TitanScraper' -DisplayName 'Titan Scraper' -Manufacturer 'Pierre LOGRE' -Version '1.0.0'
+```
+Sortie : `dist/msi/TitanScraper-folder-1.0.0.msi`
+
+Le script ajoute automatiquement :
+- Raccourci Menu Démarrer (Current User)
+- Raccourci Bureau
+- Lancement optionnel post‑install
+
+Notes sur les warnings ICE91 (LGHT1076) : ils indiquent que certains fichiers sont installés dans un dossier utilisateur qui ne varie pas selon ALLUSERS. Dans notre cas (installation per‑user par défaut) c'est bénin. Pour une installation machine‑wide propre, il faudrait déplacer les données dynamiques (logs, state) vers `%PROGRAMDATA%` ou `%LOCALAPPDATA%` et/ou ajuster les composants WiX.
 
 ## Build — macOS
 
@@ -83,6 +111,58 @@ You can add a workflow to build artifacts per platform. Example skeleton:
 - We exclude `.venv`, tests, caches from the bundle.
 - The desktop wrapper auto‑selects a free localhost port if `8000` is busy.
 - The first run may download a Playwright browser if not already installed.
+
+## Auto‑login (Windows uniquement pour l'instant)
+
+Le wrapper desktop peut effectuer automatiquement la connexion LinkedIn si des identifiants chiffrés sont présents.
+
+### Fichier `credentials.json`
+
+Chemin : `%LOCALAPPDATA%/TitanScraper/credentials.json`
+
+Format :
+```jsonc
+{
+  "email": "user@example.com",
+  "password_protected": "<base64 DPAPI>",
+  "auto_login": true,
+  "version": 1
+}
+```
+`password_protected` contient le mot de passe chiffré via DPAPI (scopé à l'utilisateur Windows courant). Le fichier n'est donc déchiffrable que sur la même session utilisateur.
+
+Si `auto_login` est `true` et que la page cible initiale est `/login`, l'application tente une requête POST `POST /api/session/login` avec les identifiants. En cas de succès, la fenêtre charge directement le dashboard `/`.
+
+### Génération du fichier (script helper)
+
+Un script d'aide est fourni :
+```
+pwsh -File scripts/store_credentials.ps1   # (si vous ajoutez un wrapper PowerShell) 
+python scripts/store_credentials.py        # version Python directe
+```
+Le script Python interactif :
+- Demande l'email
+- Demande le mot de passe (caché)
+- Produit / met à jour `credentials.json` avec le mot de passe protégé.
+
+### Sécurité
+
+- DPAPI (CryptProtectData) = chiffrement lié au profil utilisateur (pas multi‑machine).
+- Tous les processus du même utilisateur peuvent déchiffrer ; ne stockez pas d'identifiants sensibles sur une machine partagée.
+- Pour révoquer : supprimer le fichier `credentials.json`.
+
+### Désactivation
+
+Mettre `auto_login` à `false` ou supprimer le fichier.
+
+## Répertoires et données utilisateur
+
+Nouveaux répertoires utilisés :
+```
+%LOCALAPPDATA%/TitanScraper/logs/              (logs rotatifs)
+%LOCALAPPDATA%/TitanScraper/credentials.json   (auto‑login)
+```
+Les données de session Playwright (`storage_state.json`) restent près de l'exécutable si générées côté serveur, sinon locales.
 
 ## Configuration and persistence
 

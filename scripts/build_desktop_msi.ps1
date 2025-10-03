@@ -9,7 +9,8 @@ Param(
   [switch]$Aggressive, # active des exclusions plus larges (playwright lib js, scripts reinstall multi-OS, pw-browsers, etc.)
   [switch]$SkipPrune, # diagnostique: ne retire aucun fichier (pour vérifier heat + existence)
   [switch]$KeepTzData, # si défini, on conserve tzdata/pytz zoneinfo
-  [switch]$PerMachine # si défini, installe sous ProgramFiles (nécessite élévation). Par défaut: per-user (LocalAppData)
+  [switch]$PerMachine, # si défini, installe sous ProgramFiles (nécessite élévation). Par défaut: per-user (LocalAppData)
+  [switch]$NoEmbedCab # si défini, laisse le/les cab(s) externes (cab1.cab). Par défaut on EMBED pour éviter l'erreur fichier manquant.
 )
 
 $ErrorActionPreference = 'Stop'
@@ -121,13 +122,19 @@ if($PerMachine){
   $installScope = 'perUser'
   $parentFolderId = 'LocalAppDataFolder'
 }
+if($NoEmbedCab){
+  $embedAttr = ''
+} else {
+  $embedAttr = " EmbedCab='yes'"
+}
  $productWxs = @"
 <?xml version='1.0' encoding='UTF-8'?>
 <Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
   <Product Id='*' Name='$DisplayName' Language='1036' Version='$Version' Manufacturer='$Manufacturer' UpgradeCode='{9B5C7D24-38B2-4D4F-A0E5-4AA8F0F4B6C2}'>
     <Package InstallerVersion='500' Compressed='yes' InstallScope='$installScope' />
     <MajorUpgrade DowngradeErrorMessage='Une version plus recente est deja installee.' />
-    <MediaTemplate />
+    <!-- MediaTemplate avec EmbedCab par défaut pour éviter les erreurs "cab1.cab introuvable" lors d'un transfert seul du MSI. -->
+    <MediaTemplate$embedAttr />
     <Property Id='ARPNOREPAIR' Value='1' />
     <Property Id='ARPNOMODIFY' Value='1' />
     <Directory Id='TARGETDIR' Name='SourceDir'>
