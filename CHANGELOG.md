@@ -8,6 +8,21 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Added
 - (placeholder) Future enhancements will be listed here.
 
+## [1.3.3] - 2025-10-03
+### Added
+- Archive portable Windows (`TitanScraper-<version>-portable.zip`).
+- Génération automatique des notes de release depuis le CHANGELOG.
+- Suffixe architecture (ex: `-x64`) ajouté au nom du MSI.
+
+### Changed
+- Workflow release : création ZIP, extraction section CHANGELOG avec awk avant publication.
+
+### Security / Signing
+- Signature conditionnelle EXE/MSI si secrets `WINDOWS_CERT_PFX` (Base64) + `WINDOWS_CERT_PASSWORD` fournis.
+
+### Removed
+- Étape d’upload manifest dupliquée (nettoyage).
+
 ## [1.3.2] - 2025-10-03
 ### Fixed
 - Release assets manquants (seulement code source) : correction des chemins d'artefacts (`dist/TitanScraper/**`, `dist/*.dmg`).
@@ -68,7 +83,8 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Overview
 Initial public-internal MVP iterations: multi-backend storage (Mongo/SQLite/CSV), recruitment signal metric, basic dashboard, Prometheus metrics, fallback logic, mock mode, packaging groundwork.
 
-[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.2...HEAD
+[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.3...HEAD
+[1.3.3]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.3
 [1.3.2]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.2
 [1.3.1]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.1
 [1.3.0]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.0

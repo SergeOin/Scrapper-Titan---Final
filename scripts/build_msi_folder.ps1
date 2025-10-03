@@ -4,6 +4,7 @@ Param(
   [string]$Manufacturer = 'Titan Partners',
   [string]$Version = '',
   [string]$ExeName = 'TitanScraper.exe',
+  [switch]$IncludeArch = $true,
   [switch]$Sign = $false,
   [string]$CertPfxPath = '',
   [string]$CertPfxPassword = '',
@@ -128,7 +129,10 @@ if($LASTEXITCODE -ne 0){ throw "candle.exe (AppFiles) failed ($LASTEXITCODE)" }
 & $candle.Path -dAppDir="$SourceDir" -o (Join-Path $buildDir 'Product.wixobj') $outWxs
 if($LASTEXITCODE -ne 0){ throw "candle.exe (Product) failed ($LASTEXITCODE)" }
 
-${msiPath} = Join-Path $distDir ("{0}-{1}.msi" -f $Name,$Version)
+$arch = (Get-CimInstance Win32_OperatingSystem | Select-Object -ExpandProperty OSArchitecture | ForEach-Object { if($_ -match '64'){ 'x64' } elseif($_ -match '32'){ 'x86' } else { 'amd64' } })
+if(-not $IncludeArch){ $arch = $null }
+$msiFile = if($arch){ "{0}-{1}-{2}.msi" -f $Name,$Version,$arch } else { "{0}-{1}.msi" -f $Name,$Version }
+${msiPath} = Join-Path $distDir $msiFile
 
 # Sign the EXE prior to MSI linking (optional)
 Invoke-CodeSign (Join-Path $SourceDir $ExeName)

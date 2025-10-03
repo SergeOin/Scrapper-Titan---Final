@@ -35,8 +35,21 @@ jobs:
           }
           # Build desktop app (PyInstaller)
           pwsh ./build_windows.ps1
-          # Build MSI from dist/TitanScraper
-          pwsh ./scripts/build_msi_folder.ps1 -Version $version -Name TitanScraper -ExeName TitanScraper.exe
+          # Optional code signing setup
+          if($env:WINDOWS_CERT_PFX -and $env:WINDOWS_CERT_PASSWORD){
+            Write-Host "Code signing secrets detected: will sign binaries." -ForegroundColor Cyan
+            $pfxPath = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+            $signArgs = "-Sign -CertPfxPath `"$pfxPath`" -CertPfxPassword `"$env:WINDOWS_CERT_PASSWORD`""
+          } else { $signArgs = "" }
+          # Build MSI from dist/TitanScraper with architecture suffix
+          $cmd = ".\scripts\build_msi_folder.ps1 -Version $version -Name TitanScraper -ExeName TitanScraper.exe"
+          if($signArgs){ $cmd += " $signArgs" }
+          pwsh -NoProfile -ExecutionPolicy Bypass -Command $cmd
+          # Create portable ZIP
+          if(Test-Path dist/TitanScraper){
+            Compress-Archive -Path dist/TitanScraper/* -DestinationPath build/TitanScraper-$version-portable.zip -Force
+          }
           Get-ChildItem build -Recurse | Write-Host
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -45,6 +58,7 @@ jobs:
           path: |
             dist/TitanScraper/**
             build/msi/*.msi
+            build/*-portable.zip
   build-macos:
     runs-on: macos-latest
     steps:
@@ -155,10 +169,23 @@ jobs:
           echo "Binaire Windows (dossier dist) :" >> artifacts/DOWNLOADS.txt
           ls -1 artifacts/windows-binaries/dist/TitanScraper/* 2>/dev/null >> artifacts/DOWNLOADS.txt || true
           echo "" >> artifacts/DOWNLOADS.txt
+          echo "Portable ZIP :" >> artifacts/DOWNLOADS.txt
+          ls -1 artifacts/windows-binaries/build/*-portable.zip 2>/dev/null >> artifacts/DOWNLOADS.txt || true
+          echo "" >> artifacts/DOWNLOADS.txt
           echo "DMG macOS :" >> artifacts/DOWNLOADS.txt
           ls -1 artifacts/macos-binaries/dist/*.dmg 2>/dev/null >> artifacts/DOWNLOADS.txt || true
           echo "" >> artifacts/DOWNLOADS.txt
           echo "SHA256 checksums dans checksums.txt" >> artifacts/DOWNLOADS.txt
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="$version" 'BEGIN{found=0} /^## \[/ { if(found) exit } { if(index($0, "["ver"]")>0) found=1 } { if(found) print }' CHANGELOG.md > extracted_changelog.md || true
+          echo '--- extracted changelog ---'
+          cat extracted_changelog.md || true
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          cat extracted_changelog.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -166,6 +193,7 @@ jobs:
           name: Release ${{ github.ref_name }}
           draft: false
           prerelease: false
+          body: ${{ steps.changelog.outputs.body }}
           files: |
             artifacts/windows-binaries/build/msi/*.msi
             artifacts/windows-binaries/dist/TitanScraper/**
@@ -174,8 +202,3 @@ jobs:
             artifacts/DOWNLOADS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Upload manifest artifact (duplicate copy)
-        uses: actions/upload-artifact@v4
-        with:
-          name: downloads-manifest
-          path: artifacts/DOWNLOADS.txt
