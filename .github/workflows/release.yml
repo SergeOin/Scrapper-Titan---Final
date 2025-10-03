@@ -50,7 +50,10 @@ jobs:
           if(Test-Path dist/TitanScraper){
             Compress-Archive -Path dist/TitanScraper/* -DestinationPath build/TitanScraper-$version-portable.zip -Force
           }
-          Get-ChildItem build -Recurse | Write-Host
+          Write-Host "--- BUILD DIR CONTENTS ---"
+          Get-ChildItem build -Recurse | ForEach-Object { Write-Host $_.FullName }
+          Write-Host "--- DIST DIR CONTENTS ---"
+          if(Test-Path dist){ Get-ChildItem dist -Recurse | ForEach-Object { Write-Host $_.FullName } } else { Write-Host 'dist missing' }
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -60,6 +63,8 @@ jobs:
             dist/msi/*.msi
             build/msi/*.msi # (fallback if script output path changes)
             build/*-portable.zip
+            dist/*.exe
+            dist/**/*.dll
   build-macos:
     runs-on: macos-latest
     steps:
@@ -160,6 +165,14 @@ jobs:
           find artifacts -type f \( -name '*.msi' -o -name '*.dmg' -o -name '*.exe' \) -print0 | xargs -0 -I{} sh -c 'sha256sum "{}" >> checksum/checksums.txt'
           sort checksum/checksums.txt -o checksum/checksums.txt
           echo "--- checksums.txt ---" && cat checksum/checksums.txt
+      - name: Generate per-file sha256 sidecar files
+        run: |
+          echo "Generating individual .sha256 files"
+          find artifacts -type f \( -name '*.msi' -o -name '*-portable.zip' -o -name '*.dmg' -o -name '*.exe' \) -print0 | while IFS= read -r -d '' f; do
+            sha256sum "$f" > "$f.sha256" || true
+          done
+          echo "Listing generated sidecar hashes:" || true
+          find artifacts -type f -name '*.sha256' -maxdepth 6 | sed 's|^|HASH: |'
       - name: Upload checksum artifact
         uses: actions/upload-artifact@v4
         with:
@@ -209,5 +222,10 @@ jobs:
             artifacts/macos-binaries/dist/*.dmg
             checksum/checksums.txt
             artifacts/DOWNLOADS.txt
+            artifacts/**/*.sha256
+            artifacts/windows-binaries/dist/**/*.exe
+            artifacts/windows-binaries/dist/**/*.dll
+            artifacts/windows-binaries/**/*.zip
+            artifacts/macos-binaries/dist/**/*.app
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
