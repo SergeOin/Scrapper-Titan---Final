@@ -8,6 +8,17 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Added
 - (placeholder) Future enhancements will be listed here.
 
+## [1.3.2] - 2025-10-03
+### Fixed
+- Release assets manquants (seulement code source) : correction des chemins d'artefacts (`dist/TitanScraper/**`, `dist/*.dmg`).
+- Remplacement des références obsolètes `LinkedInScraper` et spec précédente par processus build unifié (scripts `build_windows.ps1`, `build_mac.sh`, `scripts/build_dmg.sh`).
+
+### Changed
+- MSI construit via `build_msi_folder.ps1` après PyInstaller au lieu d'un script packaging externe.
+
+### Added
+- Inclusion DMG et MSI cohérente avec nom produit `TitanScraper`.
+
 ## [1.3.1] - 2025-10-03
 ### Added
 - Manifest `DOWNLOADS.txt` automatique listant MSI, DMG et binaires Windows dans la Release.
@@ -57,6 +68,7 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Overview
 Initial public-internal MVP iterations: multi-backend storage (Mongo/SQLite/CSV), recruitment signal metric, basic dashboard, Prometheus metrics, fallback logic, mock mode, packaging groundwork.
 
-[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.2...HEAD
+[1.3.2]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.2
 [1.3.1]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.1
 [1.3.0]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.0

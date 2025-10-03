@@ -33,14 +33,17 @@ jobs:
           if (!(Test-Path build/icon.ico) -and (Test-Path 'Titan Scraper logo.png')) {
             py -3 scripts/util_make_icon.py -i 'Titan Scraper logo.png' -o build/icon.ico
           }
-          pwsh scripts/packaging/build_installer_windows.ps1 -Version $version -PyInstallerSpec linkedin_scraper.spec -ProductName LinkedInScraper
+          # Build desktop app (PyInstaller)
+          pwsh ./build_windows.ps1
+          # Build MSI from dist/TitanScraper
+          pwsh ./scripts/build_msi_folder.ps1 -Version $version -Name TitanScraper -ExeName TitanScraper.exe
           Get-ChildItem build -Recurse | Write-Host
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-binaries
           path: |
-            dist/LinkedInScraper/**
+            dist/TitanScraper/**
             build/msi/*.msi
   build-macos:
     runs-on: macos-latest
@@ -60,9 +63,11 @@ jobs:
           python-version: '3.11'
       - name: Build app + DMG
         run: |
-          chmod +x scripts/packaging/macos/build_dmg.sh
-          VERSION="${GITHUB_REF_NAME#v}" SPEC_FILE=linkedin_scraper.spec bash scripts/packaging/macos/build_dmg.sh
-          ls -R build || true
+          chmod +x build_mac.sh
+          ./build_mac.sh
+          chmod +x scripts/build_dmg.sh
+          VERSION="${GITHUB_REF_NAME#v}" scripts/build_dmg.sh "${GITHUB_REF_NAME#v}" || true
+          ls -R dist || true
       # Signing / Notarization template (commented to avoid secret lint issues until secrets are configured)
       # To enable: replace SECRET_* placeholders with real ${{ secrets.* }} references and uncomment blocks.
       # - name: Import signing certificate
@@ -117,8 +122,8 @@ jobs:
         with:
           name: macos-binaries
           path: |
-            dist/LinkedInScraper/**
-            build/*.dmg
+            dist/TitanScraper/**
+            dist/*.dmg
   create-release:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
@@ -142,16 +147,16 @@ jobs:
           path: checksum/checksums.txt
       - name: Generate download manifest
         run: |
-          echo "TitanScraper / LinkedInScraper - Assets ${GITHUB_REF_NAME}" > artifacts/DOWNLOADS.txt
+          echo "TitanScraper - Assets ${GITHUB_REF_NAME}" > artifacts/DOWNLOADS.txt
           echo "" >> artifacts/DOWNLOADS.txt
           echo "MSI Windows :" >> artifacts/DOWNLOADS.txt
           ls -1 artifacts/windows-binaries/build/msi/*.msi 2>/dev/null >> artifacts/DOWNLOADS.txt || true
           echo "" >> artifacts/DOWNLOADS.txt
           echo "Binaire Windows (dossier dist) :" >> artifacts/DOWNLOADS.txt
-          ls -1 artifacts/windows-binaries/dist/LinkedInScraper/* 2>/dev/null >> artifacts/DOWNLOADS.txt || true
+          ls -1 artifacts/windows-binaries/dist/TitanScraper/* 2>/dev/null >> artifacts/DOWNLOADS.txt || true
           echo "" >> artifacts/DOWNLOADS.txt
           echo "DMG macOS :" >> artifacts/DOWNLOADS.txt
-          ls -1 artifacts/macos-binaries/build/*.dmg 2>/dev/null >> artifacts/DOWNLOADS.txt || true
+          ls -1 artifacts/macos-binaries/dist/*.dmg 2>/dev/null >> artifacts/DOWNLOADS.txt || true
           echo "" >> artifacts/DOWNLOADS.txt
           echo "SHA256 checksums dans checksums.txt" >> artifacts/DOWNLOADS.txt
       - name: Create GitHub Release
@@ -163,8 +168,8 @@ jobs:
           prerelease: false
           files: |
             artifacts/windows-binaries/build/msi/*.msi
-            artifacts/windows-binaries/dist/LinkedInScraper/**
-            artifacts/macos-binaries/build/*.dmg
+            artifacts/windows-binaries/dist/TitanScraper/**
+            artifacts/macos-binaries/dist/*.dmg
             checksum/checksums.txt
             artifacts/DOWNLOADS.txt
         env:
