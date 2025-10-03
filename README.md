@@ -1,5 +1,7 @@
 # LinkedIn Scraper & Minimal Dashboard
 
+[![CI](https://github.com/SergeOin/Scrapper-Titan---Final/actions/workflows/ci.yml/badge.svg)](https://github.com/SergeOin/Scrapper-Titan---Final/actions/workflows/ci.yml) [![Coverage](https://img.shields.io/badge/coverage-placeholder-lightgrey)](./)
+
 > Usage interne uniquement. Respect strict des CGU LinkedIn. Ce projet fournit un worker de scraping découplé d'un serveur FastAPI avec un mini dashboard pour visualiser les posts collectés et déclencher un nouveau scrape de façon contrôlée.
 
 ---
@@ -634,4 +636,48 @@ Paramètres :
 RATE_LIMIT_BUCKET_SIZE=120      # Capacité maximale (burst autorisé)
 RATE_LIMIT_REFILL_PER_SEC=2.0   # Débit de régénération
 ```
+
+---
+## 🔧 Classifier Tuning (Legal Intent)
+Le classifieur heuristique privilégie la précision (faible taux de faux positifs). Pour augmenter le rappel :
+
+### Paramètres rapides
+| Levier | Effet | Recommandation |
+|--------|-------|----------------|
+| `LEGAL_INTENT_THRESHOLD` | Abaisse le seuil d'acceptation | Descendre par paliers de 0.05 (min conseillé 0.20) |
+| `FILTER_LEGAL_DOMAIN_ONLY` | Pré-filtre hors domaine | Désactiver (`0`) si couverture multi-domaine souhaitée |
+| `RECRUITMENT_SIGNAL_THRESHOLD` | Influence posts retenus avant classification (filtre opportunités) | Synchroniser avec intention si trop strict |
+
+### Stratégies d'amélioration rappel
+1. Ajouter des expressions explicites dans les phrases de recrutement (liste `RECRUITMENT_PHRASES`) – pull request ciblée.
+2. Étendre `LEGAL_ROLE_KEYWORDS` pour nouveaux intitulés rares (ex: "compliance officer", "juriste propriété intellectuelle").
+3. Introduire un mode "exploratoire" : activer une variable `LEGAL_EXPLORATORY_MODE=1` (à implémenter) qui :
+   - Abaisse le seuil de 0.05 automatiquement sur les 10 premiers posts rejetés.
+   - Loggue chaque acceptation marginale avec un tag `exploratory_accept`.
+4. Collecter un corpus étiqueté interne (≥300 exemples) pour calibrer un modèle léger (logreg TF-IDF) – future optional.
+
+### Indicateurs à surveiller
+| Métrique | Interprétation | Action si anomalie |
+|----------|----------------|--------------------|
+| `legal_posts_discarded_total{reason="intent"}` / `legal_intent_classifications_total` | Taux de rejet intent élevé | Vérifier faux négatifs, ajuster seuil |
+| `legal_daily_cap_reached_total` | Cap atteint tôt dans la journée | Augmenter cap ou restreindre mots-clés |
+| `rejection_rate` (API stats) > 0.7 | Classifieur trop strict | Ajouter phrases / baisser seuil |
+
+### Procédure de tuning contrôlé
+1. Baisser `LEGAL_INTENT_THRESHOLD` de 0.35 → 0.30 sur un run test (mock ou dataset capturé).
+2. Comparer : nombre d'acceptations + spot-check manuel (échantillon 20 posts nouveaux).
+3. Si <10% d'acceptations semblent des faux positifs, conserver ; sinon revenir et enrichir phrases clés.
+4. Documenter la décision dans `CHANGELOG.md`.
+
+### Future Idea: Adaptive Threshold
+Pseudocode (non implémenté) :
+```python
+if last_50_decisions and rejection_rate_last_50 > 0.85:
+    threshold = max(base_threshold - 0.05, 0.20)
+else:
+    threshold = base_threshold
+```
+Avantage: augmente rappel lors de phases de sous-couverture sans relâcher durablement la précision.
+
+---
 
