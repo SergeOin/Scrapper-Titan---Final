@@ -9,6 +9,20 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - (placeholder) Future enhancements will be listed here.
 
 ## [1.3.4] - 2025-10-03
+## [1.3.5] - 2025-10-03
+### Added
+- Sidecar `.sha256` par fichier (MSI / DMG / EXE / ZIP portable) + maintien `checksums.txt` global.
+- Diagnostics détaillés: listing récursif `build` & `dist` côté job Windows, tree artefacts côté job release.
+
+### Changed
+- Globs d'assets élargis (exe, dll, app, zip) pour réduire risques de non-attachement.
+
+### Fixed
+- Problème persistant d'assets manquants (élargissement patterns + visibilité pré-publication).
+
+### Internal
+- Prépare prochaine étape: signature macOS & post-release validation.
+
 ### Fixed
 - Release missing MSI/ZIP assets: corrected artifact globs to include `dist/msi/*.msi` (actual output path) plus portable ZIP in publish step.
 
@@ -94,7 +108,8 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Overview
 Initial public-internal MVP iterations: multi-backend storage (Mongo/SQLite/CSV), recruitment signal metric, basic dashboard, Prometheus metrics, fallback logic, mock mode, packaging groundwork.
 
-[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.4...HEAD
+[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.5...HEAD
+[1.3.5]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.5
 [1.3.4]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.4
 [1.3.3]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.3
 [1.3.2]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.2
