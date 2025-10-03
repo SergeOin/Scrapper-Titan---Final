@@ -56,10 +56,27 @@ jobs:
         run: |
           pytest -q --maxfail=1 --disable-warnings
 
-      - name: Coverage (upload artifact)
+      - name: Coverage (generate reports)
         run: |
-          pytest --cov=scraper --cov=server --cov-report=xml:coverage.xml || true
-        continue-on-error: true
+          set +e
+          pytest --cov=scraper --cov=server --cov-report=xml:coverage.xml --cov-report=term-missing
+          set -e
+          python -c "import re,pathlib; p=pathlib.Path('coverage.xml');\nimport sys;\n\n\nprint('Generating coverage badge');\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n txt=p.read_text() if p.exists() else '';\n m=re.search(r'line-rate=\"([0-9.]+)\"', txt);\n\n\n (pathlib.Path('coverage_badge.txt').write_text(f'COVERAGE={float(m.group(1))*100:.1f}%\n') if m else None)" || true
+
+      - name: Upload coverage fallback badge artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+            name: coverage-badge-fallback
+            path: coverage_badge.txt
+
+      - name: Upload coverage to Codecov (if token configured)
+        if: success() || failure()
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+          verbose: false
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4

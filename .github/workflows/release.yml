@@ -127,6 +127,19 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Generate checksums
+        run: |
+          set -e
+          mkdir -p checksum
+          echo "Generating SHA256 sums for release assets" 
+          find artifacts -type f \( -name '*.msi' -o -name '*.dmg' -o -name '*.exe' \) -print0 | xargs -0 -I{} sh -c 'sha256sum "{}" >> checksum/checksums.txt'
+          sort checksum/checksums.txt -o checksum/checksums.txt
+          echo "--- checksums.txt ---" && cat checksum/checksums.txt
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: checksum/checksums.txt
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -138,5 +151,6 @@ jobs:
             artifacts/windows-binaries/build/msi/*.msi
             artifacts/windows-binaries/dist/LinkedInScraper/**
             artifacts/macos-binaries/build/*.dmg
+            checksum/checksums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

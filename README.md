@@ -1,6 +1,8 @@
 # LinkedIn Scraper & Minimal Dashboard
 
-[![CI](https://github.com/SergeOin/Scrapper-Titan---Final/actions/workflows/ci.yml/badge.svg)](https://github.com/SergeOin/Scrapper-Titan---Final/actions/workflows/ci.yml) [![Coverage](https://img.shields.io/badge/coverage-placeholder-lightgrey)](./)
+[![CI](https://github.com/SergeOin/Scrapper-Titan---Final/actions/workflows/ci.yml/badge.svg)](https://github.com/SergeOin/Scrapper-Titan---Final/actions/workflows/ci.yml) [![Coverage](https://codecov.io/gh/SergeOin/Scrapper-Titan---Final/branch/main/graph/badge.svg?token=CODECOV_TOKEN_PLACEHOLDER)](https://codecov.io/gh/SergeOin/Scrapper-Titan---Final)
+
+> (Si le badge coverage est gris, le token ou l’upload n’est pas encore configuré; voir section Qualité pour fallback.)
 
 > Usage interne uniquement. Respect strict des CGU LinkedIn. Ce projet fournit un worker de scraping découplé d'un serveur FastAPI avec un mini dashboard pour visualiser les posts collectés et déclencher un nouveau scrape de façon contrôlée.
 
