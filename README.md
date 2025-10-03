@@ -70,6 +70,11 @@ GET /api/legal_stats
 ```
 * Paramètre debug `include_raw=1` (API `/api/posts`) pour exposer le bloc `classification_debug` (intent, scores, keywords) – omis par défaut pour réduire la taille.
 * Conformité: voir `COMPLIANCE.md` (minimisation, usage interne, absence de techniques de contournement)
+* Suivi interne supplémentaire (non persisté dans les documents de posts mais exposé via `/api/legal_stats`) :
+  - `accepted` (posts retenus)
+  - `discarded_intent` (intent != recherche_profil)
+  - `discarded_location` (rejets localisation)
+  - `cap_remaining`, `cap_progress` (quota)
 
 ---
 ## 🧱 Architecture (vue d'ensemble)
@@ -186,6 +191,10 @@ Déclencher manuellement un job (sans UI) :
 ```powershell
 python scripts\run_once.py --keywords "python;ai"
 ```
+
+#### Cache Playwright (CI)
+Le workflow `release.yml` met en cache les navigateurs via `actions/cache` (clé `playwright-browsers-...`).
+Invalider le cache après upgrade Playwright : modifier la clé dans le workflow.
 
 ---
 ## 🐳 Docker
@@ -352,11 +361,18 @@ Des installateurs sont produits automatiquement à chaque tag `v*` via GitHub Ac
 4. Démarrer l'application puis ouvrir http://127.0.0.1:8000
 5. Première exécution : téléchargement éventuel de Chromium Playwright (réseau requis).
 
+#### Cache Playwright (CI)
+Le workflow `release.yml` met en cache les navigateurs via `actions/cache` (clé `playwright-browsers-...`).
+Invalider le cache après upgrade Playwright : modifier la clé dans le workflow.
+
 ### macOS (.dmg)
 1. Télécharger `LinkedInScraper_<version>.dmg`.
 2. Glisser l'application dans `Applications`.
 3. Si Gatekeeper bloque : clic droit → Ouvrir.
 4. Accéder ensuite à http://127.0.0.1:8000
+
+#### (Optionnel) Signature & Notarisation macOS
+Bloc commenté prêt dans `release.yml` : dé‑commenter + secrets (`MACOS_CERT_B64`, `MACOS_CERT_PASSWORD`, `MACOS_NOTARY_APPLE_ID`, `MACOS_NOTARY_TEAM_ID`, `MACOS_NOTARY_PASSWORD`) pour activer codesign + notarisation.
 
 ### Mises à jour
 Installer simplement la nouvelle version (.msi ou .dmg). Sauvegarder `fallback.sqlite3` si vous utilisez le mode sans Mongo.
@@ -389,36 +405,12 @@ VERSION=1.2.3 bash scripts/packaging/macos/build_dmg.sh
 ```
 Le binaire combine serveur + worker via un « entrypoint » unifié (`entrypoint.py`) qui démarre simultanément le serveur FastAPI et le worker et respawne le worker en cas de crash (cooldown 300s configurable via `WORKER_RESPAWN_COOLDOWN_SECONDS`).
 
-### Limitations
-* Navigateurs Playwright non embarqués (taille) → téléchargement runtime.
-* Non signé (macOS) → avertissement Gatekeeper.
-* MSI minimal (pas de mise à jour auto). Un mode Service Windows intégré est maintenant fourni (voir ci‑dessous).
-
-### Mode Service Windows (Exécution en arrière-plan)
-
-Pour exécuter en tâche de fond permanente sur Windows :
-
-1. Installer l'application (MSI) ou construire l'exécutable.
-2. Ouvrir une console PowerShell administrateur.
-3. Lancer :
-  ```powershell
-  scripts\windows_service_install.ps1 -ExePath "C:\Program Files\LinkedInScraper\TitanScraper.exe"
-  ```
-4. Le service (par défaut `TitanScraper`) se lance automatiquement au boot.
-
-Pour le retirer :
+### Entrypoint Unifié & Mode Test
+Orchestre : serveur FastAPI + worker supervisé + chargement `.env` + rotation logs.
+Mode test rapide (utilisé dans la suite Pytest) :
 ```powershell
-scripts\windows_service_uninstall.ps1
+ENTRYPOINT_TEST_MODE=1 python entrypoint.py
 ```
-
-Variables d'environnement : définissez-les au niveau système (ou placez un `.env` à côté de l'exécutable — chargé automatiquement par l'entrypoint). Si vous devez personnaliser davantage, créez un batch wrapper et modifiez le service via `sc.exe config`.
-
-### Entrypoint unifié (Source vs Binaire)
-
-- En développement : `python entrypoint.py`
-- Ancien script combiné (`scripts/run_all.py`) reste support de secours mais le spec PyInstaller privilégie désormais `entrypoint.py`.
-- Avantages : respawn du worker, chargement `.env`, centralisation logs.
-
 
 ---
 ## 🌐 Déploiement Gratuit / Low-Cost
@@ -452,7 +444,7 @@ Limitations Deta:
 - Utiliser le mode mock pour démonstration du dashboard + SSE.
 
 ### 2. Render (Web + Worker séparés)
-Fichiers utilisés: `render.yaml`, `Procfile`.
+Fichiers utilisés: `render.yaml`, `Procfile`..
 1. Créer un nouveau Blueprint dans Render à partir du repo (connect GitHub).
 2. Render détecte `render.yaml` et provisionne deux services :
   - Web: lance `python scripts/run_server.py` sur le port `$PORT`.
@@ -481,6 +473,7 @@ Utiliser `docker-compose.yml` existant: un service API + un worker + Redis + Mon
 ### 5. Authentification & Public
 - Démo publique: `DASHBOARD_PUBLIC=1`, laisser `INTERNAL_AUTH_USER` vide.
 - Production interne: `DASHBOARD_PUBLIC=0` puis définir `INTERNAL_AUTH_USER` + `INTERNAL_AUTH_PASS_HASH`.
+
 
 ### 6. Fournir `storage_state.json`
 Scraping réel LinkedIn nécessite une session authentifiée:
@@ -538,140 +531,6 @@ Si l'installation du navigateur échoue avec une erreur de certificat (`SELF_SIG
 Retirer la désactivation TLS aussitôt que la chaîne de confiance est corrigée.
 
 ---
-
-> Prochain fichier suggéré : `.env.example` ou squelette code (`bootstrap.py`). Dis-moi si on poursuit.
-
----
-### ℹ️ Endpoint `/api/stats`
-Expose un sous-ensemble d'informations runtime pratiques pour monitoring léger (différent de `/health`):
-```jsonc
-{
-  "playwright_mock_mode": false,
-  "autonomous_interval": 0,
-  "scraping_enabled": true,
-  "keywords_count": 3,
-  "mongo_connected": true,
-  "redis_connected": false,
-  "posts_count": 124,
-  "last_run": "2025-09-19T09:10:11.123456+00:00",
-  "last_run_age_seconds": 42,
-  "queue_depth": 0
-}
-```
-Utilisation: supervision simple (dashboards externes) sans parser les métriques Prometheus.
-
-### 🔐 Hash Bcrypt automatique
-Si vous définissez `INTERNAL_AUTH_PASS` (sans `INTERNAL_AUTH_PASS_HASH`) le hash est généré au démarrage via passlib (bcrypt==3.2.2). Pour changer le mot de passe en production, redéployer avec la nouvelle valeur ou basculer sur un hash explicite.
-
-### 🏷️ Endpoint `/api/version`
-Expose des métadonnées de build pour vérifier rapidement la version déployée.
-Variables attendues (optionnelles) injectées au déploiement:
-```bash
-APP_COMMIT=abc1234           # SHA git court ou complet
-BUILD_TIMESTAMP=2025-09-19T12:34:56Z
-```
-Réponse typique:
-```jsonc
-{
-  "app_commit": "abc1234",
-  "build_timestamp": "2025-09-19T12:34:56Z",
-  "playwright_mock_mode": false
-}
-```
-Sans injection, les valeurs retournent `"unknown"`. Utile pour dashboards légers ou vérifier qu’un redeploy a bien pris effet.
-
----
-## 🧰 Automations & Tooling Ajoutés
-
-### CI (GitHub Actions)
-Workflow `ci.yml` : lint (ruff), format check (black), mypy, tests Pytest + couverture. Badge (à ajouter après push sur branche principale) :
-```
-![CI](https://github.com/<org>/<repo>/actions/workflows/ci.yml/badge.svg)
-```
-
-### Docker Compose
-Fichier `docker-compose.yml` fourni :
-```bash
-docker compose up -d --build
-# API: http://localhost:8000  | Mongo: 27017 | Redis: 6379
-```
-Le service `api` lance FastAPI (scraping désactivé), le service `worker` exécute le scraping.
-
-### Script PowerShell `tasks.ps1`
-Charger et lister :
-```powershell
-. .\tasks.ps1
-Invoke-Task setup      # venv + deps + playwright
-Invoke-Task lint       # ruff + mypy
-Invoke-Task format     # ruff --fix + black
-Invoke-Task test       # pytest
-Invoke-Task coverage   # couverture
-Invoke-Task server     # uvicorn
-Invoke-Task worker     # worker loop
-Invoke-Task compose-up # stack docker
-Invoke-Task compose-down
-```
-
-### Mode Mock (Sans Navigateur)
-Activer un mode de génération synthétique de posts pour tests rapides ou CI sans Playwright :
-```
-PLAYWRIGHT_MOCK_MODE=1
-SCRAPING_ENABLED=1
-```
-Effets :
-- `process_keyword` retourne jusqu'à 5 posts synthétiques par mot-clé sans ouvrir Chromium.
-- Champs `raw.mode = "mock"` pour traçabilité.
-- Idéal pour valider pipeline stockage / API sans réseau externe.
-Limites : pas de vérification de sélecteurs ni réalisme de contenu.
-
-Personnalisation :
-`MAX_MOCK_POSTS` limite configurable (par défaut 5). Métrique associée : `scrape_mock_posts_extracted_total`.
-
-### Concurrency & Rate Limiting (Nouveautés)
-Variables :
-```
-CONCURRENCY_LIMIT=2            # Nombre max de jobs simultanés
-PER_KEYWORD_DELAY_MS=500       # Délai entre deux mots-clés dans un même job
-GLOBAL_RATE_LIMIT_PER_MIN=120  # Limite douce (placeholder token bucket simple)
-```
-Objectifs : réduire bursts, préparer extension vers un vrai seau de jetons distribué.
-La métrique `scrape_queue_depth` permet de surveiller l'accumulation des jobs.
-
-### API Rate Limit (IP In-Memory)
-Paramètres :
-```
-API_RATE_LIMIT_PER_MIN=60
-API_RATE_LIMIT_BURST=20
-```
-Limitation de base par IP (LRU ~512 IP). À distribuer via Redis pour déploiements multi-instances. Métrique de rejet: `api_rate_limit_rejections_total`.
-
-### Token Bucket (Rate Limit Réel)
-### Scrolling & Complétude (Nouveautés)
-Nouveaux paramètres pour affiner l'extraction progressive des résultats paresseusement chargés :
-```
-MAX_SCROLL_STEPS=5      # Limite dure d'itérations de scroll supplémentaires
-SCROLL_WAIT_MS=1200     # Attente (ms) après chaque scroll pour laisser charger le DOM
-MIN_POSTS_TARGET=10     # Seuil minimal de posts avant d'accepter un arrêt anticipé
-```
-Logique d'arrêt :
-1. Posts >= `MAX_POSTS_PER_KEYWORD` ⇒ stop
-2. Posts >= `MIN_POSTS_TARGET` ET aucune augmentation après une itération ⇒ stop
-3. `MAX_SCROLL_STEPS` atteint ⇒ stop (marqué incomplete si < seuil)
-
-Métriques associées :
-- `scrape_scroll_iterations_total` : incrémentée à chaque scroll tenté
-- `scrape_extraction_incomplete_total` : incrément si extraction < `MIN_POSTS_TARGET` en fin de boucle
-
-Objectif : instrumenter la « profondeur » requise pour atteindre la complétude et calibrer les valeurs par environnement (CI vs prod restreinte).
-
-Paramètres :
-```
-RATE_LIMIT_BUCKET_SIZE=120      # Capacité maximale (burst autorisé)
-RATE_LIMIT_REFILL_PER_SEC=2.0   # Débit de régénération
-```
-Fonctionnement : avant chaque mot-clé le worker consomme 1 jeton. Si insuffisant ⇒ attente calculée (deficit / refill_per_sec) mesurée dans `scrape_rate_limit_wait_seconds_total`. Le gauge `scrape_rate_limit_tokens` reflète l'état du bucket.
-
----
 ## 🎯 Détection Signal Recrutement (Nouveauté)
 Objectif : identifier les posts susceptibles d'être des signaux de recrutement (annonce explicite, sourcing, besoins équipe, ouverture de poste) dans les domaines juridiques / fiscaux / data / tech.
 
@@ -715,8 +574,6 @@ La fonction `compute_recruitment_signal(text)` applique :
 - Décorrélation bruit marketing vs. véritables annonces via pattern négatifs
 
 ---
-
----
 ## 🔄 Fallback Storage Testé
 Un test (`tests/test_fallback_storage.py`) vérifie :
 1. Insertion SQLite quand Mongo absent.
@@ -725,4 +582,56 @@ Un test (`tests/test_fallback_storage.py`) vérifie :
 ---
 ## 🧪 Configuration Lint & Type
 Fichiers ajoutés : `ruff.toml`, `mypy.ini` pour cohérence multi-environnements.
+
+---
+## ⚙️ Nouveautés Techniques (v1.2.0+)
+- **Champs quotidiens juridiques** : suivi des posts acceptés et rejetés par intent/location + quota journalier.
+- **Rate limiting** : protection basique par IP (en mémoire) + seau de jetons (token bucket) pour limiter le scraping excessif.
+- **Scrolling amélioré** : extraction progressive des résultats avec détection de complétude.
+- **Signal de recrutement** : détection heuristique des posts à potentiel de recrutement dans les domaines cibles.
+- **Fallback storage** : mécanisme de secours testable pour MongoDB → SQLite → CSV.
+- **Tests & CI** : couverture accrue des tests, intégration continue avec GitHub Actions.
+
+### Champs Quotidiens (Quota Juridique)
+Suivi runtime (réinitialisé à minuit UTC):
+| Champ | Description |
+|-------|-------------|
+| `legal_daily_date` | Date UTC suivie |
+| `legal_daily_count` | Posts acceptés dans la journée |
+| `legal_daily_discard_intent` | Rejets (intent) |
+| `legal_daily_discard_location` | Rejets (location) |
+Exposé via `/api/legal_stats`.
+
+### Rate Limiting (IP In-Memory)
+Paramètres :
+```
+API_RATE_LIMIT_PER_MIN=60
+API_RATE_LIMIT_BURST=20
+```
+Limitation de base par IP (LRU ~512 IP). À distribuer via Redis pour déploiements multi-instances. Métrique de rejet: `api_rate_limit_rejections_total`.
+
+### Token Bucket (Rate Limit Réel)
+### Scrolling & Complétude (Nouveautés)
+Nouveaux paramètres pour affiner l'extraction progressive des résultats paresseusement chargés :
+```
+MAX_SCROLL_STEPS=5      # Limite dure d'itérations de scroll supplémentaires
+SCROLL_WAIT_MS=1200     # Attente (ms) après chaque scroll pour laisser charger le DOM
+MIN_POSTS_TARGET=10     # Seuil minimal de posts avant d'accepter un arrêt anticipé
+```
+Logique d'arrêt :
+1. Posts >= `MAX_POSTS_PER_KEYWORD` ⇒ stop
+2. Posts >= `MIN_POSTS_TARGET` ET aucune augmentation après une itération ⇒ stop
+3. `MAX_SCROLL_STEPS` atteint ⇒ stop (marqué incomplete si < seuil)
+
+Métriques associées :
+- `scrape_scroll_iterations_total` : incrémentée à chaque scroll tenté
+- `scrape_extraction_incomplete_total` : incrément si extraction < `MIN_POSTS_TARGET` en fin de boucle
+
+Objectif : instrumenter la « profondeur » requise pour atteindre la complétude et calibrer les valeurs par environnement (CI vs prod restreinte).
+
+Paramètres :
+```
+RATE_LIMIT_BUCKET_SIZE=120      # Capacité maximale (burst autorisé)
+RATE_LIMIT_REFILL_PER_SEC=2.0   # Débit de régénération
+```
 
