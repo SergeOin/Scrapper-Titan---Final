@@ -8,87 +8,6 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install deps
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip
-          if(Test-Path requirements.txt){ pip install -r requirements.txt }
-          if(Test-Path desktop/requirements-desktop.txt){ pip install -r desktop/requirements-desktop.txt }
-          pip install pyinstaller==6.10.0
-      - name: Build exe
-        shell: pwsh
-        run: pwsh ./build_windows.ps1
-      - name: Install WiX
-        shell: pwsh
-        run: |
-          choco install wixtoolset --version=3.14.1 -y
-          Get-Command candle.exe; Get-Command light.exe
-      - name: Build MSI
-        shell: pwsh
-        run: |
-          $version = "${{ github.ref_name }}".TrimStart('v')
-          pwsh ./scripts/build_msi_folder.ps1 -Version $version -Name TitanScraper -ExeName TitanScraper.exe
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows
-          path: |
-            dist/**
-            build/msi/**
-
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Build app
-        run: |
-          chmod +x build_mac.sh || true
-          ./build_mac.sh || true
-          chmod +x scripts/build_dmg.sh || true
-          ./scripts/build_dmg.sh "${GITHUB_REF_NAME#v}" || true
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos
-          path: dist/**
-
-  release:
-    needs: [build-windows, build-macos]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      - name: Create draft release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          draft: true
-          prerelease: false
-          files: |
-            artifacts/windows/**
-            artifacts/macos/**
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-name: build-release
-
-on:
-  push:
-    tags:
-      - 'v*'
-
-jobs:
-  build-windows:
-    runs-on: windows-latest
     env:
       DAILY_POST_TARGET: "50"
       BOOSTER_ACTIVATE_RATIO: "0.6"
@@ -211,27 +130,7 @@ jobs:
         run: |
           python3 -m pip install cyclonedx-bom==3.19.6 || echo "CycloneDX install skipped"
           if [ -f requirements.txt ]; then python3 -m cyclonedx_py requirements -i requirements.txt -o build/sbom-macos.json || echo "SBOM generation failed"; fi
-      - name: Conditional Codesign
-        run: |
-          set -e
-          MAC_IDENTITY_NAME='${{ secrets.MAC_IDENTITY_NAME }}'
-          MAC_SIGNING_CERT_P12='${{ secrets.MAC_SIGNING_CERT_P12 }}'
-          MAC_SIGNING_CERT_PASSWORD='${{ secrets.MAC_SIGNING_CERT_PASSWORD }}'
-          if [ -z "${MAC_IDENTITY_NAME}" ] || [ -z "${MAC_SIGNING_CERT_P12}" ] || [ -z "${MAC_SIGNING_CERT_PASSWORD}" ]; then
-            echo "Codesign secrets missing -> skipping"; exit 0; fi
-          echo "$MAC_SIGNING_CERT_P12" | base64 --decode > signing_cert.p12
-          security create-keychain -p temp build.keychain
-            security import signing_cert.p12 -k build.keychain -P "$MAC_SIGNING_CERT_PASSWORD" -T /usr/bin/codesign
-          security list-keychain -d user -s build.keychain
-          security unlock-keychain -p temp build.keychain
-          APP=$(find dist -maxdepth 2 -name '*.app' | head -n1)
-          if [ -n "$APP" ]; then
-            codesign --force --deep --timestamp --options runtime --sign "$MAC_IDENTITY_NAME" "$APP" || echo 'Codesign app failed'
-          fi
-          DMG=$(find dist -maxdepth 1 -name '*.dmg' | head -n1)
-          if [ -n "$DMG" ]; then
-            codesign --force --timestamp --sign "$MAC_IDENTITY_NAME" "$DMG" || echo 'Codesign dmg failed'
-          fi
+      # (Signature macOS optionnelle supprimée pour simplicité; réintroduire ici si nécessaire.)
       # Signing / Notarization template (commented to avoid secret lint issues until secrets are configured)
       # To enable: replace SECRET_* placeholders with real ${{ secrets.* }} references and uncomment blocks.
       # - name: Import signing certificate

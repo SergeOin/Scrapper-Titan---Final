@@ -7,54 +7,6 @@ on:
     branches: [ main ]
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
-
-      - name: Install dependencies (runtime + dev)
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
-
-      - name: Run fast tests
-        env:
-          SCRAPING_ENABLED: "0"
-        run: |
-          pytest -q --maxfail=1 --disable-warnings
-
-      - name: Minimal coverage (non-blocking)
-        continue-on-error: true
-        run: |
-          pytest --cov=scraper --cov=server --cov-report=term --cov-report=xml:coverage.xml || true
-          python scripts/generate_badge.py || true
-
-      - name: Upload coverage artifact (optional)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: |
-            coverage.xml
-            coverage_badge.svg
-name: CI
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-
-jobs:
   build-test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -68,24 +20,16 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Install system deps for Playwright
+      - name: Install system deps for Playwright (minimal)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libgbm1 \
-            libasound2 libatspi2.0-0 libxrandr2 libxcomposite1 libxdamage1 libxfixes3 libxrender1 libxext6 \
-            libx11-6 libxcb1 libx11-xcb1 libxtst6 libxi6 libcurl4
+          sudo apt-get install -y libnss3 libx11-6 libxkbcommon0 libxrandr2 libxcomposite1 libxdamage1 libxfixes3 libxrender1 libxext6 libxcb1 libasound2 || true
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
-
-      - name: Install Playwright browsers (skip failures)
-        run: |
-          set +e
-          python -m playwright install chromium || echo "Playwright browser install failed (non-fatal for unit tests)."
-          set -e
 
       - name: Lint (ruff)
         run: python -m ruff check .
@@ -98,7 +42,7 @@ jobs:
 
       - name: Run tests
         env:
-          SCRAPING_ENABLED: "0"  # désactiver scraping réel pendant tests
+          SCRAPING_ENABLED: "0"
         run: pytest -q --maxfail=1 --disable-warnings
 
       - name: Coverage (generate reports)
@@ -106,33 +50,17 @@ jobs:
           set +e
           pytest --cov=scraper --cov=server --cov-report=xml:coverage.xml --cov-report=term-missing
           set -e
-          python -c "import re,pathlib; p=pathlib.Path('coverage.xml'); txt=p.read_text() if p.exists() else ''; import sys; m=re.search(r'line-rate=\\\"([0-9.]+)\\\"', txt); (pathlib.Path('coverage_badge.txt').write_text(f'COVERAGE={float(m.group(1))*100:.1f}%\\n') if m else None)"
           python scripts/generate_badge.py || echo "Badge generation failed"
 
       - name: Coverage gate (optional)
         env:
           COVERAGE_MIN: ${{ vars.COVERAGE_MIN }}
         run: |
-          python -c "import os,re,pathlib,sys;thr=os.environ.get('COVERAGE_MIN');print('Coverage gate check');\nif not thr: print('No threshold set. Skipping.'); sys.exit(0);\ntry: thr_f=float(thr)\nexcept Exception: print(f'Invalid COVERAGE_MIN={thr}. Skipping.'); sys.exit(0);\np=pathlib.Path('coverage.xml');\nif not p.exists(): print('coverage.xml missing; failing gate.'); sys.exit(1);\ntxt=p.read_text();m=re.search(r'line-rate=\\\"([0-9.]+)\\\"',txt);\nif not m: print('Could not parse line-rate; failing.'); sys.exit(1);\nrate=float(m.group(1))*100;print(f'Computed coverage: {rate:.2f}% (threshold {thr_f:.2f}%)');\nif rate+1e-9 < thr_f: print('Below threshold -> fail'); sys.exit(1);\nprint('Coverage gate passed.')"
-
-      - name: Upload coverage fallback badge artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-badge-fallback
-          path: coverage_badge.txt
-
-      - name: Upload coverage to Codecov (if token configured)
-        if: success() || failure()
-        uses: codecov/codecov-action@v4
-        with:
-          files: coverage.xml
-          fail_ci_if_error: false
-          verbose: false
+          python -c "import os,re,pathlib,sys;thr=os.environ.get('COVERAGE_MIN');print('Coverage gate check');\nif not thr: print('No threshold set. Skipping.'); sys.exit(0);\ntry: thr_f=float(thr)\nexcept Exception: print(f'Invalid COVERAGE_MIN={thr}. Skipping.'); sys.exit(0);\np=pathlib.Path('coverage.xml');\nif not p.exists(): print('coverage.xml missing; failing gate.'); sys.exit(1);\ntxt=p.read_text();m=re.search(r'line-rate=\\"([0-9.]+)\\"',txt);\nif not m: print('Could not parse line-rate; failing.'); sys.exit(1);\nrate=float(m.group(1))*100;print(f'Computed coverage: {rate:.2f}% (threshold {thr_f:.2f}%)');\nif rate+1e-9 < thr_f: print('Below threshold -> fail'); sys.exit(1);\nprint('Coverage gate passed.')"
 
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: |

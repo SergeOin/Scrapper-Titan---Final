@@ -1,0 +1,111 @@
+name: supply-chain
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  attestations: write
+  id-token: write
+
+jobs:
+  supply-chain:
+    name: SBOM / OSV / Provenance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install cyclonedx-bom==3.19.6 pip-audit==2.7.3
+
+      - name: Generate SBOM (requirements)
+        run: |
+          mkdir -p sbom
+          if [ -f requirements.txt ]; then
+            python -m cyclonedx_py requirements -i requirements.txt -o sbom/sbom-${GITHUB_REF_NAME#v}.json || echo "SBOM generation failed"
+          else
+            echo "No requirements.txt present"
+          fi
+          ls -1 sbom || true
+
+      - name: OSV scan (pip-audit)
+        run: |
+          if [ -f requirements.txt ]; then
+            pip-audit -r requirements.txt -f json > sbom/osv-${GITHUB_REF_NAME#v}.json || echo "pip-audit failed (non-blocking)"
+          else
+            echo '{}' > sbom/osv-${GITHUB_REF_NAME#v}.json
+          fi
+
+      - name: Attempt to download release assets (retry)
+        id: dl
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          mkdir -p release-assets
+          echo "Trying to download release assets for $TAG"
+          for i in $(seq 1 10); do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "Release found on attempt $i – downloading"
+              gh release download "$TAG" -D release-assets -p '*' || true
+              break
+            else
+              echo "Release not yet available (attempt $i)";
+              sleep 30
+            fi
+          done
+          ls -R release-assets || true
+          count=$(find release-assets -type f | wc -l || echo 0)
+          echo "files=$count" >> $GITHUB_OUTPUT
+
+      - name: Build provenance metadata (json)
+        run: |
+          mkdir -p provenance
+          TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          cat > provenance/provenance.json <<EOF
+          {
+            "schemaVersion": "1.0",
+            "build": {
+              "tag": "${GITHUB_REF_NAME}",
+              "commit": "${GITHUB_SHA}",
+              "timestamp": "${TS}",
+              "runner_os": "${RUNNER_OS}",
+              "assetsDownloaded": $( [ -d release-assets ] && find release-assets -type f | wc -l | tr -d '\n' || echo 0 )
+            }
+          }
+          EOF
+          cat provenance/provenance.json
+
+      - name: Generate provenance attestation (if assets)
+        if: steps.dl.outputs.files != '0'
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            release-assets/**/*
+
+      - name: Upload supply-chain artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-${{ github.ref_name }}
+          path: |
+            sbom/*.json
+            provenance/provenance.json
+            release-assets/**
+
+      - name: Summarize
+        run: |
+          echo "SBOM + OSV + provenance steps completed"

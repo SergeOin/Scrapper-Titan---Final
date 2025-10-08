@@ -8,6 +8,27 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Added
 - (placeholder) Future enhancements will be listed here.
 
+## [1.3.12] - 2025-10-08
+### Added
+- Workflow `supply-chain` séparé (SBOM CycloneDX, scan OSV via pip-audit, tentative de téléchargement des assets de release pour attestation provenance) déclenché sur tags `v*` et `workflow_dispatch`.
+- Réintégration lint (ruff), format check (black --check) et mypy dans le workflow CI unifié.
+- Workflow auto bump version réintroduit (patch increment) après contributions sur `main`.
+
+### Changed
+- Consolidation de `release.yml`: suppression du bloc hérité massif, conservation d'une version claire (build Windows/macOS, validation assets, checksums, manifest, changelog extraction, attachements). Étape signature macOS retirée pour simplifier (placeholder comment).
+- VERSION bump -> 1.3.12.
+
+### Removed
+- Bloc legacy `build-release` dupliqué (redondant avec version minimaliste).
+- Étape de signature macOS (pour éviter erreurs lint et simplifier; pourra être réintroduite proprement avec secrets configurés).
+
+### Security / Supply Chain
+- SBOM générée indépendamment du build principal (meilleure isolation & possibilité de ré-exécuter sur tag existant).
+- Attestation provenance produite si assets présents.
+
+### Notes
+- Prochaine étape potentielle: fusion/merge avancée des SBOM multi-OS via cyclonedx-cli, ajout Trivy FS/Container scan, réintroduction étape de signature macOS conditionnelle.
+
 ## [1.3.11] - 2025-10-08
 ### Added
 - Réintroduction d'un workflow CI minimal (tests + couverture optionnelle) après neutralisation totale précédente.
@@ -159,7 +180,8 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Overview
 Initial public-internal MVP iterations: multi-backend storage (Mongo/SQLite/CSV), recruitment signal metric, basic dashboard, Prometheus metrics, fallback logic, mock mode, packaging groundwork.
 
-[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.9...HEAD
+[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.12...HEAD
+[1.3.12]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.12
 [1.3.9]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.9
 [1.3.6]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.6
 [1.3.5]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.5

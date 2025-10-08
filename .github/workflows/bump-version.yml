@@ -1,3 +1,59 @@
+name: Auto Patch Version Bump
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Guard if VERSION already changed
+        id: guard
+        run: |
+          set -euo pipefail
+            if git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" | grep -q '^VERSION$'; then
+              echo "changed=true" >> $GITHUB_OUTPUT
+            else
+              echo "changed=false" >> $GITHUB_OUTPUT
+            fi
+      - name: Stop (already a version bump)
+        if: steps.guard.outputs.changed == 'true'
+        run: echo "VERSION already modified in this commit; skipping bump." && exit 0
+
+      - name: Compute next patch version
+        id: bump
+        run: |
+          set -euo pipefail
+          current=$(tr -d '\r\n' < VERSION)
+          if [[ ! $current =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Unexpected VERSION format: $current" >&2; exit 1; fi
+          major=${BASH_REMATCH[1]}; minor=${BASH_REMATCH[2]}; patch=${BASH_REMATCH[3]}
+          next_patch=$((patch+1))
+          next="$major.$minor.$next_patch"
+          echo "$next" > VERSION
+          echo "next=$next" >> $GITHUB_OUTPUT
+          echo "Bumping to $next"
+
+      - name: Commit bump
+        env:
+          NEXT: ${{ steps.bump.outputs.next }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add VERSION
+          git commit -m "chore: bump version to $NEXT [auto]" || exit 0
+          git push origin HEAD:main
 #############################
 # DEACTIVATED WORKFLOW FILE #
 # Original: bump-version.yml (auto patch version bump)
