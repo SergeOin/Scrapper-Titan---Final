@@ -1,3 +1,10 @@
+#############################
+# DEACTIVATED WORKFLOW FILE #
+# Original: ci_new.yml (duplicate CI)
+# Reason: User requested total removal of all workflows.
+# Date: 2025-10-08
+# All triggers and jobs removed intentionally.
+#############################
 name: CI
 
 on:

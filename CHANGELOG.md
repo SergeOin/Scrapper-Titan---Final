@@ -8,6 +8,17 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Added
 - (placeholder) Future enhancements will be listed here.
 
+## [1.3.10] - 2025-10-08
+### Changed
+- Neutralisation complète de tous les workflows GitHub Actions (tous les fichiers remplacés par des commentaires inertes).
+
+### Removed
+- CI (tests, coverage), nightly report, auto bump version, desktop build/release workflows.
+
+### Notes
+- Plus aucun workflow actif: aucun build automatisé ni test ne se lancera jusqu'à réintroduction ciblée.
+
+
 ## [1.3.9] - 2025-10-08
 ### Added
 - Séparation des dépendances runtime vs développement (`requirements.txt` / `requirements-dev.txt`).

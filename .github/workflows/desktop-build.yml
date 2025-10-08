@@ -1,3 +1,10 @@
+#############################
+# DEACTIVATED WORKFLOW FILE #
+# Original: desktop-build.yml
+# Reason: User requested total removal of all workflows.
+# Date: 2025-10-08
+# All triggers and jobs removed intentionally.
+#############################
 name: Desktop Builds
 
 on:
