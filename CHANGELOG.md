@@ -6,7 +6,14 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 ### Added
-- (placeholder) Future enhancements will be listed here.
+- Test sentinelle `test_spec_presence.py` garantissant la présence et l'intégrité de `TitanScraper.spec`.
+- Workflow manuel `publish-release` (promotion d'une release draft en release publiée via `workflow_dispatch`).
+
+### Changed
+- Nettoyage `release.yml`: suppression des étapes redondantes SBOM / merge / scans / provenance (désormais centralisées dans `supply-chain`).
+
+### Internal
+- Consolidation de la responsabilité supply-chain (SBOM & scans) vs build pur (release).
 
 ## [1.3.13] - 2025-10-08
 ### Fixed

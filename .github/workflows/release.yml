@@ -68,9 +68,7 @@ jobs:
           if(Test-Path dist/TitanScraper){
             Compress-Archive -Path dist/TitanScraper/* -DestinationPath build/TitanScraper-$version-portable.zip -Force
           }
-          # SBOM (Windows) - pip cyclonedx plugin
-          python -m pip install cyclonedx-bom==7.1.0 || python -m pip install cyclonedx-bom || echo "CycloneDX install skipped"
-          if (Test-Path requirements.txt) { python -m cyclonedx_py requirements -i requirements.txt -o build/sbom-windows.json || echo "SBOM generation failed (non-blocking)" }
+          # (SBOM generation removed here; handled in supply-chain workflow)
           Write-Host "--- BUILD DIR CONTENTS ---"
           Get-ChildItem build -Recurse | ForEach-Object { Write-Host $_.FullName }
           Write-Host "--- DIST DIR CONTENTS ---"
@@ -126,10 +124,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}" scripts/build_dmg.sh "${GITHUB_REF_NAME#v}"
           echo '--- dist contents (macOS) ---'
           ls -R dist || true
-      - name: Generate SBOM (macOS)
-        run: |
-          python3 -m pip install cyclonedx-bom==7.1.0 || python3 -m pip install cyclonedx-bom || echo "CycloneDX install skipped"
-          if [ -f requirements.txt ]; then python3 -m cyclonedx_py requirements -i requirements.txt -o build/sbom-macos.json || echo "SBOM generation failed (non-blocking)"; fi
+      # (SBOM macOS retirée – gérée par supply-chain)
       # (Signature macOS optionnelle supprimée pour simplicité; réintroduire ici si nécessaire.)
       # Signing / Notarization template (commented to avoid secret lint issues until secrets are configured)
       # To enable: replace SECRET_* placeholders with real ${{ secrets.* }} references and uncomment blocks.
@@ -216,65 +211,7 @@ jobs:
           find artifacts -type f \( -name '*.msi' -o -name '*.dmg' -o -name '*.exe' \) -print0 | xargs -0 -I{} sh -c 'sha256sum "{}" >> checksum/checksums.txt'
           sort checksum/checksums.txt -o checksum/checksums.txt
           echo "--- checksums.txt ---" && cat checksum/checksums.txt
-      - name: Aggregate SBOMs
-        run: |
-          mkdir -p sbom
-          # Collect SBOMs if present from both OS jobs
-          find artifacts -type f -name 'sbom-*.json' -exec cp {} sbom/ \; || true
-          if [ -d sbom ]; then ls -1 sbom || true; fi
-      - name: Merge SBOMs (CycloneDX)
-        run: |
-          set -e
-          if ls sbom/sbom-*.json 1>/dev/null 2>&1; then
-            pip install cyclonedx-bom==7.1.0 jq -q || pip install cyclonedx-bom jq -q || true
-            # Simple merge: concat components uniques (approche basique si cyclonedx-cli absent)
-            if pip show cyclonedx-bom >/dev/null 2>&1; then
-              # Fallback simple: prendre le premier comme base et ajouter manuellement composants uniques
-              base=$(ls sbom/sbom-*.json | head -n1)
-              cp "$base" sbom/sbom-merged.json
-              # Tentative merge naïf (jq) – si structure standard
-              if command -v jq >/dev/null 2>&1; then
-                for f in sbom/sbom-*.json; do
-                  jq -s '.[0] as $a | (.[1:][] | .components // []) as $b | $a.components += $b | $a | .components |= (unique_by(.name,.version,.purl))' "$f" sbom/sbom-merged.json >/dev/null 2>&1 || true
-                done
-              fi
-            fi
-          else
-            echo "No individual SBOMs to merge"
-          fi
-          ls -1 sbom || true
-      - name: Security Scan (OSV) minimal
-        run: |
-          pip install pip-audit==2.7.3 || true
-          pip-audit -r requirements.txt -f json > sbom/osv-report.json || echo "pip-audit failed (non-blocking)"
-      - name: (Optional) Trivy Scan
-        run: |
-          echo "Skipping Trivy full scan (enable by installing trivy)."
-          # Example (commented):
-          # curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./trivy
-          # ./trivy fs --format json --output sbom/trivy-fs.json . || true
-      - name: Export provenance JSON copy
-        run: |
-          # Placeholder provenance JSON (human-readable, separate from attestation)
-          mkdir -p sbom
-          TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          echo '{'                         > sbom/provenance.json
-          echo '  "schemaVersion": "1.0",' >> sbom/provenance.json
-          echo '  "build": {'              >> sbom/provenance.json
-          echo '    "tag": "'${GITHUB_REF_NAME}'",' >> sbom/provenance.json
-          echo '    "commit": "'${GITHUB_SHA}'",'   >> sbom/provenance.json
-          echo '    "timestamp": "'${TS}'",'        >> sbom/provenance.json
-          echo '    "runner_os": "'${RUNNER_OS}'",' >> sbom/provenance.json
-          echo '    "includes": ["msi","dmg","exe","sbom","checksums"]' >> sbom/provenance.json
-          echo '  }' >> sbom/provenance.json
-          echo '}'   >> sbom/provenance.json
-          cat sbom/provenance.json
-      - name: Generate provenance attestation (Alpha)
-        uses: actions/attest-build-provenance@v1
-        with:
-          subject-path: |
-            artifacts/windows-binaries/dist/msi/*.msi
-            artifacts/macos-binaries/dist/*.dmg
+      # (SBOM / scans / provenance retirés ici — gérés par workflows dédiés supply-chain)
       - name: Generate per-file sha256 sidecar files
         run: |
           echo "Generating individual .sha256 files"
@@ -337,6 +274,5 @@ jobs:
             artifacts/windows-binaries/dist/**/*.dll
             artifacts/windows-binaries/**/*.zip
             artifacts/macos-binaries/dist/**/*.app
-            sbom/*.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

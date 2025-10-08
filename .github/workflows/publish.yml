@@ -1,0 +1,47 @@
+name: publish-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag (vX.Y.Z) à publier (optionnel : défaut = dernier tag)"
+        required: false
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            # Grab most recent tag (annotated or lightweight)
+            LAST=$(git ls-remote --tags --sort='-v:refname' origin | sed -n 's#.*/\(v[0-9].*\)$#\1#p' | head -n1)
+            if [ -z "$LAST" ]; then echo "No tag found"; exit 1; fi
+            echo "Using latest tag $LAST"
+            echo "tag=$LAST" >> $GITHUB_OUTPUT
+          fi
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          echo "Publishing release for $TAG"
+          # Fetch release JSON
+          REL_JSON=$(gh api repos/${{ github.repository }}/releases | jq -c ".[] | select(.tag_name==\"$TAG\")")
+          if [ -z "$REL_JSON" ]; then echo "Release for tag $TAG not found"; exit 1; fi
+          IS_DRAFT=$(echo "$REL_JSON" | jq -r .draft)
+          ID=$(echo "$REL_JSON" | jq -r .id)
+          if [ "$IS_DRAFT" != "true" ]; then echo "Release already published"; exit 0; fi
+          gh api \
+            --method PATCH \
+            repos/${{ github.repository }}/releases/$ID \
+            -f draft=false
+          echo "Release $TAG published."
+      - name: Summary
+        run: |
+          echo "✅ Publication terminée" >> $GITHUB_STEP_SUMMARY
+          echo "Tag publié: ${{ steps.tag.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
