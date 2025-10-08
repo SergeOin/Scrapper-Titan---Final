@@ -33,9 +33,29 @@ if [ "${ONEFILE:-0}" = "1" ]; then
   EXTRA="--onefile"
 fi
 
+echo "Running PyInstaller..."
+# Capture PyInstaller output to a log so that CI can display it on failure.
+set +e
 pyinstaller desktop/pyinstaller.spec $EXTRA \
   --osx-bundle-identifier com.titan.scraper \
   --name TitanScraper \
-  --icon build/icon.icns || true
+  --icon build/icon.icns \
+  --log-level WARN 2>&1 | tee build/pyinstaller.log
+status=${PIPESTATUS[0]}
+set -e
+if [ $status -ne 0 ]; then
+  echo "PyInstaller a échoué (code $status). Contenu du log :" >&2
+  sed -n '1,300p' build/pyinstaller.log >&2 || true
+  exit $status
+fi
+
+if [ ! -d dist/TitanScraper ]; then
+  echo "Le dossier dist/TitanScraper n'a pas été généré. Contenu de dist/ :" >&2
+  ls -R dist || true
+  echo "Abandon car l'application .app est absente avant création du DMG." >&2
+  exit 1
+fi
 
 echo "Build complete. Check dist/TitanScraper" 
+echo "Listing dist/TitanScraper:" || true
+ls -R dist/TitanScraper || true
