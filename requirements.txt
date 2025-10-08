@@ -57,24 +57,7 @@ passlib[bcrypt]~=1.7.0      # Password hashing if internal auth layer added
 bcrypt==3.2.2               # Pinned for compatibility with passlib 1.7.x (bcrypt 4.x breaks __about__ attr usage)
 pyopenssl~=24.1.0           # TLS utilities (optional)
 
-# =============================
-# Dev & Tooling (can be moved to separate requirements-dev.txt if desired)
-# =============================
-black~=24.8.0               # Code formatter
-ruff~=0.5.0                 # Linter & import sorter
-mypy~=1.11.0                # Static type checking
-pytest~=8.2.0               # Test framework
-pytest-asyncio~=0.23.0      # Async tests
-pytest-cov~=5.0.0           # Coverage reports
-coverage~=7.6.0             # Coverage tooling
-faker~=25.0.0               # Test data generation
-freezegun~=1.5.0            # Time freezing in tests
-requests-mock~=1.12.0       # HTTP call mocking
-
-# =============================
-# Type Stubs
-# =============================
-types-redis~=4.6.0.20240425 # Type hints for redis
+# Dev & tooling dependencies déplacées dans requirements-dev.txt
 
 # =============================
 # Optional / Future Enhancements (commented out)

@@ -570,6 +570,18 @@ async def bootstrap(force: bool = False) -> AppContext:
             print(f"[bootstrap] Décodage STORAGE_STATE_B64 échoué: {e}", file=sys.stderr)
         configure_logging(settings.log_level, settings)
         logger = structlog.get_logger().bind(component="bootstrap")
+        # Safe config logging (startup snapshot without secrets)
+        try:
+            from .config_inspect import log_safe  # local import to avoid overhead if module unused
+            log_safe(logger, custom={
+                "daily_post_target": settings.daily_post_target,
+                "booster_activate_ratio": getattr(settings, "booster_activate_ratio", None),
+                "adaptive_scroll_enabled": getattr(settings, "adaptive_scroll_enabled", None),
+                "max_scroll_steps": settings.max_scroll_steps,
+                "max_posts_per_keyword": settings.max_posts_per_keyword,
+            })
+        except Exception:  # pragma: no cover - defensive
+            pass
 
         # Auto-disable logic in dev reload context (avoid Playwright subprocess issues on Windows)
         try:
