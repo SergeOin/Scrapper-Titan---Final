@@ -59,6 +59,7 @@ jobs:
           pytest --cov=scraper --cov=server --cov-report=xml:coverage.xml --cov-report=term-missing
           set -e
           python -c "import re,pathlib; p=pathlib.Path('coverage.xml'); txt=p.read_text() if p.exists() else ''; import sys; import json; m=re.search(r'line-rate=\"([0-9.]+)\"', txt); (pathlib.Path('coverage_badge.txt').write_text(f'COVERAGE={float(m.group(1))*100:.1f}%\n') if m else None)"
+          python scripts/generate_badge.py || echo "Badge generation failed"
 
       - name: Coverage gate (optional)
         env:
@@ -86,4 +87,6 @@ jobs:
         if: always()
         with:
           name: coverage-report
-          path: coverage.xml
+          path: |
+            coverage.xml
+            coverage_badge.svg
