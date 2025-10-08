@@ -293,6 +293,39 @@ Endpoints opérationnels additionnels :
 | `/api/stats` | GET | Statistiques runtime agrégées (mock_mode, intervalle autonome, posts_count, âge last_run, queue_depth) |
 | `/api/version` | GET | Métadonnées build (commit, timestamp) pour traçabilité |
 
+---
+## 🔗 Supply Chain & Provenance
+Le pipeline est scindé pour réduire le couplage :
+
+| Workflow | Rôle principal | Déclencheurs |
+|----------|---------------|--------------|
+| `release.yml` | Build Windows (EXE/MSI/ZIP) + macOS (APP/DMG) + checksums + draft release | tag `v*` |
+| `supply-chain.yml` | SBOM CycloneDX, scan OSV (pip-audit), merge SBOM (multi-fichiers futur), scan Trivy FS, tentative récupération assets, provenance JSON + attestation | tag `v*`, manuel |
+| `publish-release` | Publication d'une release draft existante | manuel |
+
+Artifacts produits (supply-chain) :
+* `sbom/sbom-<version>.json` : SBOM dépendances Python.
+* `sbom/sbom-merged.json` : SBOM fusionné (si plusieurs sources présentes).
+* `sbom/osv-<version>.json` : Vulnérabilités (pip-audit / OSV) – non bloquant.
+* `sbom/trivy-fs-<version>.json` : Résultats Trivy FS (vuln + secrets + misconfig) – non bloquant.
+* `provenance/provenance.json` : Métadonnées build (commit, tag, timestamp, nombre d'assets téléchargés).
+* Attestation build provenance (`actions/attest-build-provenance`) si assets présents.
+
+Politique d'échec :
+* Les échecs SBOM / scans ne bloquent pas la release (séparation de responsabilité, résilience).
+* Les artefacts de sécurité peuvent être régénérés via `workflow_dispatch` sans rebuild binaire.
+
+Utilisation :
+1. Créer un tag `vX.Y.Z` ⇒ build + release draft + supply chain.
+2. Vérifier SBOM / scans dans artefact `supply-chain-vX.Y.Z`.
+3. Publier via workflow `publish-release`.
+
+Améliorations futures possibles :
+* Signature des binaires (Windows code signing / macOS notarization) conditionnelle.
+* Publication SBOM attestée (intégration Sigstore / cosign).
+* Export SPDX additionnel si besoin.
+
+
 ### Statistiques supplémentaires (meta)
 Le document meta Mongo (`_id: "global"`) contient désormais :
 ```jsonc

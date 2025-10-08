@@ -6,7 +6,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 ### Added
-- (placeholder)
+- Fusion SBOM auto (cyclonedx-cli) si plusieurs fichiers détectés.
+- Scan Trivy filesystem (vuln/secret/misconfig) non bloquant dans `supply-chain`.
+
+### Security / Supply Chain
+- Documentation README section "Supply Chain & Provenance".
 
 ## [1.3.14] - 2025-10-08
 ### Added

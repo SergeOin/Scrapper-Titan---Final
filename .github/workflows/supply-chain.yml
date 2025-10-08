@@ -45,6 +45,27 @@ jobs:
           fi
           ls -1 sbom || true
 
+      - name: Merge SBOMs (placeholder for multi-source)
+        run: |
+          set -e
+          # If in future we add platform-specific SBOMs (windows/macos) downloaded with assets, merge them.
+          # Install cyclonedx-cli if multiple SBOM JSONs are found.
+          count=$(ls sbom/sbom-*.json 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+          if [ "$count" -gt 1 ]; then
+            echo "Multiple SBOM files detected ($count). Attempting merge via cyclonedx-cli";
+            pip install cyclonedx-bom==7.1.0 cyclonedx-cli || pip install cyclonedx-cli || true
+            if command -v cyclonedx || command -v cyclonedx-cli; then
+              # Use whichever entry point exists (package naming differences)
+              TOOL=$(command -v cyclonedx || command -v cyclonedx-cli)
+              $TOOL merge --input-files $(ls sbom/sbom-*.json | tr '\n' ',') --output-file sbom/sbom-merged.json || echo "Merge failed (non-blocking)"
+              ls -lh sbom/sbom-merged.json || true
+            else
+              echo "cyclonedx-cli absent; skipped merge"
+            fi
+          else
+            echo "Single SBOM file -> merge step skipped"
+          fi
+
       - name: OSV scan (pip-audit)
         run: |
           if [ -f requirements.txt ]; then
@@ -52,6 +73,19 @@ jobs:
           else
             echo '{}' > sbom/osv-${GITHUB_REF_NAME#v}.json
           fi
+
+      - name: Trivy filesystem scan (non-blocking)
+        run: |
+          set +e
+          echo "Installing Trivy..."
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./trivy-bin >/dev/null 2>&1
+          if [ -x ./trivy-bin/trivy ]; then
+            echo "Running Trivy filesystem scan (root directory)"
+            ./trivy-bin/trivy fs --scanners vuln,secret,misconfig --timeout 5m --format json --output sbom/trivy-fs-${GITHUB_REF_NAME#v}.json . || echo "Trivy scan failed (non-blocking)"
+          else
+            echo "Trivy not installed; skipping"
+          fi
+          set -e
 
       - name: Attempt to download release assets (retry)
         id: dl
