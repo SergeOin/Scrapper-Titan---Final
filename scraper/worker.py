@@ -789,6 +789,15 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
 
     # Adaptive scroll: decide dynamic max based on recent productivity
     dynamic_max_scroll = ctx.settings.max_scroll_steps
+    # Si on est en retard sur l'objectif journalier (< ratio), pousser au maximum autorisé
+    try:
+        collected = getattr(ctx, 'daily_post_count', 0)
+        target = ctx.settings.daily_post_target
+        ratio = ctx.settings.booster_activate_ratio
+        if target > 0 and collected < target * ratio:
+            dynamic_max_scroll = max(dynamic_max_scroll, getattr(ctx.settings, 'adaptive_scroll_max', ctx.settings.max_scroll_steps + 2))
+    except Exception:
+        pass
     try:
         if ctx.settings.adaptive_scroll_enabled and hasattr(ctx, "_recent_density"):
             dens = getattr(ctx, "_recent_density") or []
@@ -981,6 +990,17 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                     continue
                 seen_ids.add(provisional_pid)
                 recruitment_score = utils.compute_recruitment_signal(text_norm)
+                # Assouplissement dynamique du threshold si derrière l'objectif et option activée
+                effective_threshold = ctx.settings.recruitment_signal_threshold
+                try:
+                    if ctx.settings.relax_filters_below_target:
+                        collected = getattr(ctx, 'daily_post_count', 0)
+                        target = ctx.settings.daily_post_target
+                        ratio = ctx.settings.booster_activate_ratio
+                        if target > 0 and collected < target * ratio:
+                            effective_threshold = max(0.0, effective_threshold * 0.9)  # -10%
+                except Exception:
+                    pass
                 permalink = None
                 permalink_source = None
                 # 1. Sélecteurs directs
@@ -1054,7 +1074,7 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                         pass
                 if permalink_source:
                     ctx.logger.debug("permalink_resolved", source=permalink_source)
-                if recruitment_score >= ctx.settings.recruitment_signal_threshold:
+                if recruitment_score >= effective_threshold:
                     SCRAPE_RECRUITMENT_POSTS.inc()
                 # Normalize permalink (remove trailing slash) to avoid duplicate logical posts
                 if permalink:
@@ -1091,7 +1111,7 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                         )
                         if not any(m in tl for m in legal_markers):
                             keep = False; reject_reason = reject_reason or "non_domain"
-                    if ctx.settings.filter_recruitment_only and recruitment_score < ctx.settings.recruitment_signal_threshold:
+                    if ctx.settings.filter_recruitment_only and recruitment_score < effective_threshold:
                         if keep: keep = False; reject_reason = reject_reason or "recruitment"
                     if ctx.settings.filter_require_author_and_permalink and (not post.author or post.author.lower() == "unknown" or not post.permalink):
                         if keep: keep = False; reject_reason = reject_reason or "missing_core_fields"
@@ -1116,6 +1136,19 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                             keep = False; reject_reason = reject_reason or "not_fr"
                 except Exception:
                     pass
+                if keep:
+                    # Exclusions explicites (sources à ignorer)
+                    try:
+                        excl_raw = getattr(ctx.settings, 'excluded_authors_raw', '') or ''
+                        if excl_raw:
+                            excludes = [e.strip().lower() for e in excl_raw.split(';') if e.strip()]
+                            # On teste sur author, company et éventuellement dans le permalink
+                            blob_candidates = [author or '', (company_val or ''), (permalink or '')]
+                            if any(any(ex in c.lower() for ex in excludes) for c in blob_candidates if c):
+                                keep = False
+                                reject_reason = reject_reason or 'source_excluded'
+                    except Exception:
+                        pass
                 if keep:
                     # Last sanitation: if company is identical to author, drop company to allow later normalization to fill
                     if post.company and post.author and post.company.lower() == post.author.lower():
@@ -1263,6 +1296,53 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
     except Exception:
         blacklist = set()
     key_list = [k for k in list(keywords) if k and (k.strip().lower() not in blacklist)]
+    # Booster dynamique : si production quotidienne < ratio, on ajoute des booster keywords ponctuels
+    try:
+        collected = getattr(ctx, 'daily_post_count', 0)
+        ratio = ctx.settings.booster_activate_ratio
+        target = ctx.settings.daily_post_target
+        if target > 0 and collected < target * ratio:
+            booster_raw = getattr(ctx.settings, 'booster_keywords_raw', '') or ''
+            booster_all = [b.strip() for b in booster_raw.split(';') if b.strip()]
+            booster_added: list[str] = []
+            if booster_all:
+                # Rotation: stocker un index dans le contexte
+                if ctx.settings.booster_rotation_enabled:
+                    try:
+                        current_index = getattr(ctx, '_booster_rotation_index', 0)
+                        subset_size = ctx.settings.booster_rotation_subset_size
+                        if subset_size <= 0 or subset_size >= len(booster_all):
+                            selected = list(booster_all)
+                        else:
+                            # Round-robin window
+                            # Option shuffle: on mélange au début de chaque tour complet
+                            if ctx.settings.booster_rotation_shuffle and current_index == 0:
+                                import random as _r
+                                shuffled = list(booster_all)
+                                _r.shuffle(shuffled)
+                                booster_all = shuffled
+                            start = current_index
+                            end = start + subset_size
+                            # Wrap-around
+                            seq = booster_all * 2
+                            selected = seq[start:end]
+                            setattr(ctx, '_booster_rotation_index', (current_index + subset_size) % len(booster_all))
+                        for b in selected:
+                            if b not in key_list and b.lower() not in blacklist:
+                                key_list.append(b)
+                                booster_added.append(b)
+                    except Exception:
+                        # Fallback: tous
+                        for b in booster_all:
+                            if b not in key_list and b.lower() not in blacklist:
+                                key_list.append(b); booster_added.append(b)
+                else:
+                    for b in booster_all:
+                        if b not in key_list and b.lower() not in blacklist:
+                            key_list.append(b); booster_added.append(b)
+            ctx.logger.debug("booster_keywords_applied", added=booster_added, collected=collected, target=target)
+    except Exception:
+        pass
     all_new: list[Post] = []
     unknown_count = 0
     # Optional tracing span

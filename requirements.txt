@@ -47,6 +47,7 @@ httpx~=0.27.0               # Async HTTP client (if needed for external calls)
 user-agents~=2.2.0          # Generate realistic User-Agent strings
 langdetect~=1.0.9           # Language detection for post content
 pandas~=2.2.0               # CSV export convenience (optional heavy dep)
+numpy~=1.26.0               # Requis par certaines transformations / compat pandas lors du packaging MSI
 XlsxWriter~=3.2.0           # Excel export engine for pandas.to_excel
 
 # =============================
@@ -89,3 +90,16 @@ types-redis~=4.6.0.20240425 # Type hints for redis
 # - Use a virtual environment: python -m venv .venv && .venv/Scripts/activate (Windows)
 # - After install: playwright install chromium
 # - If slimming image size, remove pandas and optional deps.
+
+DAILY_POST_TARGET=50
+BOOSTER_ACTIVATE_RATIO=0.6
+BOOSTER_KEYWORDS="recrute;offre;hiring;opportunité;juriste;avocat"
+RELAX_FILTERS_BELOW_TARGET=1
+ADAPTIVE_SCROLL=1
+ADAPTIVE_SCROLL_MAX=8
+MAX_SCROLL_STEPS=6
+MAX_POSTS_PER_KEYWORD=35
+GLOBAL_RATE_LIMIT_PER_MIN=140
+RATE_LIMIT_REFILL_PER_SEC=2.5
+PER_KEYWORD_DELAY_MS=400
+ADAPTIVE_PAUSE_EVERY=0

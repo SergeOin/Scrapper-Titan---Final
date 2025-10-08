@@ -8,6 +8,23 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Added
 - (placeholder) Future enhancements will be listed here.
 
+## [1.3.6] - 2025-10-08
+### Added
+- Rotation automatique des booster keywords (paramètres: `BOOSTER_ROTATION_ENABLED`, `BOOSTER_ROTATION_SUBSET_SIZE`, `BOOSTER_ROTATION_SHUFFLE`).
+- Exclusion configurable des sources (`EXCLUDED_AUTHORS` incluant par défaut "village de la justice").
+- Booster adaptatif + assouplissement du seuil recrutement (-10% si en retard sur l'objectif).
+- Installation automatique de `numpy` et `pandas` dans le script MSI (`build_msi_folder.ps1`) si absents du dossier dist.
+- Test automatisé `test_msi_numpy_pandas.py` vérifiant la présence du bloc d'installation.
+
+### Changed
+- Scroll dynamique poussé au maximum adaptatif quand la progression journalière est insuffisante.
+
+### Fixed
+- Prévention de régression packaging scientifique: garde-fou test sur script MSI.
+
+### Internal
+- Ajout champs config (`BOOSTER_KEYWORDS`, `BOOSTER_ACTIVATE_RATIO`, `RELAX_FILTERS_BELOW_TARGET`).
+
 ## [1.3.4] - 2025-10-03
 ## [1.3.5] - 2025-10-03
 ### Added
@@ -108,7 +125,8 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Overview
 Initial public-internal MVP iterations: multi-backend storage (Mongo/SQLite/CSV), recruitment signal metric, basic dashboard, Prometheus metrics, fallback logic, mock mode, packaging groundwork.
 
-[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.5...HEAD
+[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.6...HEAD
+[1.3.6]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.6
 [1.3.5]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.5
 [1.3.4]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.4
 [1.3.3]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.3

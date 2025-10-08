@@ -190,6 +190,20 @@ class Settings(BaseSettings):
     legal_daily_post_cap: int = Field(50, alias="LEGAL_DAILY_POST_CAP")  # Hard cap persisted posts per UTC day for legal intent
     legal_intent_threshold: float = Field(0.35, alias="LEGAL_INTENT_THRESHOLD")  # Threshold for classify_legal_post combined score
     legal_keywords_override: str | None = Field(None, alias="LEGAL_KEYWORDS")  # Optional semicolon list to extend/override builtin
+    # Exclusion explicite de certaines sources (auteurs / entreprises) séparées par ';'
+    excluded_authors_raw: str = Field("village de la justice", alias="EXCLUDED_AUTHORS")
+    # Keywords de renfort (booster) injectés dynamiquement quand on est loin de l'objectif quotidien
+    booster_keywords_raw: str = Field("recrute;offre;hiring", alias="BOOSTER_KEYWORDS")
+    # Si True on assouplit certains filtres (recruitment threshold -10%) quand quota pas atteint
+    relax_filters_below_target: bool = Field(True, alias="RELAX_FILTERS_BELOW_TARGET")
+    # Ratio d'activation du booster (ex: 0.6 => si < 60% de l'objectif, on active)
+    booster_activate_ratio: float = Field(0.6, alias="BOOSTER_ACTIVATE_RATIO")
+    # Rotation automatique des booster keywords
+    booster_rotation_enabled: bool = Field(True, alias="BOOSTER_ROTATION_ENABLED")
+    # Taille du sous-ensemble rotatif utilisé par cycle (0 = tous)
+    booster_rotation_subset_size: int = Field(3, alias="BOOSTER_ROTATION_SUBSET_SIZE")
+    # Mélange aléatoire à chaque cycle (sinon round-robin stable)
+    booster_rotation_shuffle: bool = Field(True, alias="BOOSTER_ROTATION_SHUFFLE")
 
     # Risk & pacing heuristics (anti-ban)
     risk_auth_suspect_threshold: int = Field(2, alias="RISK_AUTH_SUSPECT_THRESHOLD")

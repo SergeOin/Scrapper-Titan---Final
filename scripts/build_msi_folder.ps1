@@ -17,6 +17,33 @@ if(!(Test-Path $SourceDir)){
   Write-Error "SourceDir not found: $SourceDir. Build the app first (build_windows.ps1)."; exit 1
 }
 
+# --- Préparation dépendances critiques (numpy/pandas) ---
+# Si le répertoire dist ne contient pas numpy/pandas (cas d'un build PyInstaller one-folder incomplet),
+# on essaie d'installer les wheels dans un sous-dossier 'embedded_pkgs' puis on copie les packages.
+try {
+  $needsPandas = -not (Test-Path (Join-Path $SourceDir 'pandas'))
+  $needsNumpy  = -not (Test-Path (Join-Path $SourceDir 'numpy')) -and -not (Get-ChildItem -Path $SourceDir -Filter 'numpy*.pyd' -ErrorAction SilentlyContinue)
+  if($needsPandas -or $needsNumpy){
+    Write-Host "[build_msi_folder] Installing missing scientific deps (pandas=$needsPandas numpy=$needsNumpy)" -ForegroundColor Yellow
+    $python = (Get-Command python -ErrorAction SilentlyContinue)
+    if($python){
+      $embedDir = Join-Path $SourceDir 'embedded_pkgs'
+      New-Item -ItemType Directory -Force -Path $embedDir | Out-Null
+      if($needsNumpy){ & $python.Source --version | Out-Null; & $python.Source -m pip install --upgrade --no-cache-dir --target $embedDir numpy | Out-Null }
+      if($needsPandas){ & $python.Source -m pip install --upgrade --no-cache-dir --target $embedDir pandas | Out-Null }
+      # Copier contenu (éviter d'écraser existants)
+      Get-ChildItem $embedDir | ForEach-Object {
+        $dest = Join-Path $SourceDir $_.Name
+        if(-not (Test-Path $dest)){ Copy-Item -Recurse -Path $_.FullName -Destination $dest }
+      }
+    } else {
+      Write-Warning "Python introuvable pour installer numpy/pandas; assurez-vous qu'ils sont déjà dans le dossier dist."
+    }
+  }
+} catch {
+  Write-Warning "Echec installation auto numpy/pandas: $($_.Exception.Message)"
+}
+
 # Resolve version automatically
 if(-not $Version -or $Version -eq ''){
   if($env:BUILD_VERSION){
