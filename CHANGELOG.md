@@ -8,6 +8,21 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Added
 - (placeholder) Future enhancements will be listed here.
 
+## [1.3.9] - 2025-10-08
+### Added
+- Séparation des dépendances runtime vs développement (`requirements.txt` / `requirements-dev.txt`).
+- Script d'inspection de configuration sécurisé (`scraper/config_inspect.py`) + commande `make show-config` / `scripts/show_config.py`.
+- Génération automatique d'un badge de couverture `coverage_badge.svg` (script `scripts/generate_badge.py`) intégrée au workflow CI.
+- Makefile développeur (install, lint, test, coverage, format, run, etc.).
+
+### Changed
+- Workflows CI: installation des dépendances de dev séparées, génération du badge coverage comme artefact.
+- Logging bootstrap: affichage snapshot configuration masquée pour visibilité sans fuite de secrets.
+
+### Internal
+- Nettoyage du fichier `requirements.txt` (suppression des affectations d'environnement invalides, déplacement vers `.env`).
+- Amélioration ergonomie développeur (cibles Make, documentation README mise à jour avec nouvelle section couverture et usage Makefile).
+
 ## [1.3.6] - 2025-10-08
 ### Added
 - Rotation automatique des booster keywords (paramètres: `BOOSTER_ROTATION_ENABLED`, `BOOSTER_ROTATION_SUBSET_SIZE`, `BOOSTER_ROTATION_SHUFFLE`).
@@ -125,7 +140,8 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Overview
 Initial public-internal MVP iterations: multi-backend storage (Mongo/SQLite/CSV), recruitment signal metric, basic dashboard, Prometheus metrics, fallback logic, mock mode, packaging groundwork.
 
-[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.6...HEAD
+[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.9...HEAD
+[1.3.9]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.9
 [1.3.6]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.6
 [1.3.5]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.5
 [1.3.4]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.4
