@@ -36,11 +36,19 @@ fi
 echo "Running PyInstaller..."
 # Capture PyInstaller output to a log so that CI can display it on failure.
 set +e
-pyinstaller desktop/pyinstaller.spec $EXTRA \
-  --osx-bundle-identifier com.titan.scraper \
-  --name TitanScraper \
-  --icon build/icon.icns \
-  --log-level WARN 2>&1 | tee build/pyinstaller.log
+if [ -f "TitanScraper.spec" ]; then
+  pyinstaller TitanScraper.spec $EXTRA --log-level WARN 2>&1 | tee build/pyinstaller.log
+elif [ -f "desktop/pyinstaller.spec" ]; then
+  # Spec desktop alternative
+  pyinstaller desktop/pyinstaller.spec $EXTRA --log-level WARN 2>&1 | tee build/pyinstaller.log
+else
+  # Fallback one-shot generation without spec
+  pyinstaller desktop/main.py --name TitanScraper ${EXTRA} \
+    --icon build/icon.icns \
+    --noconsole \
+    --add-data "server/templates:server/templates" \
+    --log-level WARN 2>&1 | tee build/pyinstaller.log
+fi
 status=${PIPESTATUS[0]}
 set -e
 if [ $status -ne 0 ]; then

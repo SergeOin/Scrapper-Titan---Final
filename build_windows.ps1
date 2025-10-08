@@ -66,12 +66,23 @@ if (!(Test-Path $wv2)) {
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\dist
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\build\TitanScraper
 
-$spec = ".\desktop\pyinstaller.spec"
+$spec = ".\TitanScraper.spec"
+if (-not (Test-Path $spec)) {
+    if (Test-Path ".\desktop\pyinstaller.spec") { $spec = ".\desktop\pyinstaller.spec" }
+    else { $spec = $null }
+}
 $extra = ""
 if ($OneFile) { $extra = "--onefile" }
 
 Write-Host "Running PyInstaller..." -ForegroundColor Cyan
-pyinstaller $spec $extra
-if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller failed with code $LASTEXITCODE"; exit $LASTEXITCODE }
+if ($spec) {
+    pyinstaller $spec $extra
+    if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller failed with code $LASTEXITCODE"; exit $LASTEXITCODE }
+}
+else {
+    Write-Host "Spec file not found. Building via direct entrypoint (desktop/main.py)." -ForegroundColor Yellow
+    pyinstaller .\desktop\main.py --name TitanScraper $extra --noconsole --icon .\build\icon.ico --add-data "server/templates;server/templates"
+    if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller adhoc build failed with code $LASTEXITCODE"; exit $LASTEXITCODE }
+}
 
 Write-Host "Build complete. Output in .\\dist\\TitanScraper" -ForegroundColor Green

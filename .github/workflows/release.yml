@@ -69,8 +69,8 @@ jobs:
             Compress-Archive -Path dist/TitanScraper/* -DestinationPath build/TitanScraper-$version-portable.zip -Force
           }
           # SBOM (Windows) - pip cyclonedx plugin
-          python -m pip install cyclonedx-bom==3.19.6 || echo "CycloneDX install skipped"
-          if (Test-Path requirements.txt) { python -m cyclonedx_py requirements -i requirements.txt -o build/sbom-windows.json || echo "SBOM generation failed" }
+          python -m pip install cyclonedx-bom==7.1.0 || python -m pip install cyclonedx-bom || echo "CycloneDX install skipped"
+          if (Test-Path requirements.txt) { python -m cyclonedx_py requirements -i requirements.txt -o build/sbom-windows.json || echo "SBOM generation failed (non-blocking)" }
           Write-Host "--- BUILD DIR CONTENTS ---"
           Get-ChildItem build -Recurse | ForEach-Object { Write-Host $_.FullName }
           Write-Host "--- DIST DIR CONTENTS ---"
@@ -128,8 +128,8 @@ jobs:
           ls -R dist || true
       - name: Generate SBOM (macOS)
         run: |
-          python3 -m pip install cyclonedx-bom==3.19.6 || echo "CycloneDX install skipped"
-          if [ -f requirements.txt ]; then python3 -m cyclonedx_py requirements -i requirements.txt -o build/sbom-macos.json || echo "SBOM generation failed"; fi
+          python3 -m pip install cyclonedx-bom==7.1.0 || python3 -m pip install cyclonedx-bom || echo "CycloneDX install skipped"
+          if [ -f requirements.txt ]; then python3 -m cyclonedx_py requirements -i requirements.txt -o build/sbom-macos.json || echo "SBOM generation failed (non-blocking)"; fi
       # (Signature macOS optionnelle supprimée pour simplicité; réintroduire ici si nécessaire.)
       # Signing / Notarization template (commented to avoid secret lint issues until secrets are configured)
       # To enable: replace SECRET_* placeholders with real ${{ secrets.* }} references and uncomment blocks.
@@ -226,7 +226,7 @@ jobs:
         run: |
           set -e
           if ls sbom/sbom-*.json 1>/dev/null 2>&1; then
-            pip install cyclonedx-bom==3.19.6 jq -q || true
+            pip install cyclonedx-bom==7.1.0 jq -q || pip install cyclonedx-bom jq -q || true
             # Simple merge: concat components uniques (approche basique si cyclonedx-cli absent)
             if pip show cyclonedx-bom >/dev/null 2>&1; then
               # Fallback simple: prendre le premier comme base et ajouter manuellement composants uniques
