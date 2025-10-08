@@ -6,6 +6,10 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 ### Added
+- (placeholder)
+
+## [1.3.14] - 2025-10-08
+### Added
 - Test sentinelle `test_spec_presence.py` garantissant la présence et l'intégrité de `TitanScraper.spec`.
 - Workflow manuel `publish-release` (promotion d'une release draft en release publiée via `workflow_dispatch`).
 
@@ -204,7 +208,8 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Overview
 Initial public-internal MVP iterations: multi-backend storage (Mongo/SQLite/CSV), recruitment signal metric, basic dashboard, Prometheus metrics, fallback logic, mock mode, packaging groundwork.
 
-[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.13...HEAD
+[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.14...HEAD
+[1.3.14]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.14
 [1.3.13]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.13
 [1.3.12]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.12
 [1.3.9]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.9
