@@ -8,6 +8,14 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Added
 - (placeholder) Future enhancements will be listed here.
 
+## [1.3.11] - 2025-10-08
+### Added
+- Réintroduction d'un workflow CI minimal (tests + couverture optionnelle) après neutralisation totale précédente.
+- Nouveau workflow de release minimal (build Windows/macOS + release draft sur tag v*).
+
+### Notes
+- Fonctions avancées (SBOM, provenance, nightly, auto-bump) restent désactivées.
+
 ## [1.3.10] - 2025-10-08
 ### Changed
 - Neutralisation complète de tous les workflows GitHub Actions (tous les fichiers remplacés par des commentaires inertes).
