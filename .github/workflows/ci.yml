@@ -22,8 +22,11 @@ jobs:
 
       - name: Install system deps for Playwright (minimal)
         run: |
+          set -e
           sudo apt-get update
-          sudo apt-get install -y libnss3 libx11-6 libxkbcommon0 libxrandr2 libxcomposite1 libxdamage1 libxfixes3 libxrender1 libxext6 libxcb1 libasound2 || true
+          # Try libasound2 then fallback to libasound2t64 (Ubuntu 24.04 transition) – ignore errors individually
+          sudo apt-get install -y libnss3 libx11-6 libxkbcommon0 libxrandr2 libxcomposite1 libxdamage1 libxfixes3 libxrender1 libxext6 libxcb1 || true
+          sudo apt-get install -y libasound2 || sudo apt-get install -y libasound2t64 || true
 
       - name: Install dependencies
         run: |

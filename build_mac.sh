@@ -27,6 +27,7 @@ if [ -f "Titan Scraper logo.png" ]; then
 fi
 
 rm -rf dist build/TitanScraper
+mkdir -p dist
 
 EXTRA=""
 if [ "${ONEFILE:-0}" = "1" ]; then
@@ -58,10 +59,18 @@ if [ $status -ne 0 ]; then
 fi
 
 if [ ! -d dist/TitanScraper ]; then
-  echo "Le dossier dist/TitanScraper n'a pas été généré. Contenu de dist/ :" >&2
+  echo "WARN: dist/TitanScraper absent après PyInstaller (structure différente?). Listing dist/ :" >&2
   ls -R dist || true
-  echo "Abandon car l'application .app est absente avant création du DMG." >&2
-  exit 1
+  # Try to locate TitanScraper.app anywhere in dist
+  APP_CANDIDATE=$(find dist -maxdepth 3 -name 'TitanScraper.app' | head -n1 || true)
+  if [ -n "$APP_CANDIDATE" ]; then
+     echo "Found app at $APP_CANDIDATE; normalizing into dist/TitanScraper" >&2
+     mkdir -p dist/TitanScraper
+     rsync -a "$APP_CANDIDATE" dist/TitanScraper/
+  else
+     echo "ERROR: TitanScraper.app introuvable; DMG ne pourra pas être généré." >&2
+     exit 1
+  fi
 fi
 
 echo "Build complete. Check dist/TitanScraper" 
