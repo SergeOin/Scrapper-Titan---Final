@@ -91,15 +91,36 @@ types-redis~=4.6.0.20240425 # Type hints for redis
 # - After install: playwright install chromium
 # - If slimming image size, remove pandas and optional deps.
 
-DAILY_POST_TARGET=50
-BOOSTER_ACTIVATE_RATIO=0.6
-BOOSTER_KEYWORDS="recrute;offre;hiring;opportunité;juriste;avocat"
-RELAX_FILTERS_BELOW_TARGET=1
-ADAPTIVE_SCROLL=1
-ADAPTIVE_SCROLL_MAX=8
-MAX_SCROLL_STEPS=6
-MAX_POSTS_PER_KEYWORD=35
-GLOBAL_RATE_LIMIT_PER_MIN=140
-RATE_LIMIT_REFILL_PER_SEC=2.5
-PER_KEYWORD_DELAY_MS=400
-ADAPTIVE_PAUSE_EVERY=0
+## ---------------------------------------------------------------------------
+## Configuration Runtime (déplacée)
+## Les lignes suivantes étaient auparavant dans ce fichier mais NE SONT PAS des
+## dépendances pip valides. Elles provoquaient l'erreur:
+##   Invalid requirement: 'DAILY_POST_TARGET=50'
+## Place-les plutôt dans un fichier .env (chargé par python-dotenv) ou dans
+## les variables d'environnement du workflow CI/CD.
+## Exemple .env :
+##   DAILY_POST_TARGET=50
+##   BOOSTER_ACTIVATE_RATIO=0.6
+##   BOOSTER_KEYWORDS="recrute;offre;hiring;opportunité;juriste;avocat"
+##   RELAX_FILTERS_BELOW_TARGET=1
+##   ADAPTIVE_SCROLL=1
+##   ADAPTIVE_SCROLL_MAX=8
+##   MAX_SCROLL_STEPS=6
+##   MAX_POSTS_PER_KEYWORD=35
+##   GLOBAL_RATE_LIMIT_PER_MIN=140
+##   RATE_LIMIT_REFILL_PER_SEC=2.5
+##   PER_KEYWORD_DELAY_MS=400
+##   ADAPTIVE_PAUSE_EVERY=0
+## ---------------------------------------------------------------------------
+# DAILY_POST_TARGET=50
+# BOOSTER_ACTIVATE_RATIO=0.6
+# BOOSTER_KEYWORDS="recrute;offre;hiring;opportunité;juriste;avocat"
+# RELAX_FILTERS_BELOW_TARGET=1
+# ADAPTIVE_SCROLL=1
+# ADAPTIVE_SCROLL_MAX=8
+# MAX_SCROLL_STEPS=6
+# MAX_POSTS_PER_KEYWORD=35
+# GLOBAL_RATE_LIMIT_PER_MIN=140
+# RATE_LIMIT_REFILL_PER_SEC=2.5
+# PER_KEYWORD_DELAY_MS=400
+# ADAPTIVE_PAUSE_EVERY=0
