@@ -8,6 +8,23 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Added
 - (placeholder) Future enhancements will be listed here.
 
+## [1.3.13] - 2025-10-08
+### Fixed
+- Échec build macOS: suppression des options PyInstaller incompatibles avec l'usage d'un fichier `.spec` (plus d'erreur "option(s) not allowed").
+- Échec build Windows: absence de `desktop/pyinstaller.spec` corrigée par priorité à `TitanScraper.spec` puis fallback ad hoc.
+- Installation SBOM: pin cyclonedx-bom invalide (`3.19.6`) remplacée par version existante `7.1.0` + fallback no-pin.
+- Échecs potentiels greenlet sur Python 3.13 évités en conservant usage spec sous l'interpréteur 3.11.
+
+### Changed
+- Étapes SBOM dans `release.yml` rendues explicitement non bloquantes; génération principale confiée au workflow `supply-chain`.
+- Scripts build (mac/windows) robustifiés avec fallback sans spec.
+
+### Internal
+- Ajout logique fallback PyInstaller (mac & windows) et simplification pipeline.
+
+### Notes
+- Prochain tag confirmera la réussite complète (MSI + DMG) avec corrections; signature macOS toujours désactivée.
+
 ## [1.3.12] - 2025-10-08
 ### Added
 - Workflow `supply-chain` séparé (SBOM CycloneDX, scan OSV via pip-audit, tentative de téléchargement des assets de release pour attestation provenance) déclenché sur tags `v*` et `workflow_dispatch`.
@@ -180,7 +197,8 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Overview
 Initial public-internal MVP iterations: multi-backend storage (Mongo/SQLite/CSV), recruitment signal metric, basic dashboard, Prometheus metrics, fallback logic, mock mode, packaging groundwork.
 
-[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.12...HEAD
+[Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.13...HEAD
+[1.3.13]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.13
 [1.3.12]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.12
 [1.3.9]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.9
 [1.3.6]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.6
