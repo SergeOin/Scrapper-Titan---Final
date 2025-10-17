@@ -13,6 +13,16 @@ pip install -r .\desktop\requirements-desktop.txt > $null
 # Use existing spec (desktop/pyinstaller.spec) which already includes templates & assets
 $spec = 'desktop/pyinstaller.spec'
 
+# Pre-clean: stop any running TitanScraper.exe and remove previous dist folder to avoid file locks
+try {
+  Get-Process -Name 'TitanScraper' -ErrorAction SilentlyContinue | Stop-Process -Force
+  Start-Sleep -Milliseconds 400
+} catch { }
+$prevDist = Join-Path 'dist' 'TitanScraper'
+if(Test-Path $prevDist){
+  try { Remove-Item -Recurse -Force $prevDist } catch { Write-Warning "Pre-clean: unable to remove $prevDist : $_" }
+}
+
 # Build one-folder (recommended for desktop so Playwright browser path works). Use --noconfirm --clean
 $cmd = @('pyinstaller','--noconfirm','--clean', $spec)
 Write-Host "[build_desktop_exe] Running: $($cmd -join ' ')"
@@ -29,11 +39,21 @@ try {
   $exe = Join-Path $distDir 'TitanScraper.exe'
   if(!(Test-Path $exe)){ throw "Executable not found: $exe" }
   $p = Start-Process -FilePath $exe -PassThru
-  Start-Sleep -Seconds 5
+  # Give it a moment to start and write last_server.json
+  Start-Sleep -Seconds 8
+  $ud = Join-Path $env:LOCALAPPDATA 'TitanScraper'
+  $srvInfo = Join-Path $ud 'last_server.json'
+  $healthUrl = 'http://127.0.0.1:8000/health'
+  if(Test-Path $srvInfo){
+    try {
+      $j = Get-Content $srvInfo -Raw | ConvertFrom-Json
+      if($j.host -and $j.port){ $healthUrl = ('http://{0}:{1}/health' -f $j.host, $j.port) }
+    } catch {}
+  }
   try {
-    $resp = Invoke-WebRequest -Uri 'http://127.0.0.1:8000/health' -UseBasicParsing -TimeoutSec 3
-    if($resp.StatusCode -eq 200){ Write-Host "[build_desktop_exe] Health OK" -ForegroundColor Green }
-    else { Write-Warning "Health endpoint returned $($resp.StatusCode)" }
-  } catch { Write-Warning "Unable to contact health endpoint: $_" }
+    $resp = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 4
+    if($resp.StatusCode -eq 200){ Write-Host "[build_desktop_exe] Health OK ($healthUrl)" -ForegroundColor Green }
+    else { Write-Warning "Health endpoint returned $($resp.StatusCode) ($healthUrl)" }
+  } catch { Write-Warning "Unable to contact health endpoint ($healthUrl): $_" }
   try { Stop-Process -Id $p.Id -Force } catch {}
 } catch { Write-Warning "Smoke test failed: $_" }

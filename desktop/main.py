@@ -1023,6 +1023,8 @@ def main():
     os.environ.setdefault("TRACE_DIR", str(user_base / "traces"))
     os.environ.setdefault("CSV_FALLBACK_FILE", str(user_base / "exports" / "fallback_posts.csv"))
     os.environ.setdefault("LOG_FILE", str(user_base / "logs" / "server.log"))
+    # Ensure SQLite database lives in the user-writable data dir (avoids permission issues and improves persistence)
+    os.environ.setdefault("SQLITE_PATH", str(user_base / "fallback.sqlite3"))
     # Persist browser session & lightweight session store in user-writable data dir (avoid read-only install dir)
     os.environ.setdefault("STORAGE_STATE", str(user_base / "storage_state.json"))
     os.environ.setdefault("SESSION_STORE_PATH", str(user_base / "session_store.json"))
@@ -1242,7 +1244,9 @@ def main():
                     # If login required, attempt background auto-login (desktop credentials.json)
                     if target_path.startswith("/login"):
                         try:
-                            if _attempt_auto_login_if_configured(base_url, user_base):
+                            # Note: _attempt_auto_login_if_configured signature is (user_base, base_url, timeout)
+                            # Ensure we pass arguments in this order to avoid TypeError on Path operations
+                            if _attempt_auto_login_if_configured(user_base, base_url):
                                 target_path = "/"  # session now valid
                         except Exception:  # pragma: no cover
                             logging.getLogger("desktop").warning("auto_login_wrapper_failed", exc_info=True)

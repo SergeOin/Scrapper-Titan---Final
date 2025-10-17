@@ -24,17 +24,26 @@ import re
 
 # Core legal role keywords (lowercase, accent-insensitive matching recommended upstream)
 LEGAL_ROLE_KEYWORDS = [
+    # Rôles détaillés (accent-insensible conseillé en amont)
     "avocat collaborateur","avocat associé","avocat counsel","paralegal","legal counsel","juriste",
     "responsable juridique","directeur juridique","notaire stagiaire","notaire associé","notaire salarié",
     "notaire assistant","clerc de notaire","rédacteur d’actes","rédacteur d'actes","responsable fiscal",
-    "directeur fiscal","comptable taxateur","formaliste","juridique","legal","fiscal","droit"  # generic stems
+    "directeur fiscal","comptable taxateur","formaliste",
+    # Termes additionnels demandés (génériques mais utiles)
+    "avocat","notaire",
+    # Stems génériques
+    "juridique","legal","fiscal","droit"
 ]
 
 # Recruitment signal phrases (complementary to utils.compute_recruitment_signal)
 RECRUITMENT_PHRASES = [
+    # Phrases existantes
     "nous recrutons","on recrute","je recrute","recherche un(e)","recherche son/sa","profil recherché",
     "poste à pourvoir","poste a pourvoir","candidature","rejoindre notre équipe","join our team","we are hiring",
-    "hiring for","postulez","envoyez votre cv","offre d'emploi","offre d emploi","opportunité","opportunite"
+    "hiring for","postulez","envoyez votre cv","offre d'emploi","offre d emploi","opportunité","opportunite",
+    # Nouvelles expressions demandées
+    "je recrute un(e) juriste","je recrute un(e) avocat collaborateur","hiring","on recherche un juriste",
+    "nous cherchons","join the team","rejoignez la direction juridique",
 ]
 
 # Negative / informational phrases that should suppress recruitment labeling when no strong positive phrase

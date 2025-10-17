@@ -113,6 +113,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
                         logger.error("inprocess_cycle_failed", error=str(exc))
                     await asyncio.sleep(interval)
             bg_task = asyncio.create_task(_periodic())
+            # Kick an immediate first cycle so users don't wait for the first interval
+            async def _kickoff_once():
+                try:
+                    if ctx.settings.scraping_enabled:
+                        from scraper.worker import process_job  # local import
+                        await process_job(ctx.settings.keywords, ctx)
+                        ctx.logger.info("inprocess_kickoff_complete")
+                except Exception as exc:
+                    ctx.logger.error("inprocess_kickoff_failed", error=str(exc))
+            asyncio.create_task(_kickoff_once())
         else:
             ctx.logger.info("inprocess_autonomous_disabled_interval_zero")
     # Periodic company normalization (SQLite only, opt-in via COMPANY_NORM_INTERVAL_SECONDS)

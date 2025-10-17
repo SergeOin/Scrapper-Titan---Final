@@ -633,6 +633,8 @@ async def bootstrap(force: bool = False) -> AppContext:
             ("legal_daily_count", 0),
             ("legal_daily_discard_intent", 0),
             ("legal_daily_discard_location", 0),
+            # UI stats tracking for /api/legal_stats expects this date marker
+            ("legal_stats_date", None),
         ]:
             if not hasattr(ctx, attr):
                 try:

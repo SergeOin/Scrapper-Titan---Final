@@ -5,17 +5,33 @@ Param(
   # Nom affiché (Add/Remove Programs, menu démarrer, raccourcis) – demandé: "Titan Scraper"
   [string]$DisplayName = 'Titan Scraper',
   [string]$Manufacturer = 'Titan Partners',
-  [string]$Version = '1.0.0',
+  [string]$Version = '',
   [switch]$Aggressive, # active des exclusions plus larges (playwright lib js, scripts reinstall multi-OS, pw-browsers, etc.)
   [switch]$SkipPrune, # diagnostique: ne retire aucun fichier (pour vérifier heat + existence)
   [switch]$KeepTzData, # si défini, on conserve tzdata/pytz zoneinfo
   [switch]$PerMachine, # si défini, installe sous ProgramFiles (nécessite élévation). Par défaut: per-user (LocalAppData)
-  [switch]$NoEmbedCab # si défini, laisse le/les cab(s) externes (cab1.cab). Par défaut on EMBED pour éviter l'erreur fichier manquant.
+  [switch]$NoEmbedCab, # si défini, laisse le/les cab(s) externes (cab1.cab). Par défaut on EMBED pour éviter l'erreur fichier manquant.
+  # Signing (optionnel) – si fourni, signe le MSI à la fin
+  [string]$SignPfxPath,
+  [string]$SignPfxPassword,
+  [string]$TimestampUrl = 'http://timestamp.digicert.com',
+  # Alternative: signer via certificat installé (magasin Windows)
+  [string]$CertThumbprint,
+  [ValidateSet('CurrentUser','LocalMachine')][string]$CertStoreLocation = 'CurrentUser',
+  [string]$CertStoreName = 'My'
 )
 
 $ErrorActionPreference = 'Stop'
 
 $root = (Join-Path $PSScriptRoot '..')
+$verFile = Join-Path $root 'VERSION'
+if([string]::IsNullOrWhiteSpace($Version)){
+  if(Test-Path $verFile){
+    try { $Version = (Get-Content $verFile -Raw).Trim() } catch { $Version = '1.0.0' }
+  } else {
+    $Version = '1.0.0'
+  }
+}
 $distFolder = Join-Path $root (Join-Path 'dist' $AppFolderName)
 if(!(Test-Path $distFolder)){ Write-Error "Folder distribution not found at $distFolder. Run scripts/build_desktop_exe.ps1 first."; exit 1 }
 
@@ -122,6 +138,12 @@ if($PerMachine){
   $installScope = 'perUser'
   $parentFolderId = 'LocalAppDataFolder'
 }
+# Aligner la racine de registre sur le scope d'installation
+if($PerMachine){
+  $registryRoot = 'HKLM'
+} else {
+  $registryRoot = 'HKCU'
+}
 if($NoEmbedCab){
   $embedAttr = ''
 } else {
@@ -133,7 +155,6 @@ if($NoEmbedCab){
   <Product Id='*' Name='$DisplayName' Language='1036' Version='$Version' Manufacturer='$Manufacturer' UpgradeCode='{9B5C7D24-38B2-4D4F-A0E5-4AA8F0F4B6C2}'>
     <Package InstallerVersion='500' Compressed='yes' InstallScope='$installScope' />
     <MajorUpgrade DowngradeErrorMessage='Une version plus recente est deja installee.' />
-    <!-- MediaTemplate avec EmbedCab par défaut pour éviter les erreurs "cab1.cab introuvable" lors d'un transfert seul du MSI. -->
     <MediaTemplate$embedAttr />
     <Property Id='ARPNOREPAIR' Value='1' />
     <Property Id='ARPNOMODIFY' Value='1' />
@@ -149,7 +170,7 @@ if($NoEmbedCab){
     <DirectoryRef Id='AppProgramMenu'>
       <!-- Explicit GUID; provide HKCU registry value as KeyPath for per-user or per-machine consistent marker -->
       <Component Id='CmpShortcut' Guid='{3F6A7A42-9E38-4E53-A31B-8B66F9D5A4C1}'>
-        <RegistryValue Root='HKCU' Key='Software\\$DisplayName' Name='InstallPath' Type='string' Value='[INSTALLFOLDER]' KeyPath='yes' />
+  <RegistryValue Root='HKCU' Key='Software\$DisplayName' Name='InstallPath' Type='string' Value='[INSTALLFOLDER]' KeyPath='yes' />
         <Shortcut Id='StartMenuShortcut' Name='$DisplayName' Target='[INSTALLFOLDER]TitanScraper.exe' WorkingDirectory='INSTALLFOLDER' />
         <Shortcut Id='DesktopShortcut' Directory='DesktopFolder' Name='$DisplayName' Target='[INSTALLFOLDER]TitanScraper.exe' WorkingDirectory='INSTALLFOLDER' />
         <RemoveFolder Id='RemoveAppProgramMenu' Directory='AppProgramMenu' On='uninstall' />
@@ -193,4 +214,33 @@ Write-Host '[build_desktop_msi] Linking (light)...' -ForegroundColor Cyan
 $msiName = "$Name-folder-$Version.msi"
 & $light.Path -o (Join-Path $out $msiName) (Join-Path $work 'Product.wixobj') (Join-Path $work 'Harvest.wixobj')
 
-Write-Host "[build_desktop_msi] MSI created: $(Join-Path $out $msiName)" -ForegroundColor Green
+$msiOut = (Join-Path $out $msiName)
+Write-Host "[build_desktop_msi] MSI created: $msiOut" -ForegroundColor Green
+
+# Signature optionnelle du MSI si paramètres fournis
+$sigRequested = $false
+if($SignPfxPath -or $CertThumbprint){ $sigRequested = $true }
+if($sigRequested){
+  $signtool = Get-Command signtool.exe -ErrorAction SilentlyContinue
+  if(!$signtool){
+    Write-Warning "signtool.exe introuvable dans le PATH. Saut de l'étape de signature. Installez le Windows SDK ou ajoutez signtool au PATH."
+  } else {
+    Write-Host "[build_desktop_msi] Signature du MSI..." -ForegroundColor Cyan
+    $args = @('sign','/fd','sha256','/td','sha256')
+    if($SignPfxPath){
+      if(!(Test-Path $SignPfxPath)){
+        Write-Warning "PFX non trouvé: $SignPfxPath. Saut signature."
+        return
+      }
+      $args += @('/f', $SignPfxPath)
+      if($SignPfxPassword){ $args += @('/p', $SignPfxPassword) }
+    } elseif($CertThumbprint){
+      $args += @('/sha1', $CertThumbprint, '/s', $CertStoreName)
+      if($CertStoreLocation -eq 'LocalMachine'){ $args += '/sm' }
+    }
+    if($TimestampUrl){ $args += @('/tr', $TimestampUrl) }
+    $args += @($msiOut)
+    & $signtool.Path @args
+    if($LASTEXITCODE -ne 0){ Write-Warning "Echec de la signature (code $LASTEXITCODE). MSI non signé." } else { Write-Host "[build_desktop_msi] MSI signé avec succès." -ForegroundColor Green }
+  }
+}

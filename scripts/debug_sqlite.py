@@ -1,6 +1,13 @@
 from __future__ import annotations
 import sqlite3
 from pathlib import Path
+import sys, os
+
+# Ensure project root is on sys.path when invoked from scripts/
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from scraper.bootstrap import get_context
 import asyncio
 

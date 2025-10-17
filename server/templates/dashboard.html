@@ -84,7 +84,7 @@
   </div>
 
   <div id="statusContainer" data-interval="{{ autonomous_interval or 0 }}" data-init-wait="{{ login_initial_wait_seconds or 120 }}" style="margin-top:0.75rem; font-size:0.9rem; display:flex; align-items:center; gap:.75rem;">
-  <div id="statusHint" class="status-hint status-hint-wait" aria-live="polite"><span class="inline-spinner" aria-hidden="true"></span>Démarrage du premier cycle…</div>
+  <div id="statusHint" class="status-hint status-hint-wait" aria-live="polite"><span class="inline-spinner" aria-hidden="true"></span>Cycle en cours…</div>
   </div>
   <style>
   /* Status line removed; only hint banner remains */
@@ -309,14 +309,14 @@
             setHintVisible(true);
           } else {
             // Initial: immediate launch message with spinner (no artificial wait)
-            setHintHTML(`${spinner}Premier cycle en cours…`, 'status-hint-wait');
+            setHintHTML(`${spinner}Cycle en cours…`, 'status-hint-wait');
             setHintVisible(true);
             if (!_autoTriggeredFirstRun) {
               _autoTriggeredFirstRun = true;
               try {
                 const fd = new FormData();
                 const tr = await fetch('/trigger', { method:'POST', body: fd, headers: { 'X-Trigger-From': 'dashboard' } });
-                if (tr.ok) { showToast('Premier cycle lancé','info'); }
+                if (tr.ok) { showToast('Cycle lancé','info'); }
               } catch(_) { /* ignore */ }
             }
             ensureAutoPulse(true, interval);
@@ -493,14 +493,9 @@
   <form id="searchForm" action="/" method="get" style="margin-top:1rem; display:flex; gap:.5rem; align-items:center;">
     <input type="text" name="q" placeholder="Rechercher (texte, auteur, entreprise, mot-clé)" value="{{ q or '' }}" style="flex:1; padding:.5rem .6rem; border:1px solid #cbd5e1; border-radius:6px;" />
     <input type="hidden" name="limit" value="{{ limit }}" />
-    <select name="intent" style="padding:.5rem .6rem; border:1px solid #cbd5e1; border-radius:6px; background:#fff;">
-      <option value="" {% if not intent %}selected{% endif %}>Intent: tous</option>
-      <option value="recherche_profil" {% if intent=='recherche_profil' %}selected{% endif %}>recherche_profil</option>
-      <option value="autre" {% if intent=='autre' %}selected{% endif %}>autre</option>
-    </select>
     <button type="submit">Rechercher</button>
     {% if q %}
-      <a href="/?limit={{ limit }}{% if intent %}&intent={{ intent }}{% endif %}" style="font-size:.85rem;">Effacer</a>
+      <a href="/?limit={{ limit }}" style="font-size:.85rem;">Effacer</a>
     {% endif %}
   </form>
   <div id="legalStatsBar" style="margin-top:.75rem; font-size:.7rem; color:#334155;"></div>
@@ -532,17 +527,17 @@
       <tr>
         {% set nextDir = 'asc' if sort_dir=='desc' else 'desc' %}
         <th>
-          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if intent %}&intent={{ intent }}{% endif %}&sort_by=keyword&sort_dir={{ 'desc' if sort_by!='keyword' else nextDir }}">Keyword{% if sort_by=='keyword' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
+          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=keyword&sort_dir={{ 'desc' if sort_by!='keyword' else nextDir }}">Keyword{% if sort_by=='keyword' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
         </th>
         <th>
-          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if intent %}&intent={{ intent }}{% endif %}&sort_by=author&sort_dir={{ 'desc' if sort_by!='author' else nextDir }}">Auteur{% if sort_by=='author' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
+          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=author&sort_dir={{ 'desc' if sort_by!='author' else nextDir }}">Auteur{% if sort_by=='author' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
         </th>
         <th>
-          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if intent %}&intent={{ intent }}{% endif %}&sort_by=company&sort_dir={{ 'desc' if sort_by!='company' else nextDir }}">Entreprise{% if sort_by=='company' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
+          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=company&sort_dir={{ 'desc' if sort_by!='company' else nextDir }}">Entreprise{% if sort_by=='company' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
         </th>
         <th>Texte</th>
         <th>
-          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if intent %}&intent={{ intent }}{% endif %}&sort_by=published_at&sort_dir={{ 'desc' if sort_by!='published_at' else nextDir }}">Date{% if sort_by=='published_at' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
+          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=published_at&sort_dir={{ 'desc' if sort_by!='published_at' else nextDir }}">Date{% if sort_by=='published_at' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
         </th>
   <th>Lien</th>
   <th>Statut</th>
@@ -593,7 +588,7 @@
   </table>
   <nav class="pagination">
     {% for page_num in range(1, total_pages + 1) %}
-      <a href="/?page={{ page_num }}&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if intent %}&intent={{ intent }}{% endif %}" class="{% if page_num == page %}active{% endif %}">{{ page_num }}</a>
+  <a href="/?page={{ page_num }}&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}" class="{% if page_num == page %}active{% endif %}">{{ page_num }}</a>
     {% endfor %}
   </nav>
   <a id="floatingTrash" class="floating-trash" href="/corbeille" title="Ouvrir la corbeille">

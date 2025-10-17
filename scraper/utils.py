@@ -327,6 +327,11 @@ _RECRUIT_TOKENS = [
     "opportunite",
     "hiring",
     "job",
+    "nous cherchons",
+    "on recherche",
+    "rejoignez",
+    "join the team",
+    "join our team",
     "embauche",
     "cdi",
     "cdd",
@@ -373,9 +378,13 @@ def is_opportunity(text: str | None, *, threshold: float = 0.05) -> bool:
         return True
     low = text.lower()
     phrase_hits = [
+        # existants
         "nous recrutons", "on recrute", "je recrute", "recrutement en cours",
         "poste a pourvoir", "poste à pourvoir", "apply now", "we are hiring",
-        "we're hiring", "join our team", "envoyez votre cv", "postulez" ,
+        "we're hiring", "join our team", "envoyez votre cv", "postulez",
+        # nouveaux
+        "hiring", "on recherche un juriste", "nous cherchons", "join the team",
+        "rejoignez la direction juridique",
     ]
     return any(p in low for p in phrase_hits)
 

@@ -38,7 +38,12 @@ param(
 function Set-Env {
   param($Name,$Value)
   Write-Host "[env] $Name=$Value" -ForegroundColor DarkCyan
-  $Env:$Name = $Value
+  try {
+    # PowerShell 5.1-compatible dynamic env var assignment
+    Set-Item -Path ("Env:{0}" -f $Name) -Value ($Value.ToString()) -Force | Out-Null
+  } catch {
+    [System.Environment]::SetEnvironmentVariable($Name, [string]$Value, 'Process')
+  }
 }
 
 # 1. Activer venv
@@ -50,12 +55,16 @@ if (-not (Test-Path .venv)) {
 
 # 2. Variables d'environnement essentielles
 Set-Env SCRAPING_ENABLED 1
-Set-Env PLAYWRIGHT_MOCK_MODE ($Mock.IsPresent ? 1 : 0)
-Set-Env PLAYWRIGHT_HEADLESS ($Headless.IsPresent ? 1 : 0)
+if ($Mock.IsPresent) { Set-Env PLAYWRIGHT_MOCK_MODE 1 } else { Set-Env PLAYWRIGHT_MOCK_MODE 0 }
+if ($Headless.IsPresent) { Set-Env PLAYWRIGHT_HEADLESS 1 } else { Set-Env PLAYWRIGHT_HEADLESS 0 }
 Set-Env SCRAPE_KEYWORDS $Keywords
 Set-Env AUTONOMOUS_WORKER_INTERVAL_SECONDS $Interval
 Set-Env LOGIN_INITIAL_WAIT_SECONDS $LoginWait
 Set-Env LOG_LEVEL info
+
+# Prefer local SQLite fallback unless explicitly overridden
+if (-not $Env:DISABLE_MONGO) { Set-Env DISABLE_MONGO 1 }
+if (-not $Env:DISABLE_REDIS) { Set-Env DISABLE_REDIS 1 }
 
 # (Optionnel) tokens pour endpoints protégés si vous voulez les utiliser
 if (-not $Env:TRIGGER_TOKEN) { Set-Env TRIGGER_TOKEN (New-Guid).Guid.Substring(0,8) }
