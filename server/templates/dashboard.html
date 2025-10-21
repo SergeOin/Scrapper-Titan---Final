@@ -46,9 +46,23 @@
   /* Inline spinner for status banner */
   .inline-spinner { width:14px; height:14px; border:2px solid #86efac; border-top-color:#166534; border-radius:50%; display:inline-block; animation:spin .8s linear infinite; margin-right:6px; vertical-align:middle; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .floating-trash { position:fixed; bottom:1.5rem; right:1.5rem; background:#1e293b; color:#f8fafc; padding:0.6rem 0.9rem; border-radius:999px; display:flex; align-items:center; gap:0.5rem; box-shadow:0 10px 25px rgba(15,23,42,0.25); text-decoration:none; font-size:0.9rem; }
+  .floating-trash { position:fixed; bottom:1.5rem; right:8.5rem; background:#1e293b; color:#f8fafc; padding:0.6rem 0.9rem; border-radius:999px; display:flex; align-items:center; gap:0.5rem; box-shadow:0 10px 25px rgba(15,23,42,0.25); text-decoration:none; font-size:0.9rem; }
   .floating-trash:hover { background:#0f172a; }
   .floating-trash .count { background:#facc15; color:#1e293b; padding:0 0.6rem; border-radius:999px; font-weight:600; }
+  .floating-block { position:fixed; bottom:1.5rem; right:1.5rem; background:#0ea5e9; color:#f0f9ff; padding:0.6rem 0.9rem; border-radius:999px; display:flex; align-items:center; gap:0.5rem; box-shadow:0 10px 25px rgba(14,165,233,0.35); text-decoration:none; font-size:0.9rem; }
+  .floating-block:hover { background:#0284c7; }
+  .floating-block .icon { display:inline-flex; align-items:center; justify-content:center; }
+  .floating-block .icon svg { width:16px; height:16px; display:block; }
+  /* Drawer styles */
+  .drawer-backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.45); opacity:0; pointer-events:none; transition:opacity .2s ease; z-index:1000; }
+  .drawer { position:fixed; top:0; right:-520px; width:520px; max-width:92vw; height:100%; background:#0b1220; color:#e2e8f0; border-left:1px solid rgba(148,163,184,0.2); box-shadow: -12px 0 30px rgba(0,0,0,0.35); transition:right .22s ease; z-index:1001; display:flex; flex-direction:column; }
+  .drawer.open { right:0; }
+  .drawer-backdrop.open { opacity:1; pointer-events:auto; }
+  .drawer header { display:flex; align-items:center; justify-content:space-between; padding:0.8rem 1rem; border-bottom:1px solid rgba(148,163,184,0.2); }
+  .drawer .close-btn { background:#1f2937; color:#e5e7eb; border:none; padding:0.35rem 0.6rem; border-radius:6px; cursor:pointer; font-size:0.85rem; }
+  .drawer .close-btn:hover { background:#111827; }
+  .drawer .content { flex:1; }
+  .drawer .content iframe { width:100%; height:100%; border:0; }
     .footer { margin-top:3rem; font-size:0.7rem; color:#777; }
     form.inline { display:inline; }
     nav.pagination { margin-top:1rem; display:flex; gap:0.4rem; flex-wrap:wrap; }
@@ -56,6 +70,13 @@
     nav.pagination a.active { background:#2563eb; color:#fff; border-color:#2563eb; }
     nav.pagination a:hover { background:#1d4ed8; color:#fff; }
     .wrap { white-space:pre-wrap; word-break:break-word; }
+    /* Hide legacy pagination for infinite scroll UX */
+    nav.pagination { display:none !important; }
+  /* Infinite loader */
+  #infiniteLoader { display:none; align-items:center; justify-content:center; gap:.5rem; color:#334155; font-size:.85rem; padding:1rem 0; }
+    #infiniteLoader .spinner { width:16px; height:16px; border:2px solid #cbd5e1; border-top-color:#2563eb; border-radius:50%; animation:spin .8s linear infinite; }
+  /* End-of-list */
+  #endOfList { display:none; text-align:center; color:#475569; font-size:.85rem; padding:0.25rem 0 1.25rem; }
     /* Neutral header link styling (no blue, no underline) */
     th a { color:#222; text-decoration:none; }
     th a:visited { color:#222; }
@@ -153,6 +174,22 @@
       if(!badge) return;
       const value = Number.isFinite(count) ? count : 0;
       badge.textContent = value;
+    }
+
+    function updateBlockedBadge(count){
+      const badge = document.getElementById('blockedCountBadge');
+      if(!badge) return;
+      const value = Number.isFinite(count) ? count : 0;
+      badge.textContent = value;
+    }
+
+    async function refreshBlockedCount(){
+      try{
+        const r = await fetch('/blocked-accounts/count', { credentials:'include' });
+        if(!r.ok) return;
+        const data = await r.json();
+        updateBlockedBadge(data.count ?? 0);
+      }catch(_){ /* ignore */ }
     }
 
     async function refreshTrashCount(){
@@ -416,6 +453,119 @@
         // No need to rebind per-row handlers thanks to event delegation
       } catch(e){ /* silent */ }
     }
+      // ---------- Infinite scroll state + renderer ----------
+      const _state = {
+        page: 1,
+        limit: 30,
+        q: new URL(window.location.href).searchParams.get('q') || '',
+        sort_by: '{{ sort_by }}' || 'collected_at',
+        sort_dir: '{{ sort_dir }}' || 'desc',
+        loading: false,
+        done: false,
+      };
+
+      function _rowHTML(p){
+        const txt = (p.text||'');
+        const short = txt.length>500? txt.substring(0,500)+'…' : txt;
+        const dateVal = p.published_at || p.collected_at;
+        let dateFmt = '';
+        try { dateFmt = new Date(dateVal).toLocaleString('fr-FR',{dateStyle:'short', timeStyle:'short'});} catch(_) { dateFmt = dateVal||''; }
+        const searchFallback = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent((txt||p.author||'').slice(0,80))}`;
+        const permalink = p.permalink ? `<a href="${p.permalink}" target="_blank">ouvrir</a>` : `<a href="${searchFallback}" target="_blank" title="Lien direct introuvable - recherche approximative">rechercher</a>`;
+        const status = p.status || '—';
+        const metierSub = p.metier ? `<div class="meta-sub" title="Métier détecté">${String(p.metier||'').replace(/</g,'&lt;')}</div>` : '';
+        const oppBadge = p.opportunity ? '<span class="pill pill-opp" title="Signal de recrutement détecté">Opportunité</span> ' : '';
+        const starActive = Number(p.is_favorite || 0) === 1;
+        const starClass = starActive ? 'icon-btn favorite-toggle active' : 'icon-btn favorite-toggle';
+        const starTitle = starActive ? 'Retirer des favoris' : 'Marquer en favori';
+        const companyCell = (p.company&&String(p.company).toLowerCase()!==String(p.author||'').toLowerCase())?p.company:'—';
+        return `<tr data-post-id="${p._id}">
+          <td><code>${p.keyword||''}</code></td>
+          <td>${(p.author||'').replace(/\\b(\\w+\\s+\\w+)\\s+\\1\\b/gi,'$1')}${metierSub}</td>
+          <td>${companyCell}</td>
+          <td class="wrap">${oppBadge}${short.replace(/</g,'&lt;')}</td>
+          <td>${dateFmt}</td>
+          <td>${permalink}</td>
+          <td>${status}</td>
+          <td class="actions-cell">
+            <button type="button" class="${starClass}" data-id="${p._id}" title="${starTitle}">★</button>
+            <button type="button" class="icon-btn delete-post" data-id="${p._id}" title="Supprimer ce post">🗑</button>
+          </td>
+        </tr>`;
+      }
+
+      function _setLoader(visible){
+        const el = document.getElementById('infiniteLoader');
+        if(el){ el.style.display = visible ? 'flex' : 'none'; }
+      }
+
+      function _setEndOfList(visible){
+        const el = document.getElementById('endOfList');
+        if(el){ el.style.display = visible ? 'block' : 'none'; }
+      }
+
+      async function loadNextPage(){
+        if(_state.loading || _state.done) return;
+        _state.loading = true;
+        _setLoader(true);
+        try {
+          const q = encodeURIComponent(_state.q||'');
+          const sortBy = encodeURIComponent(_state.sort_by||'');
+          const sortDir = encodeURIComponent(_state.sort_dir||'');
+          const r = await fetch(`/api/posts?page=${_state.page}&limit=${_state.limit}&q=${q}&sort_by=${sortBy}&sort_dir=${sortDir}`, { credentials: 'include' });
+          if(!r.ok){ _state.done = true; return; }
+          const data = await r.json();
+          const items = Array.isArray(data.items) ? data.items : [];
+          const tbody = document.querySelector('table tbody');
+          if(!tbody) return;
+          if(_state.page === 1 && items.length === 0){
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;font-size:0.8rem;color:#555;">Aucun résultat pour le moment.</td></tr>';
+            _state.done = true;
+            _setEndOfList(false);
+            return;
+          }
+          if(items.length > 0){
+            const html = items.map(_rowHTML).join('');
+            if(_state.page === 1 && tbody.children.length > 0){ tbody.innerHTML = ''; }
+            const tmp = document.createElement('tbody'); tmp.innerHTML = html; // to avoid doing innerHTML+=
+            while(tmp.firstChild){ tbody.appendChild(tmp.firstChild); }
+            _state.page += 1;
+            if(items.length < _state.limit){ _state.done = true; }
+            // hide end-of-list if we just appended more
+            _setEndOfList(false);
+          } else {
+            _state.done = true;
+          }
+        } catch(e){ /* ignore */ }
+        finally {
+          _state.loading = false; _setLoader(false);
+          // show end-of-list if done and there is at least one row
+          try {
+            const tbody = document.querySelector('table tbody');
+            const hasRows = !!(tbody && tbody.querySelector('tr'));
+            _setEndOfList(_state.done && hasRows);
+          } catch(_) {}
+        }
+      }
+
+      function resetAndLoad(){
+        const tbody = document.querySelector('table tbody');
+        if(tbody) tbody.innerHTML = '';
+        _state.page = 1; _state.done = false; _setEndOfList(false); loadNextPage();
+      }
+
+      // Override previous refreshPosts to perform a reset reload
+      async function refreshPosts(){ resetAndLoad(); }
+
+      // Scroll listener
+      let _scrollBind = false;
+      function bindInfiniteScroll(){
+        if(_scrollBind) return; _scrollBind = true;
+        window.addEventListener('scroll', ()=>{
+          const nearBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - 300);
+          if(nearBottom){ loadNextPage(); }
+        });
+      }
     function setupSSE(){
       try {
         const es = new EventSource('/stream');
@@ -476,6 +626,19 @@
   startStatusTicker();
   setupActionDelegation();
   refreshTrashCount();
+  refreshBlockedCount();
+  setInterval(refreshBlockedCount, 15000);
+  // Drawer logic
+  const blockBtn = document.getElementById('floatingBlock');
+  const drawer = document.getElementById('blockedDrawer');
+  const backdrop = document.getElementById('drawerBackdrop');
+  const closeBtn = document.getElementById('drawerCloseBtn');
+  function openDrawer(){ if(drawer && backdrop){ drawer.classList.add('open'); drawer.setAttribute('aria-hidden','false'); backdrop.classList.add('open'); backdrop.setAttribute('aria-hidden','false'); var cb = document.getElementById('drawerCloseBtn'); if(cb){ try{ cb.focus(); }catch(_){} } } }
+  function closeDrawer(){ if(drawer && backdrop){ drawer.classList.remove('open'); drawer.setAttribute('aria-hidden','true'); backdrop.classList.remove('open'); backdrop.setAttribute('aria-hidden','true'); } }
+  if(blockBtn){ blockBtn.addEventListener('click', (ev)=>{ if(ev instanceof MouseEvent){ if(ev.button !== 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey){ return; } } ev.preventDefault(); openDrawer(); }); }
+  if(closeBtn){ closeBtn.addEventListener('click', ()=> closeDrawer()); }
+  if(backdrop){ backdrop.addEventListener('click', ()=> closeDrawer()); }
+  document.addEventListener('keydown', (ev)=>{ if(ev.key === 'Escape'){ closeDrawer(); } });
     // Logout handler
     const logoutBtn = document.getElementById('logoutBtn');
     if (logoutBtn) {
@@ -491,13 +654,21 @@
   </script>
   <!-- Search bar placed between status and table -->
   <form id="searchForm" action="/" method="get" style="margin-top:1rem; display:flex; gap:.5rem; align-items:center;">
-    <input type="text" name="q" placeholder="Rechercher (texte, auteur, entreprise, mot-clé)" value="{{ q or '' }}" style="flex:1; padding:.5rem .6rem; border:1px solid #cbd5e1; border-radius:6px;" />
+      <input id="searchInput" type="text" name="q" placeholder="Rechercher (texte, auteur, entreprise, mot-clé)" value="{{ q or '' }}" style="flex:1; padding:.5rem .6rem; border:1px solid #cbd5e1; border-radius:6px;" />
     <input type="hidden" name="limit" value="{{ limit }}" />
     <button type="submit">Rechercher</button>
-    {% if q %}
-      <a href="/?limit={{ limit }}" style="font-size:.85rem;">Effacer</a>
-    {% endif %}
+      <button id="clearSearch" type="button" style="font-size:.85rem;">Effacer</button>
   </form>
+    <script>
+      // Intercept search to avoid full reload
+      (function(){
+        const form = document.getElementById('searchForm');
+        const input = document.getElementById('searchInput');
+        const clearBtn = document.getElementById('clearSearch');
+        if(form){ form.addEventListener('submit', (ev)=>{ ev.preventDefault(); _state.q = (input && input.value)||''; resetAndLoad(); }); }
+        if(clearBtn){ clearBtn.addEventListener('click', ()=>{ if(input){ input.value=''; } _state.q=''; resetAndLoad(); }); }
+      })();
+    </script>
   <div id="legalStatsBar" style="margin-top:.75rem; font-size:.7rem; color:#334155;"></div>
   <script>
     async function refreshLegalStats(){
@@ -508,12 +679,15 @@
         const el = document.getElementById('legalStatsBar');
         if(!el) return;
         const pct = Math.min(100, Math.round((data.cap_progress||0)*100));
-        const rej = Math.round((data.rejection_rate||0)*1000)/10;
+        const isDone = (data.accepted||0) >= (data.cap||0);
+        const barColor = isDone ? '#16a34a' : '#2563eb';
+        let label = `${data.accepted}/${data.cap}`;
+        if(isDone){ label += ' — objectif du jour atteint'; }
         el.innerHTML = `<div style="display:flex;align-items:center;gap:.5rem;">`+
           `<div style=\"flex:1; background:#e2e8f0; border-radius:999px; height:8px; position:relative; overflow:hidden;\">`+
-          `<div style=\"position:absolute;left:0;top:0;height:100%;width:${pct}%;background:${pct>=100?'#dc2626':'#2563eb'};transition:width .4s;\"></div>`+
+          `<div style=\"position:absolute;left:0;top:0;height:100%;width:${pct}%;background:${barColor};transition:width .4s;\"></div>`+
           `</div>`+
-          `<span>${data.accepted}/${data.cap} (${pct}%) · rejet: ${rej}%</span>`+
+          `<span>${label}</span>`+
           `</div>`;
       } catch(_) {}
     }
@@ -526,19 +700,11 @@
     <thead>
       <tr>
         {% set nextDir = 'asc' if sort_dir=='desc' else 'desc' %}
-        <th>
-          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=keyword&sort_dir={{ 'desc' if sort_by!='keyword' else nextDir }}">Keyword{% if sort_by=='keyword' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
-        </th>
-        <th>
-          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=author&sort_dir={{ 'desc' if sort_by!='author' else nextDir }}">Auteur{% if sort_by=='author' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
-        </th>
-        <th>
-          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=company&sort_dir={{ 'desc' if sort_by!='company' else nextDir }}">Entreprise{% if sort_by=='company' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
-        </th>
+  <th><a href="#" data-sort-by="keyword" data-label="Keyword">Keyword</a></th>
+  <th><a href="#" data-sort-by="author" data-label="Auteur">Auteur</a></th>
+  <th><a href="#" data-sort-by="company" data-label="Entreprise">Entreprise</a></th>
         <th>Texte</th>
-        <th>
-          <a href="/?page=1&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}&sort_by=published_at&sort_dir={{ 'desc' if sort_by!='published_at' else nextDir }}">Date{% if sort_by=='published_at' %} {% if sort_dir=='asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
-        </th>
+  <th><a href="#" data-sort-by="published_at" data-label="Date">Date</a></th>
   <th>Lien</th>
   <th>Statut</th>
   <th class="actions-head">Actions</th>
@@ -586,14 +752,67 @@
     {% endif %}
     </tbody>
   </table>
-  <nav class="pagination">
-    {% for page_num in range(1, total_pages + 1) %}
-  <a href="/?page={{ page_num }}&limit={{ limit }}{% if q %}&q={{ q | urlencode }}{% endif %}" class="{% if page_num == page %}active{% endif %}">{{ page_num }}</a>
-    {% endfor %}
-  </nav>
+  <div id="infiniteLoader"><span class="spinner" aria-hidden="true"></span> Chargement…</div>
+  <div id="endOfList">Fin de la liste</div>
+  <script>
+    // Sort handling
+    (function(){
+      const headers = document.querySelectorAll('thead th a[data-sort-by]');
+      function updateSortIndicators(){
+        headers.forEach(a=>{
+          const field = a.getAttribute('data-sort-by');
+          const label = a.getAttribute('data-label') || (a.textContent||'').replace(/[\s▲▼]+$/,'').trim();
+          if(!field){ a.textContent = label; return; }
+          if(_state.sort_by === field){
+            const arrow = _state.sort_dir === 'asc' ? ' ▲' : ' ▼';
+            a.textContent = label + arrow;
+          } else {
+            a.textContent = label;
+          }
+        });
+      }
+      // expose for external calls if needed
+      window.__updateSortIndicators = updateSortIndicators;
+      headers.forEach(a=>{
+        a.addEventListener('click', (ev)=>{
+          ev.preventDefault();
+          const field = a.getAttribute('data-sort-by')||'collected_at';
+          if(_state.sort_by === field){ _state.sort_dir = (_state.sort_dir==='asc')?'desc':'asc'; }
+          else { _state.sort_by = field; _state.sort_dir = 'desc'; }
+          updateSortIndicators();
+          resetAndLoad();
+        })
+      });
+      // Initial load & bind scroll
+      bindInfiniteScroll();
+      // Clear any server-rendered page and start from API for consistency
+      updateSortIndicators();
+      resetAndLoad();
+    })();
+  </script>
+  <a id="floatingBlock" class="floating-block" href="/blocked" title="Gérer les comptes LinkedIn bloqués" aria-label="Gérer les comptes LinkedIn bloqués">
+    <span class="icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+      </svg>
+    </span>
+    <span id="blockedCountBadge" style="background:#bae6fd;color:#075985;padding:0 0.5rem;border-radius:999px;font-weight:700;">0</span>
+  </a>
   <a id="floatingTrash" class="floating-trash" href="/corbeille" title="Ouvrir la corbeille">
     🗑️ <span class="count" id="trashCountBadge">{{ trash_count }}</span>
   </a>
+  <!-- Inline drawer for blocked accounts management -->
+  <div id="drawerBackdrop" class="drawer-backdrop" aria-hidden="true"></div>
+  <div id="blockedDrawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true">
+    <header>
+      <h2 id="drawerTitle" style="margin:0;font-size:1rem;font-weight:600;">Comptes LinkedIn bloqués</h2>
+      <button type="button" id="drawerCloseBtn" class="close-btn" aria-label="Fermer">Fermer ✕</button>
+    </header>
+    <div class="content">
+      <iframe id="drawerIframe" src="/blocked" title="Gestion des comptes bloqués" loading="lazy"></iframe>
+    </div>
+  </div>
   
 </body>
 </html>

@@ -85,6 +85,11 @@ jobs:
           Get-ChildItem build -Recurse | ForEach-Object { Write-Host $_.FullName }
           Write-Host "--- DIST DIR CONTENTS ---"
           if(Test-Path dist){ Get-ChildItem dist -Recurse | ForEach-Object { Write-Host $_.FullName } } else { Write-Host 'dist missing' }
+      - name: Build Bootstrapper (Windows)
+        shell: pwsh
+        run: |
+          Write-Host "Building Burn bootstrapper..."
+          pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_bootstrapper.ps1
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -92,6 +97,7 @@ jobs:
           path: |
             dist/TitanScraper/**
             dist/msi/*.msi
+            dist/msi/*Bootstrapper*.exe
             build/msi/*.msi # (fallback if script output path changes)
             build/*-portable.zip
             dist/*.exe
@@ -134,6 +140,9 @@ jobs:
           chmod +x scripts/build_dmg.sh
           set -e
           VERSION="${GITHUB_REF_NAME#v}" scripts/build_dmg.sh "${GITHUB_REF_NAME#v}"
+          # Also build a PKG (bootstrapper-like installer)
+          chmod +x scripts/build_pkg.sh
+          scripts/build_pkg.sh "${GITHUB_REF_NAME#v}"
           echo '--- dist contents (macOS) ---'
           ls -R dist || true
       # Optional: macOS signing + notarization (only runs if all secrets provided)
@@ -177,6 +186,7 @@ jobs:
           path: |
             dist/TitanScraper/**
             dist/*.dmg
+            dist/*.pkg
   create-release:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
@@ -258,10 +268,12 @@ jobs:
           body: ${{ steps.changelog.outputs.body }}
           files: |
             artifacts/windows-binaries/dist/msi/*.msi
+            artifacts/windows-binaries/dist/msi/*Bootstrapper*.exe
             artifacts/windows-binaries/build/msi/*.msi
             artifacts/windows-binaries/dist/TitanScraper/**
             artifacts/windows-binaries/build/*-portable.zip
             artifacts/macos-binaries/dist/*.dmg
+            artifacts/macos-binaries/dist/*.pkg
             checksum/checksums.txt
             artifacts/DOWNLOADS.txt
             artifacts/**/*.sha256

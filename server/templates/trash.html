@@ -70,7 +70,8 @@
               <td><code>{{ post.keyword }}</code></td>
               <td>{{ post.author or '—' }}</td>
               <td>{{ post.company or '—' }}</td>
-              <td>{{ post.text[:120] }}{% if post.text|length > 120 %}…{% endif %}</td>
+              {# Guard against NULL text to avoid template errors #}
+              <td>{% set snippet = post.text | default('', true) %}{{ snippet[:120] }}{% if snippet|length > 120 %}…{% endif %}</td>
               <td>{{ post.deleted_at|fmt_date }}</td>
               <td>{% if post.permalink %}<a href="{{ post.permalink }}" target="_blank">ouvrir</a>{% else %}—{% endif %}</td>
             </tr>

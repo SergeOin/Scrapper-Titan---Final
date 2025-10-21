@@ -76,12 +76,20 @@ class Settings(BaseSettings):
     rate_limit_refill_per_sec: float = Field(2.0, alias="RATE_LIMIT_REFILL_PER_SEC")  # tokens per second
 
     # Keywords & limits
-    scrape_keywords_raw: str = Field("juriste;avocat;legal counsel;notaire", alias="SCRAPE_KEYWORDS")
+    # Broader default keyword set to increase volume while staying on-domain (FR + common EN terms)
+    scrape_keywords_raw: str = Field(
+        "juriste;avocat;legal counsel;notaire;assistant juridique;paralegal;contract manager;"
+        "droit du travail;droit social;droit des affaires;compliance;rgpd;data privacy;"
+        "legal officer;corporate lawyer;juriste junior;avocat junior;clerc;legal ops",
+        alias="SCRAPE_KEYWORDS",
+    )
     # Semicolon-separated list of keywords to always ignore (case-insensitive)
     blacklisted_keywords_raw: str = Field("python;ai", alias="BLACKLISTED_KEYWORDS")
-    max_posts_per_keyword: int = Field(30, alias="MAX_POSTS_PER_KEYWORD")
+    # Raise cap per keyword to collect more candidates before classifier filtering
+    max_posts_per_keyword: int = Field(50, alias="MAX_POSTS_PER_KEYWORD")
     # Extraction scrolling controls
-    max_scroll_steps: int = Field(5, alias="MAX_SCROLL_STEPS")  # Max scroll iterations per keyword page
+    # Slightly increase scroll depth to surface additional posts per keyword
+    max_scroll_steps: int = Field(7, alias="MAX_SCROLL_STEPS")  # Max scroll iterations per keyword page
     scroll_wait_ms: int = Field(1200, alias="SCROLL_WAIT_MS")  # Wait after each scroll to allow lazy load
     min_posts_target: int = Field(10, alias="MIN_POSTS_TARGET")  # Target minimum posts before considering extraction complete
     recruitment_signal_threshold: float = Field(0.05, alias="RECRUITMENT_SIGNAL_THRESHOLD")  # Score threshold for recruitment classification
@@ -188,7 +196,8 @@ class Settings(BaseSettings):
     daily_post_soft_target: int = Field(40, alias="DAILY_POST_SOFT_TARGET")
     # Legal domain classification & quota
     legal_daily_post_cap: int = Field(50, alias="LEGAL_DAILY_POST_CAP")  # Hard cap persisted posts per UTC day for legal intent
-    legal_intent_threshold: float = Field(0.35, alias="LEGAL_INTENT_THRESHOLD")  # Threshold for classify_legal_post combined score
+    # Make intent slightly more permissive to reduce false negatives on recruitment detection
+    legal_intent_threshold: float = Field(0.25, alias="LEGAL_INTENT_THRESHOLD")  # Threshold for classify_legal_post combined score
     legal_keywords_override: str | None = Field(None, alias="LEGAL_KEYWORDS")  # Optional semicolon list to extend/override builtin
     # Exclusion explicite de certaines sources (auteurs / entreprises) séparées par ';'
     excluded_authors_raw: str = Field("village de la justice", alias="EXCLUDED_AUTHORS")
@@ -443,6 +452,8 @@ class AppContext:
     legal_daily_count: int = 0
     legal_daily_discard_intent: int = 0
     legal_daily_discard_location: int = 0
+    # UI stats tracking date marker used by /api/legal_stats
+    legal_stats_date: Optional[str] = None
     # quick helper
     def has_valid_session(self) -> bool:
         try:

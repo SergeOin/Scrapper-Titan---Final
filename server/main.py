@@ -24,6 +24,8 @@ import uuid
 import structlog
 from structlog import contextvars as struct_contextvars
 from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from scraper.bootstrap import get_context, API_RATE_LIMIT_REJECTIONS
 import time
@@ -276,12 +278,19 @@ async def security_headers(request: Request, call_next):  # noqa: D401
     # Basic per-IP rate limit (skip metrics & health for noiseless ops)
     path = request.url.path
     def _skip_rate_limit(p: str) -> bool:
-        # Allowlist only essential low-cost endpoints (keep '/' subject to rate-limit for tests)
-        if p in ("/metrics", "/health", "/stream", "/api/trash/count"):
+        # Allowlist low-cost endpoints (keep '/' subject to rate-limit for tests)
+        if p in ("/metrics", "/health", "/stream", "/api/trash/count", "/corbeille"):
             return True
+        # Export & read-heavy posts endpoints are exempt
         if p.startswith("/api/posts"):
             return True
+        # Trash-related APIs are safe and used by the UI
+        if p.startswith("/api/trash"):
+            return True
         if p.startswith("/export/excel"):
+            return True
+        # Blocked-accounts management is lightweight and used by tests/UI
+        if p.startswith("/blocked-accounts") or p == "/blocked":
             return True
         return False
     if not _skip_rate_limit(path):
@@ -322,6 +331,74 @@ async def security_headers(request: Request, call_next):  # noqa: D401
 # Include routes
 # ------------------------------------------------------------
 app.include_router(core_router)
+
+# ------------------------------------------------------------
+# Serve static React app for "Comptes LinkedIn bloqués" under /blocked
+# We look for the Vite build in multiple locations:
+#  - Source tree: <repo>/web/blocked/dist
+#  - PyInstaller one-file temp (_MEIPASS)/web/blocked/dist
+#  - PyInstaller one-folder next to executable: <exe_dir>/web/blocked/dist
+_BLOCKED_DIST_CANDIDATES: list[str] = []
+def _find_blocked_dist_dir() -> str | None:
+    try:
+        from pathlib import Path as _Path
+        import os as _os
+        import sys as _sys
+        # Source tree
+        _root = _Path(__file__).resolve().parents[1]
+        p1 = _root / 'web' / 'blocked' / 'dist'
+        if p1.exists():
+            return str(p1)
+        # PyInstaller one-file temporary unpack directory
+        meipass = getattr(_sys, '_MEIPASS', None)
+        if meipass:
+            p2 = _Path(meipass) / 'web' / 'blocked' / 'dist'
+            if p2.exists():
+                return str(p2)
+        # PyInstaller one-folder next to the executable
+        exe_dir = _Path(_sys.executable).parent if getattr(_sys, 'frozen', False) else None
+        if exe_dir:
+            p3 = exe_dir / 'web' / 'blocked' / 'dist'
+            if p3.exists():
+                return str(p3)
+    except Exception:
+        return None
+    return None
+
+try:
+    _found_dist = _find_blocked_dist_dir()
+    if _found_dist:
+        app.mount('/static/blocked', StaticFiles(directory=_found_dist, html=True), name='blocked_static')
+except Exception:
+    # Non-fatal: we will serve a fallback below if not found
+    pass
+
+
+@app.get('/blocked', response_class=HTMLResponse)
+async def blocked_accounts_page():
+    try:
+        from pathlib import Path as _Path
+        dist_dir = _find_blocked_dist_dir()
+        if dist_dir:
+            index_html = _Path(dist_dir) / 'index.html'
+            if index_html.exists():
+                html = index_html.read_text(encoding='utf-8')
+                if '<base ' not in html:
+                    html = html.replace('<head>', '<head>\n  <base href="/static/blocked/">')
+                return HTMLResponse(html)
+    except Exception:
+        # Fall back to message below
+        pass
+    # Fallback message when not built yet
+    return HTMLResponse(
+        '<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Comptes bloqués</title>'
+        '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+        '<body style="font-family:system-ui;padding:2rem;background:#0f172a;color:#e2e8f0">'
+        '<h1>Comptes LinkedIn bloqués</h1>'
+        '<p>Le frontend n\'est pas encore construit. Construisez l\'app React dans <code>web/blocked</code> (Vite) puis rechargez cette page.</p>'
+        '<p>API mock disponible: <code>GET/POST/DELETE /blocked-accounts</code>.</p>'
+        '</body></html>'
+    )
 
 
 # Optional root redirect (already / is dashboard) kept simple

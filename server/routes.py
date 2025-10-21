@@ -123,6 +123,162 @@ def _fmt_date(value: Optional[str]):  # value expected ISO string
 
 templates.env.filters['fmt_date'] = _fmt_date
 
+# ------------------------------------------------------------
+# Store for blocked LinkedIn accounts (Mongo if available, else SQLite)
+# Document: { id/_id: str, name: str | None, url: str, blocked_at: ISO8601 }
+# ------------------------------------------------------------
+from uuid import uuid4
+
+def _normalize_linkedin_url(value: str) -> str:
+    s = (value or "").strip()
+    if not s:
+        return s
+    # Accept either full URL or identifier; try to coerce to canonical https URL
+    # Supported forms: linkedin.com/in/username, /in/username, username, or company pages
+    v = s
+    # If it looks like only an identifier (no slash), assume /in/<id>
+    if 'linkedin.com' not in v:
+        # Allow forms like in/username or company/slug too
+        if v.startswith('in/') or v.startswith('company/'):
+            v = f"https://www.linkedin.com/{v}"
+        elif v.startswith('/'):
+            v = f"https://www.linkedin.com{v}"
+        else:
+            v = f"https://www.linkedin.com/in/{v}"
+    # Ensure scheme
+    if not v.startswith('http://') and not v.startswith('https://'):
+        v = 'https://' + v.lstrip('/')
+    # Strip query/fragment and trailing slash
+    try:
+        from urllib.parse import urlparse, urlunparse
+        pr = urlparse(v)
+        # Only accept linkedin hostnames for safety
+        host = (pr.netloc or '').lower()
+        if 'linkedin.' not in host:
+            # Treat as invalid by returning empty string
+            return ''
+        cleaned = pr._replace(query='', fragment='')
+        out = urlunparse(cleaned).rstrip('/')
+        return out
+    except Exception:
+        return ''
+
+async def _blocked_count(ctx) -> int:
+    # Mongo path
+    if ctx.mongo_client:
+        try:
+            coll = ctx.mongo_client[ctx.settings.mongo_db]["blocked_accounts"]
+            return await coll.count_documents({})
+        except Exception:
+            return 0
+    # SQLite path
+    path = ctx.settings.sqlite_path
+    if not path or not Path(path).exists():
+        return 0
+    conn = sqlite3.connect(path)
+    with conn:
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS blocked_accounts (id TEXT PRIMARY KEY, url TEXT UNIQUE, name TEXT, blocked_at TEXT)")
+        except Exception:
+            pass
+        row = conn.execute("SELECT COUNT(*) FROM blocked_accounts").fetchone()
+        return int(row[0] or 0)
+
+
+async def _blocked_list(ctx) -> list[dict[str, Any]]:
+    if ctx.mongo_client:
+        try:
+            coll = ctx.mongo_client[ctx.settings.mongo_db]["blocked_accounts"]
+            cursor = coll.find({}, {"_id": 1, "url": 1, "blocked_at": 1}).sort("blocked_at", -1)
+            items: list[dict[str, Any]] = []
+            async for doc in cursor:
+                items.append({
+                    "id": str(doc.get("_id")),
+                    "url": doc.get("url"),
+                    "blocked_at": doc.get("blocked_at"),
+                })
+            return items
+        except Exception:
+            return []
+    # SQLite
+    path = ctx.settings.sqlite_path
+    if not path or not Path(path).exists():
+        return []
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    with conn:
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS blocked_accounts (id TEXT PRIMARY KEY, url TEXT UNIQUE, name TEXT, blocked_at TEXT)")
+        except Exception:
+            pass
+        rows = conn.execute("SELECT id, url, blocked_at FROM blocked_accounts ORDER BY blocked_at DESC").fetchall()
+        return [dict(r) for r in rows]
+
+
+async def _blocked_add(ctx, url: str):
+    now_iso = datetime.now(timezone.utc).isoformat()
+    item_id = str(uuid4())
+    if ctx.mongo_client:
+        try:
+            coll = ctx.mongo_client[ctx.settings.mongo_db]["blocked_accounts"]
+            # Unique by url: check duplicate
+            exists = await coll.find_one({"url": url})
+            if exists:
+                raise HTTPException(status_code=409, detail="Ce compte est déjà bloqué")
+            doc = {"_id": item_id, "url": url, "blocked_at": now_iso}
+            await coll.insert_one(doc)
+            return {"id": item_id, "url": url, "blocked_at": now_iso}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Erreur d'insertion: {exc}")
+    # SQLite
+    path = ctx.settings.sqlite_path
+    if not path:
+        raise HTTPException(status_code=400, detail="SQLite non configuré")
+    conn = sqlite3.connect(path)
+    with conn:
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS blocked_accounts (id TEXT PRIMARY KEY, url TEXT UNIQUE, name TEXT, blocked_at TEXT)")
+            conn.execute(
+                "INSERT INTO blocked_accounts(id, url, name, blocked_at) VALUES(?,?,?,?)",
+                (item_id, url, None, now_iso),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="Ce compte est déjà bloqué")
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Erreur d'insertion: {exc}")
+    return {"id": item_id, "url": url, "blocked_at": now_iso}
+
+
+async def _blocked_delete(ctx, item_id: str):
+    if ctx.mongo_client:
+        try:
+            coll = ctx.mongo_client[ctx.settings.mongo_db]["blocked_accounts"]
+            res = await coll.delete_one({"_id": item_id})
+            if not getattr(res, 'deleted_count', 0):
+                raise HTTPException(status_code=404, detail="Compte introuvable")
+            return
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Erreur suppression: {exc}")
+    # SQLite
+    path = ctx.settings.sqlite_path
+    if not path or not Path(path).exists():
+        raise HTTPException(status_code=404, detail="Compte introuvable")
+    conn = sqlite3.connect(path)
+    with conn:
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS blocked_accounts (id TEXT PRIMARY KEY, url TEXT UNIQUE, name TEXT, blocked_at TEXT)")
+            res = conn.execute("DELETE FROM blocked_accounts WHERE id = ?", (item_id,))
+            if res.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Compte introuvable")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Erreur suppression: {exc}")
+
 # Name/company helpers for display hygiene
 def _dedupe_person_name(name: Optional[str]) -> str:
     s = (name or "").strip()
@@ -586,8 +742,19 @@ def _fetch_deleted_posts(ctx) -> list[dict[str, Any]]:
             "FROM posts p JOIN post_flags f ON f.post_id = p.id WHERE f.is_deleted = 1 "
             "ORDER BY f.deleted_at DESC"
         )
-        for r in conn.execute(query):
-            rows.append(dict(r))
+        try:
+            for r in conn.execute(query):
+                rows.append(dict(r))
+        except sqlite3.OperationalError as e:
+            # In environments that never created the 'posts' table (e.g., Mongo-only setups),
+            # gracefully degrade to an empty trash view instead of raising 500.
+            if "no such table: posts" in str(e).lower():
+                try:
+                    ctx.logger.warning("trash_posts_table_missing", hint="Returning empty list", error=str(e))
+                except Exception:
+                    pass
+                return []
+            raise
     return rows
 
 async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_by: Optional[str] = None, sort_dir: Optional[str] = None, intent: Optional[str] = None, include_raw: bool = False) -> list[dict[str, Any]]:
@@ -2119,6 +2286,42 @@ async def api_version(ctx=Depends(get_auth_context), _auth=Depends(require_auth)
         "build_timestamp": ts,
         "playwright_mock_mode": ctx.settings.playwright_mock_mode,
     }
+
+
+# ------------------------------------------------------------
+# API Mock: Gestion des comptes LinkedIn bloqués
+# ------------------------------------------------------------
+@router.get("/blocked-accounts")
+async def list_blocked_accounts(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Retourne la liste des comptes bloqués."""
+    items = await _blocked_list(ctx)
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/blocked-accounts")
+async def add_blocked_account(
+    payload: dict[str, Any] = Body(..., description="{ url: string }"),
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    url_raw = (payload.get('url') or '').strip()
+    url = _normalize_linkedin_url(url_raw)
+    if not url:
+        raise HTTPException(status_code=400, detail="URL LinkedIn invalide")
+    item = await _blocked_add(ctx, url)
+    return {"ok": True, "item": item}
+
+
+@router.delete("/blocked-accounts/{item_id}")
+async def delete_blocked_account(item_id: str, ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    await _blocked_delete(ctx, item_id)
+    return {"ok": True, "id": item_id}
+
+
+@router.get("/blocked-accounts/count")
+async def count_blocked_accounts(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    cnt = await _blocked_count(ctx)
+    return {"count": cnt}
 
 
 # ------------------------------------------------------------

@@ -20,6 +20,25 @@ pip install -r requirements.txt
 pip install -r .\desktop\requirements-desktop.txt
 pip install pyinstaller==6.10.0 pillow==10.4.0
 
+# Build frontend (web/blocked) if Node is available
+if (Test-Path .\web\blocked\package.json) {
+    $npm = Get-Command npm -ErrorAction SilentlyContinue
+    if ($npm) {
+        Write-Host "Building frontend: web/blocked (Vite)" -ForegroundColor Yellow
+        Push-Location .\web\blocked
+        try {
+            npm ci
+            npm run build
+        } catch {
+            Write-Warning "Frontend build failed (continuing); the app will show a fallback UI for /blocked. Error: $_"
+        } finally {
+            Pop-Location
+        }
+    } else {
+        Write-Host "npm not found; skipping frontend build. The app will use fallback content for /blocked." -ForegroundColor DarkYellow
+    }
+}
+
 # Purge local persistence (SQLite + CSV) so packaged app ships with empty data
 Write-Host "Purging local database & export artifacts (fallback.sqlite3, exports/*.csv)..." -ForegroundColor Yellow
 Try {
@@ -76,13 +95,28 @@ if ($OneFile) { $extra += "--onefile" }
 
 Write-Host "Running PyInstaller..." -ForegroundColor Cyan
 if ($spec) {
-    pyinstaller --noconfirm $spec @extra
-    if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller failed with code $LASTEXITCODE"; exit $LASTEXITCODE }
+    if ($OneFile) { Write-Host "Note: -OneFile ignored when using a .spec file; the spec controls onefile/onedir mode." -ForegroundColor DarkYellow }
+    $oldErr = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        pyinstaller --noconfirm $spec 2>&1 | Tee-Object -FilePath .\build\pyinstaller.log
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $oldErr
+    }
+    if ($code -ne 0) { Write-Error "PyInstaller failed with code $code"; exit $code }
 }
 else {
     Write-Host "Spec file not found. Building via direct entrypoint (desktop/main.py)." -ForegroundColor Yellow
-    pyinstaller --noconfirm .\desktop\main.py --name TitanScraper @extra --noconsole --icon .\build\icon.ico --add-data "server/templates;server/templates"
-    if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller adhoc build failed with code $LASTEXITCODE"; exit $LASTEXITCODE }
+    $oldErr = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        pyinstaller --noconfirm .\desktop\main.py --name TitanScraper @extra --noconsole --icon .\build\icon.ico --add-data "server/templates;server/templates" 2>&1 | Tee-Object -FilePath .\build\pyinstaller.log
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $oldErr
+    }
+    if ($code -ne 0) { Write-Error "PyInstaller adhoc build failed with code $code"; exit $code }
 }
 
 Write-Host "Build complete. Output in .\\dist\\TitanScraper" -ForegroundColor Green

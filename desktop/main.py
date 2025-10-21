@@ -221,6 +221,44 @@ def _user_data_dir(app_name: str = APP_INTERNAL_NAME) -> Path:
     return Path.home() / ".local" / "share" / app_name
 
 
+def _ensure_macos_desktop_alias(app_name: str = APP_DISPLAY_NAME) -> None:
+    """On macOS, create a Desktop alias to the .app bundle on first run (best-effort).
+
+    This complements the DMG drag-to-Applications flow by ensuring a desktop shortcut
+    is present after first launch. No-ops on non-macOS platforms.
+    """
+    if not _is_macos():
+        return
+    try:
+        app_path = Path(sys.executable).resolve()
+        # In a bundled app, sys.executable is .../TitanScraper.app/Contents/MacOS/TitanScraper
+        app_bundle = app_path.parents[2] if app_path.name != "python" else None
+        if not app_bundle or app_bundle.suffix != ".app":
+            return
+        desktop = Path.home() / "Desktop"
+        if not desktop.exists():
+            return
+        alias = desktop / f"{app_name}.app"
+        if alias.exists():
+            return
+        # Create a Finder alias via AppleScript for nicer UX than a plain symlink
+        try:
+            import subprocess
+            osa = (
+                "tell application \"Finder\" to make alias file to POSIX file \"%s\" at POSIX file \"%s\""
+                % (str(app_bundle), str(desktop))
+            )
+            subprocess.run(["osascript", "-e", osa], check=False)
+        except Exception:
+            # Fallback: create a symbolic link
+            try:
+                alias.symlink_to(app_bundle)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 # Ensure project root on sys.path so imports like server.main work in dev and packaged one-dir
 ROOT = _project_root()
 if str(ROOT) not in sys.path:
@@ -953,6 +991,11 @@ def main():
     _setup_logging(user_base)
     _ensure_event_loop_policy()
     log = logging.getLogger("desktop")
+    # Best-effort desktop alias on macOS for convenience
+    try:
+        _ensure_macos_desktop_alias()
+    except Exception:
+        pass
 
     # Diagnostic: log PID & PPID early
     try:

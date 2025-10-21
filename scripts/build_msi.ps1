@@ -82,6 +82,7 @@ ${iconXml}
       <Directory Id="ProgramMenuFolder">
         <Directory Id="AppProgramMenu" Name="$ProgramMenuName" />
       </Directory>
+      <Directory Id="DesktopFolder" />
     </Directory>
 
     <!-- Application files -->
@@ -90,6 +91,10 @@ ${iconXml}
         <File Id="filExe" Source="$resolvedExe" KeyPath="yes" />
         <Shortcut Id="StartMenuShortcut" Advertise="yes" Directory="AppProgramMenu" Name="$ProgramMenuName" WorkingDirectory="INSTALLFOLDER" />
         <RemoveFolder Id="RemoveAppProgramMenu" Directory="AppProgramMenu" On="uninstall" />
+      </Component>
+      <Component Id="cmpDesktopShortcut" Guid="{D0B7B5D7-23AB-4AF2-8C14-2A9E6F2F9A21}">
+        <Shortcut Id="DesktopShortcut" Name="$ProgramMenuName" Directory="DesktopFolder" WorkingDirectory="INSTALLFOLDER" Target="[INSTALLFOLDER]$ExeName" />
+        <RegistryValue Root="HKCU" Key="Software\$Manufacturer\$Name" Name="desktop" Type="integer" Value="1" KeyPath="yes"/>
       </Component>
     </ComponentGroup>
   </Product>

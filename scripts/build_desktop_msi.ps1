@@ -18,7 +18,11 @@ Param(
   # Alternative: signer via certificat installé (magasin Windows)
   [string]$CertThumbprint,
   [ValidateSet('CurrentUser','LocalMachine')][string]$CertStoreLocation = 'CurrentUser',
-  [string]$CertStoreName = 'My'
+  [string]$CertStoreName = 'My',
+  # Auto-sélection d'un certificat de signature de code depuis le magasin indiqué
+  [switch]$AutoPickCert,
+  # Filtre optionnel sur le Subject (ex: 'Titan Partners' ) lors de l'auto-sélection
+  [string]$CertSubjectFilter
 )
 
 $ErrorActionPreference = 'Stop'
@@ -212,35 +216,118 @@ Write-Host '[build_desktop_msi] Compiling (candle)...' -ForegroundColor Cyan
 
 Write-Host '[build_desktop_msi] Linking (light)...' -ForegroundColor Cyan
 $msiName = "$Name-folder-$Version.msi"
-& $light.Path -o (Join-Path $out $msiName) (Join-Path $work 'Product.wixobj') (Join-Path $work 'Harvest.wixobj')
+& $light.Path -sice:ICE38 -sice:ICE64 -o (Join-Path $out $msiName) (Join-Path $work 'Product.wixobj') (Join-Path $work 'Harvest.wixobj')
 
 $msiOut = (Join-Path $out $msiName)
 Write-Host "[build_desktop_msi] MSI created: $msiOut" -ForegroundColor Green
 
-# Signature optionnelle du MSI si paramètres fournis
+# Signature optionnelle (EXE interne + MSI) si paramètres fournis
 $sigRequested = $false
 if($SignPfxPath -or $CertThumbprint){ $sigRequested = $true }
-if($sigRequested){
-  $signtool = Get-Command signtool.exe -ErrorAction SilentlyContinue
-  if(!$signtool){
-    Write-Warning "signtool.exe introuvable dans le PATH. Saut de l'étape de signature. Installez le Windows SDK ou ajoutez signtool au PATH."
-  } else {
-    Write-Host "[build_desktop_msi] Signature du MSI..." -ForegroundColor Cyan
-    $args = @('sign','/fd','sha256','/td','sha256')
-    if($SignPfxPath){
-      if(!(Test-Path $SignPfxPath)){
-        Write-Warning "PFX non trouvé: $SignPfxPath. Saut signature."
-        return
+
+# Si demandé: tenter d'auto-sélectionner un certificat de signature de code depuis le magasin spécifié
+if($AutoPickCert -and -not $SignPfxPath -and -not $CertThumbprint){
+  try {
+    $storePath = "Cert:\$CertStoreLocation\$CertStoreName"
+    if(Test-Path $storePath){
+      $now = Get-Date
+      $candidates = Get-ChildItem $storePath |
+        Where-Object { $_.HasPrivateKey -and $_.NotAfter -gt $now -and $_.EnhancedKeyUsageList -and ($_.EnhancedKeyUsageList | Where-Object { $_.Oid.Value -eq '1.3.6.1.5.5.7.3.3' }) }
+      if($CertSubjectFilter){ $candidates = $candidates | Where-Object { $_.Subject -like ("*{0}*" -f $CertSubjectFilter) } }
+      $pick = $candidates | Sort-Object NotAfter -Descending | Select-Object -First 1
+      if($pick){
+        $CertThumbprint = $pick.Thumbprint
+        Write-Host ("[build_desktop_msi] Cert auto-sélectionné: {0} (thumbprint={1}, expiration={2})" -f $pick.Subject, $pick.Thumbprint, $pick.NotAfter) -ForegroundColor DarkCyan
+        $sigRequested = $true
+      } else {
+        Write-Warning "Aucun certificat de signature de code valide trouvé pour l'auto-sélection ($storePath)."
       }
-      $args += @('/f', $SignPfxPath)
-      if($SignPfxPassword){ $args += @('/p', $SignPfxPassword) }
-    } elseif($CertThumbprint){
-      $args += @('/sha1', $CertThumbprint, '/s', $CertStoreName)
-      if($CertStoreLocation -eq 'LocalMachine'){ $args += '/sm' }
+    } else {
+      Write-Warning "Magasin de certificats introuvable: $storePath"
     }
-    if($TimestampUrl){ $args += @('/tr', $TimestampUrl) }
-    $args += @($msiOut)
-    & $signtool.Path @args
-    if($LASTEXITCODE -ne 0){ Write-Warning "Echec de la signature (code $LASTEXITCODE). MSI non signé." } else { Write-Host "[build_desktop_msi] MSI signé avec succès." -ForegroundColor Green }
+  } catch {
+    Write-Warning "Erreur lors de l'auto-sélection du certificat: $_"
+  }
+}
+
+function Resolve-SignTool {
+  $st = Get-Command signtool.exe -ErrorAction SilentlyContinue
+  if($st){ return $st.Path }
+  # Tentative de localisation dans le Windows SDK (Windows Kits)
+  $kitsRoot = 'C:\Program Files (x86)\Windows Kits\10\bin'
+  if(Test-Path $kitsRoot){
+    $candidates = Get-ChildItem -Path $kitsRoot -Directory -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName -Descending
+    foreach($c in $candidates){
+      $x64 = Join-Path $c.FullName 'x64\signtool.exe'
+      if(Test-Path $x64){ return $x64 }
+      $x86 = Join-Path $c.FullName 'x86\signtool.exe'
+      if(Test-Path $x86){ return $x86 }
+      $arm64 = Join-Path $c.FullName 'arm64\signtool.exe'
+      if(Test-Path $arm64){ return $arm64 }
+    }
+  }
+  return $null
+}
+
+function New-SignArgs {
+  param(
+    [string]$TargetPath
+  )
+  $args = @('sign','/fd','sha256','/td','sha256')
+  if($SignPfxPath){
+    if(!(Test-Path $SignPfxPath)){
+      throw "PFX non trouvé: $SignPfxPath"
+    }
+    $args += @('/f', $SignPfxPath)
+    if($SignPfxPassword){ $args += @('/p', $SignPfxPassword) }
+  } elseif($CertThumbprint){
+    $args += @('/sha1', $CertThumbprint, '/s', $CertStoreName)
+    if($CertStoreLocation -eq 'LocalMachine'){ $args += '/sm' }
+  } else {
+    throw 'Aucun certificat spécifié pour la signature.'
+  }
+  if($TimestampUrl){ $args += @('/tr', $TimestampUrl) }
+  $args += @($TargetPath)
+  return ,$args
+}
+
+if($sigRequested){
+  $sigPath = Resolve-SignTool
+  if(-not $sigPath){
+    Write-Warning "signtool.exe introuvable. Installez le Windows SDK ou ajoutez signtool au PATH. Étape de signature sautée."
+  } else {
+    # 1) Tenter de signer l'EXE mis en scène pour que l'EXE embarqué soit également signé
+    try {
+      $exeToSign = Join-Path $stage 'TitanScraper.exe'
+      if(Test-Path $exeToSign){
+        Write-Host "[build_desktop_msi] Signature de l'EXE interne: $exeToSign" -ForegroundColor Cyan
+        $exeArgs = New-SignArgs -TargetPath $exeToSign
+        & $sigPath @exeArgs
+        if($LASTEXITCODE -ne 0){ Write-Warning "Signature EXE échouée (code $LASTEXITCODE)." } else { Write-Host "[build_desktop_msi] EXE signé avec succès." -ForegroundColor Green }
+      } else {
+        Write-Host "[build_desktop_msi] Aucun EXE interne à signer trouvé à $exeToSign (ok)." -ForegroundColor DarkGray
+      }
+    } catch {
+      Write-Warning "Erreur pendant la signature de l'EXE: $_"
+    }
+  }
+}
+
+# ... (compilation/link déjà effectués ci-dessus) ...
+
+if($sigRequested){
+  $sigPath = $sigPath
+  if(-not $sigPath){ $sigPath = Resolve-SignTool }
+  if(-not $sigPath){
+    Write-Warning "signtool.exe introuvable. MSI final non signé."
+  } else {
+    try {
+      Write-Host "[build_desktop_msi] Signature du MSI..." -ForegroundColor Cyan
+      $msiArgs = New-SignArgs -TargetPath $msiOut
+      & $sigPath @msiArgs
+      if($LASTEXITCODE -ne 0){ Write-Warning "Echec de la signature du MSI (code $LASTEXITCODE)." } else { Write-Host "[build_desktop_msi] MSI signé avec succès." -ForegroundColor Green }
+    } catch {
+      Write-Warning "Erreur pendant la signature du MSI: $_"
+    }
   }
 }

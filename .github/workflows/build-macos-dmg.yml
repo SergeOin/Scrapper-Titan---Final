@@ -1,0 +1,46 @@
+name: build-macos-dmg
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  macos-dmg:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Show tool versions
+        run: |
+          sw_vers
+          python3 --version
+          pip --version
+
+      - name: Build app (PyInstaller)
+        shell: bash
+        run: |
+          bash ./build_mac.sh
+
+      - name: Build DMG
+        shell: bash
+        run: |
+          VERSION_STR=$(cat VERSION | tr -d '\n' || echo "1.0.0")
+          bash ./scripts/build_dmg.sh "$VERSION_STR"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TitanScraper-dmg
+          path: |
+            dist/*.dmg
+          if-no-files-found: error
