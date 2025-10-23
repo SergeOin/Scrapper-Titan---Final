@@ -321,12 +321,12 @@ class StorageError(Exception):
 # ------------------------------------------------------------
 # Storage Helpers
 # ------------------------------------------------------------
-async def store_posts(ctx: AppContext, posts: list[Post]) -> None:
+async def store_posts(ctx: AppContext, posts: list[Post]) -> int:
     """Store posts using priority: Mongo → SQLite → CSV.
 
     Each path tries to insert many; duplicates filtered by _id (hash)."""
     if not posts:
-        return
+        return 0
     # Retain posts as-is (tests rely on counting inserted rows), previously we filtered mock artifacts here.
     logger = ctx.logger.bind(step="store_posts", count=len(posts))
     # Attempt Mongo
@@ -361,17 +361,17 @@ async def store_posts(ctx: AppContext, posts: list[Post]) -> None:
                     await coll.insert_many(docs, ordered=False)
                     SCRAPE_STORAGE_ATTEMPTS.labels("mongo", "success").inc()
                     logger.info("mongo_inserted", inserted=len(docs))
-                    return
+                    return len(docs)
         except Exception as exc:  # pragma: no cover
             SCRAPE_STORAGE_ATTEMPTS.labels("mongo", "error").inc()
             logger.error("mongo_insert_failed", error=str(exc))
     # SQLite fallback
     try:
         with SCRAPE_STEP_DURATION.labels(step="sqlite_insert").time():
-            _store_sqlite(ctx.settings, posts)
+            inserted = _store_sqlite(ctx.settings, posts)
         SCRAPE_STORAGE_ATTEMPTS.labels("sqlite", "success").inc()
-        logger.info("sqlite_inserted", path=ctx.settings.sqlite_path, inserted=len(posts))
-        return
+        logger.info("sqlite_inserted", path=ctx.settings.sqlite_path, inserted=inserted)
+        return inserted
     except Exception as exc:  # pragma: no cover
         SCRAPE_STORAGE_ATTEMPTS.labels("sqlite", "error").inc()
         logger.error("sqlite_insert_failed", error=str(exc))
@@ -381,14 +381,14 @@ async def store_posts(ctx: AppContext, posts: list[Post]) -> None:
             _store_csv(Path(ctx.settings.csv_fallback_file), posts)
         SCRAPE_STORAGE_ATTEMPTS.labels("csv", "success").inc()
         logger.warning("csv_fallback_used", file=ctx.settings.csv_fallback_file, inserted=len(posts))
-        return
+        return len(posts)
     except Exception as exc:  # pragma: no cover
         SCRAPE_STORAGE_ATTEMPTS.labels("csv", "error").inc()
         logger.error("csv_fallback_failed", error=str(exc))
     raise StorageError("All storage backends failed")
 
 
-def _store_sqlite(settings: "Settings", posts: list[Post]) -> None:
+def _store_sqlite(settings: "Settings", posts: list[Post]) -> int:
     path = settings.sqlite_path
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -527,41 +527,51 @@ def _store_sqlite(settings: "Settings", posts: list[Post]) -> None:
                 elif isinstance(km, str):
                     base_values['keywords_matched'] = km
             rows.append(base_values)
+        inserted_rows = 0
         if rows:
             # Build statement per current columns subset present
             col_names = list(rows[0].keys())
             placeholders = ",".join(["?"] * len(col_names))
             sql = f"INSERT OR IGNORE INTO posts ({','.join(col_names)}) VALUES ({placeholders})"
             conn.executemany(sql, [tuple(r[c] for c in col_names) for r in rows])
-    # Auto-favorite opportunity posts (unified predicate utils.is_opportunity)
-        try:
-            conn.execute("""CREATE TABLE IF NOT EXISTS post_flags (
-                post_id TEXT PRIMARY KEY,
-                is_favorite INTEGER NOT NULL DEFAULT 0,
-                is_deleted INTEGER NOT NULL DEFAULT 0,
-                favorite_at TEXT,
-                deleted_at TEXT
-            )""")
-        except Exception:
-            pass
-        if getattr(settings, "auto_favorite_opportunities", False):
+            # Capture number of newly inserted rows before any post_flags updates
             try:
-                from datetime import datetime as _dt, timezone as _tz
-                now_iso = _dt.now(_tz.utc).isoformat()
-                fav_rows = []
-                for p in posts:
-                    try:
-                        threshold = getattr(settings, "recruitment_signal_threshold", 0.05)
-                        if p.raw and isinstance(p.raw, dict):  # type: ignore[truthy-bool]
-                            threshold = p.raw.get('recruitment_threshold', threshold)  # type: ignore[arg-type]
-                        if utils.is_opportunity(p.text, threshold=threshold):
-                            fav_rows.append((p.id, 1, 0, now_iso, None))
-                    except Exception:
-                        continue
-                if fav_rows:
-                    conn.executemany("INSERT INTO post_flags(post_id,is_favorite,is_deleted,favorite_at,deleted_at) VALUES(?,?,?,?,?) ON CONFLICT(post_id) DO UPDATE SET is_favorite=excluded.is_favorite, favorite_at=excluded.favorite_at WHERE excluded.is_favorite=1", fav_rows)
+                inserted_rows = conn.total_changes
+            except Exception:
+                try:
+                    inserted_rows = int(conn.execute("SELECT changes()").fetchone()[0])
+                except Exception:
+                    inserted_rows = 0
+            # Auto-favorite opportunity posts (unified predicate utils.is_opportunity)
+            try:
+                conn.execute("""CREATE TABLE IF NOT EXISTS post_flags (
+                    post_id TEXT PRIMARY KEY,
+                    is_favorite INTEGER NOT NULL DEFAULT 0,
+                    is_deleted INTEGER NOT NULL DEFAULT 0,
+                    favorite_at TEXT,
+                    deleted_at TEXT
+                )""")
             except Exception:
                 pass
+            if getattr(settings, "auto_favorite_opportunities", False):
+                try:
+                    from datetime import datetime as _dt, timezone as _tz
+                    now_iso = _dt.now(_tz.utc).isoformat()
+                    fav_rows = []
+                    for p in posts:
+                        try:
+                            threshold = getattr(settings, "recruitment_signal_threshold", 0.05)
+                            if p.raw and isinstance(p.raw, dict):  # type: ignore[truthy-bool]
+                                threshold = p.raw.get('recruitment_threshold', threshold)  # type: ignore[arg-type]
+                            if utils.is_opportunity(p.text, threshold=threshold):
+                                fav_rows.append((p.id, 1, 0, now_iso, None))
+                        except Exception:
+                            continue
+                    if fav_rows:
+                        conn.executemany("INSERT INTO post_flags(post_id,is_favorite,is_deleted,favorite_at,deleted_at) VALUES(?,?,?,?,?) ON CONFLICT(post_id) DO UPDATE SET is_favorite=excluded.is_favorite, favorite_at=excluded.favorite_at WHERE excluded.is_favorite=1", fav_rows)
+                except Exception:
+                    pass
+            return inserted_rows
 
 
 def _store_csv(csv_path: Path, posts: list[Post]) -> None:
@@ -1407,6 +1417,7 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                     deduped.append(p)
             # Apply legal classification & quota policy
             classified: list[Post] = []
+            accepted_in_batch = 0
             # Build dynamic legal keywords list (override/extend if provided)
             provided = []
             try:
@@ -1423,6 +1434,10 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
             daily_count = getattr(ctx, 'legal_daily_count', 0)
             cap = ctx.settings.legal_daily_post_cap
             for p in deduped:
+                # Enforce daily cap based on persisted-accepted so far plus this batch's accepted
+                if (daily_count + accepted_in_batch) >= cap:
+                    LEGAL_DAILY_CAP_REACHED.inc()
+                    break
                 # Only classify if French (existing filters may already narrow) – rely on stored language
                 lc = classify_legal_post(p.text, language=p.language, intent_threshold=ctx.settings.legal_intent_threshold)
                 LEGAL_INTENT_CLASSIFICATIONS_TOTAL.labels(lc.intent).inc()
@@ -1441,10 +1456,6 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                     except Exception:
                         pass
                     continue
-                # Enforce daily cap
-                if daily_count >= cap:
-                    LEGAL_DAILY_CAP_REACHED.inc()
-                    break
                 # Attach classification fields
                 # Company duplicate reduction: if company repeats twice like 'ACME ACME' keep single
                 if getattr(p, 'company', None):
@@ -1461,15 +1472,19 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                 setattr(p, 'keywords_matched', lc.keywords_matched)
                 setattr(p, 'location_ok', lc.location_ok)
                 classified.append(p)
-                daily_count += 1
+                accepted_in_batch += 1
+            # Persist posts and count actual insertions (dedup aware)
+            inserted = await store_posts(ctx, classified)
+            daily_count += inserted
             setattr(ctx, 'legal_daily_count', daily_count)
-            LEGAL_POSTS_TOTAL.inc(len(classified))
+            # Metrics reflect persisted accepted posts
+            LEGAL_POSTS_TOTAL.inc(inserted)
             all_new = classified
             # Count unknown authors
             for p in all_new:
                 if p.author == "Unknown":
                     unknown_count += 1
-            await store_posts(ctx, all_new)
+            # storage already executed above
 
         SCRAPE_JOBS_TOTAL.labels(status="success").inc()
         SCRAPE_POSTS_EXTRACTED.inc(len(all_new))

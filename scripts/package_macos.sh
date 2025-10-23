@@ -6,7 +6,7 @@ set -euo pipefail
 
 VERSION="${1:-}"
 if [[ -z "${VERSION}" ]]; then
-  if [[ -f VERSION ]]; then VERSION=$(tr -d '\r\n' < VERSION); else VERSION="1.0.0"; fi
+  if [[ -f VERSION ]]; then VERSION=$(awk 'NR==1{print; exit}' VERSION || echo "1.0.0"); else VERSION="1.0.0"; fi
 fi
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
@@ -49,3 +49,7 @@ echo "DMG ready at dist/TitanScraper-$VERSION.dmg"
 echo "Creating PKG (bootstrapper-like installer)..."
 ./scripts/build_pkg.sh "$VERSION"
 echo "PKG ready at dist/TitanScraper-$VERSION.pkg"
+
+echo "Creating bootstrap DMG (includes PKG + Install.command)..."
+./scripts/build_bootstrap_dmg.sh "$VERSION"
+echo "Bootstrap DMG ready at dist/TitanScraper-bootstrap-$VERSION.dmg"

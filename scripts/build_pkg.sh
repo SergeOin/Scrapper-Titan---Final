@@ -9,7 +9,7 @@ cd "$ROOT_DIR"
 
 VERSION="${1:-}"
 if [[ -z "$VERSION" ]]; then
-  if [[ -f VERSION ]]; then VERSION=$(tr -d '\r\n' < VERSION); else VERSION="1.0.0"; fi
+  if [[ -f VERSION ]]; then VERSION=$(awk 'NR==1{print; exit}' VERSION || echo "1.0.0"); else VERSION="1.0.0"; fi
 fi
 
 APP_DIR="dist/TitanScraper/TitanScraper.app"

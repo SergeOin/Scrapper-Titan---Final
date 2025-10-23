@@ -16,11 +16,36 @@ pip install pyinstaller > $null
 # App deps (in case not installed)
 pip install -r requirements.txt > $null
 
-# Include Jinja templates (and any other app data) into the bundle
+# Include Jinja templates and optional built frontend into the bundle
 $addData = @()
-if(Test-Path 'server/templates'){
+if (Test-Path 'server/templates') {
   $addData += "--add-data"
   $addData += "server/templates;server/templates"
+}
+
+# Build and embed the /blocked React UI (Vite) if available so the EXE shows the real UI
+if (Test-Path 'web/blocked/package.json') {
+  $npm = Get-Command npm -ErrorAction SilentlyContinue
+  if ($npm) {
+    Write-Host "[build_exe] Building frontend: web/blocked (Vite)" -ForegroundColor Yellow
+    Push-Location 'web/blocked'
+    try {
+      # Prefer reproducible install if lockfile exists; otherwise fallback to install
+      if (Test-Path 'package-lock.json') { npm ci } else { npm install }
+      npm run build
+    } catch {
+      Write-Host "[build_exe] WARN: frontend build failed; /blocked will show fallback. $_" -ForegroundColor Red
+    } finally {
+      Pop-Location
+    }
+  } else {
+    Write-Host "[build_exe] npm not found; skipping frontend build (will use fallback for /blocked)" -ForegroundColor DarkYellow
+  }
+  if (Test-Path 'web/blocked/dist') {
+    $addData += "--add-data"
+    # Use ';' as separator on Windows for src;dest
+    $addData += "web/blocked/dist;web/blocked/dist"
+  }
 }
 
 # Derive a filesystem-safe slug for build artifacts (e.g. TitanScraper)

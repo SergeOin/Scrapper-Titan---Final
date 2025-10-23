@@ -1,0 +1,81 @@
+name: macOS Package
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node (for frontend)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'web/blocked/package-lock.json'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            .venv
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'desktop/requirements-desktop.txt') }}
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/build_macos.sh
+          chmod +x scripts/package_macos.sh
+          chmod +x scripts/build_dmg.sh
+          chmod +x scripts/build_bootstrap_dmg.sh
+          chmod +x scripts/build_pkg.sh
+          chmod +x scripts/post_install_verify_macos.sh
+
+      - name: Build and package (app + DMG + PKG)
+        run: |
+          ./scripts/package_macos.sh
+
+      - name: Build bootstrap DMG (with Install.command)
+        if: always()
+        run: |
+          VERSION=$(awk 'NR==1{print; exit}' VERSION 2>/dev/null || echo "1.0.0")
+          ./scripts/build_bootstrap_dmg.sh "$VERSION"
+
+      - name: Upload app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: TitanScraper-app
+          path: dist/TitanScraper/TitanScraper.app
+
+      - name: Upload DMG
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TitanScraper-dmg
+          path: dist/*.dmg
+
+      - name: Upload Bootstrap DMG
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TitanScraper-bootstrap-dmg
+          path: dist/*bootstrap*.dmg
+
+      - name: Upload PKG
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TitanScraper-pkg
+          path: dist/*.pkg

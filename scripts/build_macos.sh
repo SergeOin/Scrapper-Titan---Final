@@ -14,9 +14,27 @@ pip install -r requirements.txt
 pip install -r desktop/requirements-desktop.txt
 pip install pyinstaller==6.10.0 pillow==10.4.0
 
-# Derive version
+# Build frontend (web/blocked) if Node is available
+if [[ -f "web/blocked/package.json" ]]; then
+  if command -v npm >/dev/null 2>&1; then
+    echo "Building frontend: web/blocked (Vite)"
+    pushd web/blocked >/dev/null
+    set +e
+    npm ci && npm run build
+    code=$?
+    set -e
+    popd >/dev/null
+    if [[ $code -ne 0 ]]; then
+      echo "WARNING: Frontend build failed; /blocked will show a fallback message." >&2
+    fi
+  else
+    echo "npm not found; skipping frontend build. The app will use fallback content for /blocked." >&2
+  fi
+fi
+
+# Derive version (robust against locale issues)
 if [[ -f VERSION ]]; then
-  VERSION_STR=$(cat VERSION | tr -d '\n' )
+  VERSION_STR=$(awk 'NR==1{print; exit}' VERSION || echo "1.0.0")
 else
   VERSION_STR="1.0.0"
 fi
@@ -24,9 +42,10 @@ fi
 echo "Building macOS app (version $VERSION_STR)"
 pyinstaller desktop/pyinstaller.spec
 
-# Package into .app if not already
+# Package into nested .app expected by downstream scripts: dist/TitanScraper/TitanScraper.app
 if [[ -d dist/TitanScraper ]]; then
-  APPDIR="dist/${APP_NAME}.app"
+  mkdir -p "dist/${APP_NAME}"
+  APPDIR="dist/${APP_NAME}/${APP_NAME}.app"
   mkdir -p "$APPDIR/Contents/MacOS"
   mkdir -p "$APPDIR/Contents/Resources"
   # Basic Info.plist
@@ -51,5 +70,4 @@ EOF
   cp -R dist/TitanScraper/* "$APPDIR/Contents/MacOS/"
 fi
 
-echo "(Optional) Create DMG with create-dmg once installed:"
-echo "  create-dmg --volname ${APP_NAME} --background background.png --window-size 800 400 --icon-size 128 --app-drop-link 600 185 ${APP_NAME}-${VERSION_STR}.dmg dist"
+echo "App bundle prepared at: dist/${APP_NAME}/${APP_NAME}.app"

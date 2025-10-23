@@ -163,6 +163,38 @@ def _normalize_linkedin_url(value: str) -> str:
     except Exception:
         return ''
 
+# Lightweight helper to extract a comparable name/slug from a LinkedIn URL.
+# Examples:
+#  - https://www.linkedin.com/company/law-profiler/ -> "law profiler"
+#  - https://www.linkedin.com/in/john-doe -> "john doe"
+# If parsing fails, returns a normalized last non-empty path segment.
+def _blocked_slug_from_url(url: str) -> str:
+    try:
+        from urllib.parse import urlparse, unquote
+        p = urlparse(url or "")
+        parts = [seg for seg in (p.path or "").split('/') if seg]
+        slug = ""
+        if parts:
+            # Prefer segment after known prefixes like 'company' or 'in'
+            for pref in ("company", "in", "school", "pages"):
+                if pref in parts:
+                    idx = parts.index(pref)
+                    if idx + 1 < len(parts):
+                        slug = parts[idx + 1]
+                        break
+            if not slug:
+                slug = parts[-1]
+        slug = unquote(slug)
+        # Transform dashes/underscores to spaces then normalize accents/case
+        slug = slug.replace('-', ' ').replace('_', ' ')
+        try:
+            from scraper.utils import normalize_for_search as _nfs  # type: ignore
+            return _nfs(slug)
+        except Exception:
+            return (slug or "").strip().lower()
+    except Exception:
+        return ""
+
 async def _blocked_count(ctx) -> int:
     # Mongo path
     if ctx.mongo_client:
@@ -1176,6 +1208,40 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
                 deduped.append(item)
             rows = deduped
     except Exception:
+        pass
+
+    # Exclude posts coming from blocked accounts (by LinkedIn URL slug matched against author/company)
+    try:
+        items = await _blocked_list(ctx)
+        blocked_names: set[str] = set()
+        for it in items:
+            u = (it.get("url") or "").strip()
+            if not u:
+                continue
+            slug = _blocked_slug_from_url(u)
+            if slug:
+                blocked_names.add(slug)
+        if blocked_names and rows:
+            def _norm_name(s: Any) -> str:
+                try:
+                    from scraper.utils import normalize_for_search as _nfs  # type: ignore
+                    return _nfs(str(s or "")).strip()
+                except Exception:
+                    return str(s or "").strip().lower()
+            filtered_rows: list[dict[str, Any]] = []
+            for it in rows:
+                a = _norm_name(it.get("author"))
+                c = _norm_name(it.get("company"))
+                # direct equality or substring match to be tolerant to suffixes
+                is_blocked = any(
+                    (bn and ((a and (a == bn or bn in a)) or (c and (c == bn or bn in c))))
+                    for bn in blocked_names
+                )
+                if not is_blocked:
+                    filtered_rows.append(it)
+            rows = filtered_rows
+    except Exception:
+        # On any error, do not block results; better to show than break
         pass
     return rows
 
