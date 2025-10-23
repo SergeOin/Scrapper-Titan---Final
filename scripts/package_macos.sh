@@ -26,8 +26,8 @@ if [[ ! -d "$APP_DIR" ]]; then
   echo "WARN: App bundle not found at $APP_DIR; continuing — DMG builder will construct it from one-folder output if needed." >&2
 fi
 
-# Ensure Info.plist has icon set when ICNS exists
-if [[ -f build/icon.icns ]]; then
+# Ensure Info.plist has icon set when ICNS exists and app already exists
+if [[ -d "$APP_DIR" && -f build/icon.icns ]]; then
   PLIST="$APP_DIR/Contents/Info.plist"
   if /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$PLIST" >/dev/null 2>&1; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile icon.icns" "$PLIST" || true
@@ -43,6 +43,20 @@ fi
 echo "Creating DMG..."
 ./scripts/build_dmg.sh "$VERSION"
 echo "DMG ready at dist/TitanScraper-$VERSION.dmg"
+
+# If the app was constructed during DMG build, set icon now so PKG picks it up
+if [[ -d "$APP_DIR" && -f build/icon.icns ]]; then
+  PLIST="$APP_DIR/Contents/Info.plist"
+  if /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$PLIST" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile icon.icns" "$PLIST" || true
+  else
+    /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string icon.icns" "$PLIST" || true
+  fi
+  if [[ ! -f "$APP_DIR/Contents/Resources/icon.icns" ]]; then
+    mkdir -p "$APP_DIR/Contents/Resources"
+    cp build/icon.icns "$APP_DIR/Contents/Resources/icon.icns" || true
+  fi
+fi
 
 echo "Creating PKG (bootstrapper-like installer)..."
 ./scripts/build_pkg.sh "$VERSION"
