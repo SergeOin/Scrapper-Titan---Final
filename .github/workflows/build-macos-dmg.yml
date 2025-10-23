@@ -20,6 +20,12 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Pre-install Pillow (safety)
+        shell: bash
+        run: |
+          python3 -m pip install -q --upgrade pip wheel setuptools
+          python3 -m pip install -q pillow==10.4.0
+
       - name: Show tool versions
         run: |
           sw_vers
