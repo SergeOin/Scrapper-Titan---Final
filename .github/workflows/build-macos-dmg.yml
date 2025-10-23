@@ -34,7 +34,8 @@ jobs:
       - name: Build DMG
         shell: bash
         run: |
-          VERSION_STR=$(cat VERSION | tr -d '\n' || echo "1.0.0")
+          chmod +x scripts/build_dmg.sh || true
+          VERSION_STR=$(awk 'NR==1{print; exit}' VERSION 2>/dev/null || echo "1.0.0")
           bash ./scripts/build_dmg.sh "$VERSION_STR"
 
       - name: Upload DMG artifact
