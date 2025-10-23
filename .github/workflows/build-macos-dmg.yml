@@ -34,7 +34,7 @@ jobs:
       - name: Prepare packaging scripts
         shell: bash
         run: |
-          chmod +x scripts/package_macos.sh scripts/build_dmg.sh scripts/build_pkg.sh scripts/build_bootstrap_dmg.sh || true
+          chmod +x build_mac.sh scripts/package_macos.sh scripts/build_dmg.sh scripts/build_pkg.sh scripts/build_bootstrap_dmg.sh || true
 
       - name: Build app + DMG + PKG + Bootstrap DMG (simple)
         shell: bash

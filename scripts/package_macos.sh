@@ -16,11 +16,17 @@ echo "==> Packaging Titan Scraper for macOS (version $VERSION)"
 
 if [[ -f "Titan Scraper logo.png" ]]; then
   echo "Generating ICNS from PNG..."
-  python3 scripts/util_make_icon.py -i "Titan Scraper logo.png" -o build/icon.icns || true
+  # Prefer venv python if available (will have Pillow), fallback to system python.
+  if [[ -x .venv/bin/python ]]; then
+    .venv/bin/python scripts/util_make_icon.py -i "Titan Scraper logo.png" -o build/icon.icns || true
+  else
+    python3 scripts/util_make_icon.py -i "Titan Scraper logo.png" -o build/icon.icns || true
+  fi
 fi
 
 echo "Building .app bundle via build_mac.sh..."
-./build_mac.sh
+chmod +x build_mac.sh || true
+bash ./build_mac.sh
 
 APP_DIR="dist/TitanScraper/TitanScraper.app"
 if [[ ! -d "$APP_DIR" ]]; then
