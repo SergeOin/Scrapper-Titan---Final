@@ -31,12 +31,15 @@ jobs:
         run: |
           bash ./build_mac.sh
 
-      - name: Build DMG
+      - name: Prepare packaging scripts
         shell: bash
         run: |
-          chmod +x scripts/build_dmg.sh || true
-          VERSION_STR=$(awk 'NR==1{print; exit}' VERSION 2>/dev/null || echo "1.0.0")
-          bash ./scripts/build_dmg.sh "$VERSION_STR"
+          chmod +x scripts/package_macos.sh scripts/build_dmg.sh scripts/build_pkg.sh scripts/build_bootstrap_dmg.sh || true
+
+      - name: Build app + DMG + PKG + Bootstrap DMG (simple)
+        shell: bash
+        run: |
+          ./scripts/package_macos.sh
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
@@ -45,3 +48,27 @@ jobs:
           path: |
             dist/*.dmg
           if-no-files-found: error
+
+      - name: Upload PKG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TitanScraper-pkg
+          path: |
+            dist/*.pkg
+          if-no-files-found: error
+
+      - name: Upload App bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: TitanScraper-app
+          path: |
+            dist/TitanScraper/TitanScraper.app
+          if-no-files-found: warn
+
+      - name: Upload Bootstrap DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: TitanScraper-bootstrap-dmg
+          path: |
+            dist/*bootstrap*.dmg
+          if-no-files-found: warn
