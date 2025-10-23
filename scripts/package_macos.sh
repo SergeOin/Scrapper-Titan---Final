@@ -8,6 +8,9 @@ VERSION="${1:-}"
 if [[ -z "${VERSION}" ]]; then
   if [[ -f VERSION ]]; then VERSION=$(awk 'NR==1{print; exit}' VERSION || echo "1.0.0"); else VERSION="1.0.0"; fi
 fi
+# Sanitize non-printable/BOM characters just in case
+VERSION=$(printf '%s' "$VERSION" | LC_ALL=C tr -cd '[:print:]')
+if [[ -z "$VERSION" ]]; then VERSION="1.0.0"; fi
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT_DIR"

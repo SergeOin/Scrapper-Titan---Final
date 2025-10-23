@@ -1,10 +1,9 @@
-name: macOS Package
+name: macOS Package (deprecated)
 
 on:
-  workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
+  # Converted to workflow_call so it doesn't appear as a standalone Action.
+  # Use 'build-macos-dmg' workflow instead.
+  workflow_call:
 
 jobs:
   build-macos:

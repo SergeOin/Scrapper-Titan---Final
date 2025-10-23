@@ -26,6 +26,12 @@ jobs:
           python3 -m pip install -q --upgrade pip wheel setuptools
           python3 -m pip install -q pillow==10.4.0
 
+      - name: Normalize line endings (LF)
+        shell: bash
+        run: |
+          perl -pi -e 's/\r$//' build_mac.sh || true
+          find scripts -type f -name '*.sh' -print0 | xargs -0 perl -pi -e 's/\r$//' || true
+
       - name: Show tool versions
         run: |
           sw_vers

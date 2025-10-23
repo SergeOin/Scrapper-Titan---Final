@@ -42,14 +42,14 @@ fi
 echo "Building macOS app (version $VERSION_STR)"
 pyinstaller desktop/pyinstaller.spec
 
-# Package into nested .app expected by downstream scripts: dist/TitanScraper/TitanScraper.app
+# Package into nested .app expected by downstream scripts without recursive self-copy
 if [[ -d dist/TitanScraper ]]; then
-  mkdir -p "dist/${APP_NAME}"
-  APPDIR="dist/${APP_NAME}/${APP_NAME}.app"
-  mkdir -p "$APPDIR/Contents/MacOS"
-  mkdir -p "$APPDIR/Contents/Resources"
+  STAGE_APP="build/${APP_NAME}.app"
+  rm -rf "$STAGE_APP"
+  mkdir -p "$STAGE_APP/Contents/MacOS"
+  mkdir -p "$STAGE_APP/Contents/Resources"
   # Basic Info.plist
-  cat > "$APPDIR/Contents/Info.plist" <<EOF
+  cat > "$STAGE_APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -66,8 +66,12 @@ if [[ -d dist/TitanScraper ]]; then
 </dict>
 </plist>
 EOF
-  # Move built content into .app bundle
-  cp -R dist/TitanScraper/* "$APPDIR/Contents/MacOS/"
+  # Move built content into .app bundle (avoid copying into itself)
+  rsync -a --exclude "${APP_NAME}.app" "dist/TitanScraper/" "$STAGE_APP/Contents/MacOS/"
+  # Place .app at expected location
+  mkdir -p "dist/${APP_NAME}"
+  rm -rf "dist/${APP_NAME}/${APP_NAME}.app"
+  rsync -a "$STAGE_APP/" "dist/${APP_NAME}/${APP_NAME}.app/"
 fi
 
 echo "App bundle prepared at: dist/${APP_NAME}/${APP_NAME}.app"
