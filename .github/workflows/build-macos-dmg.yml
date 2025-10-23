@@ -39,7 +39,7 @@ jobs:
       - name: Build app + DMG + PKG + Bootstrap DMG (simple)
         shell: bash
         run: |
-          ./scripts/package_macos.sh
+          bash ./scripts/package_macos.sh
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
