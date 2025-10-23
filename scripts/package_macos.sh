@@ -23,8 +23,7 @@ bash ./build_mac.sh
 
 APP_DIR="dist/TitanScraper/TitanScraper.app"
 if [[ ! -d "$APP_DIR" ]]; then
-  echo "ERROR: App bundle not found at $APP_DIR" >&2
-  exit 1
+  echo "WARN: App bundle not found at $APP_DIR; continuing — DMG builder will construct it from one-folder output if needed." >&2
 fi
 
 # Ensure Info.plist has icon set when ICNS exists
