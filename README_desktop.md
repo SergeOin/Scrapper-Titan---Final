@@ -91,6 +91,14 @@ Notes sur les warnings ICE91 (LGHT1076) : ils indiquent que certains fichiers so
 - Output: `dist/TitanScraper/TitanScraper.app`
 - Optional one‑file: `ONEFILE=1 ./build_mac.sh`
 
+### Bootstrapper (macOS)
+Pour un démarrage facilité (installation des navigateurs Playwright, préparation des dossiers), vous pouvez utiliser:
+```
+chmod +x scripts/bootstrap_macos.sh
+./scripts/bootstrap_macos.sh
+```
+Ce script prépare `~/Library/Application Support/TitanScraper` (logs, exports, screenshots, traces), configure les variables d'environnement usuelles (SQLite, storage_state) et tente d'ouvrir `dist/TitanScraper.app` lorsqu'il est présent.
+
 ### Créer une image DMG (macOS)
 
 - Après build de l’app:
@@ -104,6 +112,11 @@ You can add a workflow to build artifacts per platform. Example skeleton:
 
 - Windows job: setup Python, install deps, run `build_windows.ps1`, upload `dist/`.
 - macOS job: setup Python, run `build_mac.sh`, upload `dist/`.
+
+Un workflow prêt-à-l'emploi a été ajouté: `.github/workflows/build_macos.yml`. Il:
+- installe Python et les dépendances, Playwright Chromium
+- exécute `scripts/build_macos.sh` puis `scripts/build_dmg.sh` (si présent)
+- publie `dist/TitanScraper.app` et tout `.dmg` généré en artefacts
 
 ## Packaging notes
 

@@ -111,9 +111,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
                             logger.info("inprocess_cycle_complete")
                         else:
                             logger.debug("scraping_disabled_skip")
+                        # sleep is inside try so cancellation during sleep is handled below
+                        await asyncio.sleep(interval)
+                    except asyncio.CancelledError:
+                        # Graceful shutdown: exit loop quietly
+                        try:
+                            setattr(ctx, "_autonomous_worker_active", False)
+                        except Exception:
+                            pass
+                        logger.info("inprocess_autonomous_cancel")
+                        break
                     except Exception as exc:  # pragma: no cover
                         logger.error("inprocess_cycle_failed", error=str(exc))
-                    await asyncio.sleep(interval)
+                        # brief backoff to avoid tight error loops
+                        with contextlib.suppress(Exception):
+                            await asyncio.sleep(min(5, max(1, int(interval/10))))
             bg_task = asyncio.create_task(_periodic())
             # Kick an immediate first cycle so users don't wait for the first interval
             async def _kickoff_once():
@@ -122,6 +134,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
                         from scraper.worker import process_job  # local import
                         await process_job(ctx.settings.keywords, ctx)
                         ctx.logger.info("inprocess_kickoff_complete")
+                except asyncio.CancelledError:
+                    # Swallow cancellation during shutdown
+                    ctx.logger.info("inprocess_kickoff_cancelled")
                 except Exception as exc:
                     ctx.logger.error("inprocess_kickoff_failed", error=str(exc))
             asyncio.create_task(_kickoff_once())
@@ -209,18 +224,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
                                         conn.execute("UPDATE posts SET company_norm=? WHERE id=?", (derived, r["id"]))
                                         upd += 1
                             logger.info("company_norm_cycle", updated=upd, scanned=scanned)
+                        await asyncio.sleep(norm_interval)
+                    except asyncio.CancelledError:
+                        logger.info("company_norm_cancelled")
+                        break
                     except Exception as exc:  # pragma: no cover
                         logger.error("company_norm_error", error=str(exc))
-                    await asyncio.sleep(norm_interval)
+                        with contextlib.suppress(Exception):
+                            await asyncio.sleep(min(5, max(1, int(norm_interval/10))))
             norm_task = asyncio.create_task(_loop())
     try:
         yield
     except asyncio.CancelledError:  # graceful shutdown triggered
+        # Do not re-raise; treat as clean shutdown to avoid noisy "Application shutdown failed" logs
         if getattr(ctx.settings, "quiet_startup", False):
             ctx.logger.debug("api_shutdown_cancelled")
         else:
             ctx.logger.info("api_shutdown_cancelled")
-        raise
+        # fall through to finally
     finally:
         if bg_task:
             bg_task.cancel()

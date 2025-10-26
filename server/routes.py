@@ -1321,18 +1321,28 @@ async def fetch_meta(ctx) -> dict[str, Any]:
         except Exception as exc:  # pragma: no cover
             ctx.logger.error("meta_query_failed", error=str(exc))
     else:
-        # Approximate posts_count from SQLite if Mongo absent
+        # SQLite meta: prefer explicit meta table when present, then approximate posts_count from posts
         try:
             if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
                 conn = sqlite3.connect(ctx.settings.sqlite_path)
                 with conn:
+                    # Try meta table first (created by worker.update_meta)
+                    try:
+                        row = conn.execute("SELECT last_run, COALESCE(posts_count,0), COALESCE(scraping_enabled, 1) FROM meta WHERE id = 'global'").fetchone()
+                        if row:
+                            meta["last_run"] = row[0]
+                            meta["posts_count"] = int(row[1] or 0)
+                            meta["scraping_enabled"] = bool(row[2])
+                    except Exception:
+                        pass
+                    # Fallback: compute posts_count from posts if meta table not present
                     _ensure_post_flags(conn)
                     c = conn.execute(
                         "SELECT COUNT(*) FROM posts p LEFT JOIN post_flags f ON f.post_id = p.id "
                         "WHERE LOWER(p.author) <> 'demo_recruteur' AND LOWER(p.keyword) <> 'demo_recruteur' AND COALESCE(f.is_deleted,0) = 0"
                     ).fetchone()
-                    if c:
-                        meta["posts_count"] = c[0]
+                    if c and (not meta.get("posts_count")):
+                        meta["posts_count"] = int(c[0] or 0)
         except Exception:  # pragma: no cover
             pass
     if ctx.redis:
@@ -1546,6 +1556,8 @@ async def stop_local_worker():  # called from lifespan shutdown
 async def trigger_scrape(
     request: Request,
     keywords: Optional[str] = Form(None),
+    sync: Optional[int] = Query(None, description="Exécuter le cycle en ligne (synchrone) si =1 et sans Redis"),
+    relaxed: Optional[int] = Query(None, description="Relâcher les filtres pour un run de test si =1"),
     ctx=Depends(get_auth_context),
 ):
     # Optional trigger token enforcement (permit dashboard-originated calls)
@@ -1562,6 +1574,7 @@ async def trigger_scrape(
     if keywords:
         kws = [k.strip() for k in keywords.split(";") if k.strip()]
     payload = {"keywords": kws, "ts": datetime.now(timezone.utc).isoformat()}
+    # If Redis is configured, always enqueue (distributed workers will handle it)
     if ctx.redis:
         try:
             await ctx.redis.rpush(ctx.settings.redis_queue_key, json_dumps(payload))
@@ -1570,7 +1583,33 @@ async def trigger_scrape(
         except Exception as exc:  # pragma: no cover
             ctx.logger.error("enqueue_failed", error=str(exc))
             raise HTTPException(status_code=500, detail="Queue indisponible")
-    # No redis: enqueue locally and ensure single worker
+    # No redis: optionally allow a synchronous inline run for deterministic desktop tests
+    try:
+        sync_header = request.headers.get("X-Trigger-Sync")
+        sync_mode = bool(sync and int(sync) == 1) or (str(sync_header).strip().lower() in ("1","true","yes"))
+    except Exception:
+        sync_mode = False
+    if sync_mode:
+        try:
+            from scraper.worker import process_job  # local import
+            # Optionnel: mode relaxé pour tests (désactive filtres stricts ponctuellement)
+            relaxed_mode = bool(relaxed and int(relaxed) == 1)
+            if relaxed_mode:
+                setattr(ctx, "_relaxed_filters", True)
+            try:
+                new = await process_job(kws, ctx)
+            finally:
+                if relaxed_mode and hasattr(ctx, "_relaxed_filters"):
+                    try:
+                        delattr(ctx, "_relaxed_filters")
+                    except Exception:
+                        pass
+            # Explicit meta refresh occurs inside process_job; return result count
+            return JSONResponse({"status": "ok", "inserted": int(new)})
+        except Exception as exc:
+            ctx.logger.error("inline_trigger_failed", error=str(exc))
+            raise HTTPException(status_code=500, detail="Echec exécution inline")
+    # Default: No redis path -> enqueue locally and ensure single worker task
     await ensure_local_worker(ctx)
     assert _local_queue is not None
     await _local_queue.put(kws)
@@ -1656,6 +1695,86 @@ async def api_restore_post(
     }
 
 
+@router.post("/api/posts/{post_id}/purge")
+async def api_purge_post(
+    post_id: str,
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Purge définitivement un post (suppression de la base et des flags)."""
+    removed = 0
+    # Mongo
+    if ctx.mongo_client:
+        try:
+            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
+            res = await coll.delete_one({"_id": post_id})
+            removed += int(getattr(res, 'deleted_count', 0) or 0)
+        except Exception:
+            pass
+    # SQLite
+    path = ctx.settings.sqlite_path
+    if path and Path(path).exists():
+        import sqlite3 as _sqlite
+        try:
+            conn = _sqlite.connect(path)
+            with conn:
+                try:
+                    conn.execute("DELETE FROM post_flags WHERE post_id=?", (post_id,))
+                except Exception:
+                    pass
+                res = conn.execute("DELETE FROM posts WHERE id=?", (post_id,))
+                removed += int(res.rowcount or 0)
+        except Exception:
+            pass
+    return {"post_id": post_id, "removed": removed, "trash_count": _count_deleted(ctx)}
+
+
+@router.post("/api/trash/empty")
+async def api_trash_empty(
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Supprime définitivement tous les posts marqués supprimés (corbeille)."""
+    removed_sqlite = 0
+    removed_mongo = 0
+    # Mongo: best-effort remove documents that have a corresponding deleted flag in SQLite (if any)
+    # If only Mongo is used, no flags table exists; skip to avoid heavy full scans.
+    path = ctx.settings.sqlite_path
+    deleted_ids: list[str] = []
+    if path and Path(path).exists():
+        import sqlite3 as _sqlite
+        try:
+            conn = _sqlite.connect(path)
+            conn.row_factory = _sqlite.Row
+            with conn:
+                _ensure_post_flags(conn)
+                ids = [r[0] for r in conn.execute("SELECT post_id FROM post_flags WHERE is_deleted = 1").fetchall()]
+                deleted_ids = ids
+                # Purge flags first, then posts
+                if ids:
+                    placeholders = ",".join(["?"] * len(ids))
+                    try:
+                        conn.execute(f"DELETE FROM post_flags WHERE post_id IN ({placeholders})", ids)
+                    except Exception:
+                        pass
+                    res = conn.execute(f"DELETE FROM posts WHERE id IN ({placeholders})", ids)
+                    removed_sqlite = int(res.rowcount or 0)
+                    try:
+                        conn.execute("VACUUM")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    if deleted_ids and ctx.mongo_client:
+        try:
+            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
+            mres = await coll.delete_many({"_id": {"$in": deleted_ids}})
+            removed_mongo = int(getattr(mres, 'deleted_count', 0) or 0)
+        except Exception:
+            pass
+    return {"ok": True, "removed_sqlite": removed_sqlite, "removed_mongo": removed_mongo, "trash_count": _count_deleted(ctx)}
+
+
 @router.get("/api/trash/count")
 async def api_trash_count(
     ctx=Depends(get_auth_context),
@@ -1716,7 +1835,7 @@ async def health(ctx=Depends(get_auth_context)):
                 data["last_run_age_seconds"] = int(age.total_seconds())
             except Exception:
                 pass
-        # If no last_run from Mongo meta and SQLite is used, derive from latest collected_at
+        # If still no last_run and SQLite is used, derive from latest collected_at
         if not data.get("last_run") and ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
             try:
                 conn = sqlite3.connect(ctx.settings.sqlite_path)
@@ -2158,6 +2277,22 @@ async def toggle_scraping(ctx=Depends(get_auth_context), _auth=Depends(require_a
     except Exception:
         pass
     return {"scraping_enabled": new_state}
+
+
+@router.post("/api/session/import_cookies")
+async def api_session_import_cookies(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Importe les cookies LinkedIn depuis les navigateurs locaux (Edge/Chrome/Firefox).
+
+    Écrit un storage_state.json compatible Playwright si un cookie li_at est trouvé.
+    """
+    try:
+        from scraper.session import browser_sync
+        ok, diag = browser_sync(ctx)
+        if not ok:
+            return JSONResponse({"ok": False, **diag}, status_code=400)
+        return {"ok": True, **diag}
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
 @router.get("/debug/auth")

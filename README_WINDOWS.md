@@ -30,6 +30,18 @@ Notes:
   playwright install chromium
   ```
 
+### Bootstrapper Desktop (recommandé)
+Pour un premier lancement fluide côté utilisateur (WebView2, navigateurs Playwright, répertoires), lancez le bootstrapper:
+```powershell
+PowerShell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows.ps1
+```
+Ce script:
+- Vérifie/installe WebView2 Runtime si nécessaire
+- Installe Chromium pour Playwright dans un dossier utilisateur (`%LOCALAPPDATA%\TitanScraper\pw-browsers`)
+- Prépare les dossiers applicatifs (`logs`, `exports`, `screenshots`, `traces`)
+- Positionne des variables d'environnement sûres (SQLite, storage_state)
+- Démarre automatiquement `dist/TitanScraper/TitanScraper.exe` si présent
+
 ## Construction d'un MSI (WiX Toolset)
 Prérequis: WiX v3 (candle.exe, light.exe dans PATH).
 ```powershell

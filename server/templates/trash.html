@@ -42,11 +42,12 @@
     <h1>Corbeille</h1>
     <a href="/">⟵ Retour au tableau</a>
   </header>
-  <div class="warning">Attention : si vous fermez l’application, les posts présents dans la corbeille seront supprimés définitivement.</div>
   <div class="card">
     <div class="meta">
       <span>Posts dans la corbeille : <strong id="deletedCount">{{ trash_count }}</strong></span>
       <span>(Dernières suppressions affichées par ordre chronologique)</span>
+      <span style="flex:1"></span>
+      <button type="button" id="emptyTrashBtn" class="restore-btn" style="background:#ef4444;color:#fff">Vider la corbeille</button>
     </div>
     {% if posts|length == 0 %}
       <div class="empty">La corbeille est vide pour le moment.</div>
@@ -66,7 +67,10 @@
         <tbody>
           {% for post in posts %}
             <tr data-post-id="{{ post._id }}">
-              <td class="actions-cell"><button type="button" class="restore-btn" data-id="{{ post._id }}">Restaurer</button></td>
+              <td class="actions-cell">
+                <button type="button" class="restore-btn" data-id="{{ post._id }}">Restaurer</button>
+                <button type="button" class="restore-btn purge-btn" data-id="{{ post._id }}" style="background:#ef4444;color:#fff">Supprimer définitivement</button>
+              </td>
               <td><code>{{ post.keyword }}</code></td>
               <td>{{ post.author or '—' }}</td>
               <td>{{ post.company or '—' }}</td>
@@ -134,6 +138,66 @@
         await restorePost(id, row);
       });
     });
+
+    async function purgePost(id, row){
+      try {
+        const r = await fetch(`/api/posts/${id}/purge`, { method:'POST' });
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        const data = await r.json();
+        updateDeletedCount(data.trash_count ?? 0);
+        showToast('Post supprimé définitivement','success');
+        if(row){ row.remove(); }
+        if(document.querySelectorAll('tbody tr').length === 0){
+          const tbody = document.querySelector('tbody');
+          if(tbody){
+            tbody.innerHTML = '';
+            const empty = document.createElement('div');
+            empty.className = 'empty';
+            empty.textContent = 'La corbeille est vide pour le moment.';
+            tbody.parentElement.replaceWith(empty);
+          }
+        }
+      } catch(e){
+        showToast('Erreur suppression définitive: '+e,'error');
+      }
+    }
+
+    document.querySelectorAll('.purge-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.id;
+        if(!id) return;
+        if(!confirm('Supprimer définitivement ce post ? Cette action est irréversible.')) return;
+        const row = btn.closest('tr');
+        btn.disabled = true;
+        await purgePost(id, row);
+      });
+    });
+
+    const emptyBtn = document.getElementById('emptyTrashBtn');
+    if(emptyBtn){
+      emptyBtn.addEventListener('click', async () => {
+        if(!confirm('Vider toute la corbeille ? Cette action supprimera définitivement tous les posts supprimés.')) return;
+        emptyBtn.disabled = true;
+        try{
+          const r = await fetch('/api/trash/empty', { method:'POST' });
+          if(!r.ok) throw new Error('HTTP '+r.status);
+          const data = await r.json();
+          updateDeletedCount(0);
+          showToast(`Corbeille vidée (${(data.removed_sqlite||0) + (data.removed_mongo||0)} supprimés)`, 'success');
+          const table = document.querySelector('table');
+          if(table){
+            const empty = document.createElement('div');
+            empty.className = 'empty';
+            empty.textContent = 'La corbeille est vide pour le moment.';
+            table.replaceWith(empty);
+          }
+        }catch(e){
+          showToast('Erreur vidage corbeille: '+e,'error');
+        }finally{
+          emptyBtn.disabled = false;
+        }
+      });
+    }
   </script>
 </body>
 </html>

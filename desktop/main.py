@@ -1071,6 +1071,8 @@ def main():
     # Persist browser session & lightweight session store in user-writable data dir (avoid read-only install dir)
     os.environ.setdefault("STORAGE_STATE", str(user_base / "storage_state.json"))
     os.environ.setdefault("SESSION_STORE_PATH", str(user_base / "session_store.json"))
+    # Give a small manual login window on first navigation if session is invalid (improves first-run UX)
+    os.environ.setdefault("LOGIN_INITIAL_WAIT_SECONDS", "30")
     # Early diagnostics: record the resolved template search root candidates and storage state existence.
     try:
         tmpl_candidates = []

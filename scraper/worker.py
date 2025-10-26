@@ -133,6 +133,7 @@ async def process_keywords_single_session(keywords: list[str], ctx: AppContext) 
         raise RuntimeError("Playwright not installed.")
     logger = ctx.logger.bind(component="single_session")
     results: list[Post] = []
+    browser = None
     try:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=ctx.settings.playwright_headless_scrape)
@@ -142,6 +143,8 @@ async def process_keywords_single_session(keywords: list[str], ctx: AppContext) 
             page = await context.new_page()
             await _ensure_authenticated(page, ctx, logger)
             for idx, keyword in enumerate(keywords):
+                # cooperative cancellation between keywords
+                await asyncio.sleep(0)
                 if idx > 0 and ctx.settings.per_keyword_delay_ms > 0:
                     await asyncio.sleep(ctx.settings.per_keyword_delay_ms / 1000.0)
                 if ctx.token_bucket:
@@ -155,6 +158,11 @@ async def process_keywords_single_session(keywords: list[str], ctx: AppContext) 
                     posts = await extract_posts(page, keyword, ctx.settings.max_posts_per_keyword, ctx)
                     logger.info("keyword_extracted", keyword=keyword, count=len(posts))
                     results.extend(posts)
+                except asyncio.CancelledError:
+                    # ensure browser is closed promptly on cancellation
+                    with contextlib.suppress(Exception):
+                        await browser.close()
+                    raise
                 except Exception as exc:
                     logger.warning("keyword_failed", keyword=keyword, error=str(exc))
             try:
@@ -171,6 +179,12 @@ async def process_keywords_single_session(keywords: list[str], ctx: AppContext) 
         except Exception:
             pass
         return []
+    except asyncio.CancelledError:
+        # close browser if created
+        if browser is not None:
+            with contextlib.suppress(Exception):
+                await browser.close()
+        raise
     return results
 
 # ------------------------------------------------------------
@@ -221,6 +235,8 @@ async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> 
                 browser, page = recovery
                 try:
                     for idx, keyword in enumerate(batch):
+                        # cooperative cancellation between keywords
+                        await asyncio.sleep(0)
                         if ctx.settings.adaptive_pause_every > 0 and results and (len(results) // ctx.settings.max_posts_per_keyword) % ctx.settings.adaptive_pause_every == 0 and (len(results) // ctx.settings.max_posts_per_keyword) != 0:
                             logger.info("adaptive_pause", seconds=ctx.settings.adaptive_pause_seconds)
                             await asyncio.sleep(ctx.settings.adaptive_pause_seconds)
@@ -251,6 +267,10 @@ async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> 
                             posts = await extract_posts(page, keyword, ctx.settings.max_posts_per_keyword, ctx)
                             logger.info("keyword_extracted", keyword=keyword, count=len(posts))
                             results.extend(posts)
+                        except asyncio.CancelledError:
+                            with contextlib.suppress(Exception):
+                                await browser.close()
+                            raise
                         except Exception as exc:
                             logger.warning("keyword_processing_failed", keyword=keyword, error=str(exc))
                             try:
@@ -278,6 +298,9 @@ async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> 
             except Exception:
                 pass
             break
+        except asyncio.CancelledError:
+            # Propagate cancellation quickly for clean shutdown
+            raise
         logger.info("batch_complete", batch=batch)
     return results
 
@@ -605,21 +628,64 @@ def _store_csv(csv_path: Path, posts: list[Post]) -> None:
 # Meta update
 # ------------------------------------------------------------
 async def update_meta(ctx: AppContext, total_new: int) -> None:
-    if not ctx.mongo_client:
-        return
+    """Update meta information after a job completes.
+
+    Primary store is Mongo when available. If Mongo is absent, persist a lightweight
+    meta row in SQLite so the dashboard /health can reflect last_run even when
+    zero posts were inserted (avoids indefinite "Cycle en cours…" perception).
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    # Mongo path
+    if ctx.mongo_client:
+        try:
+            meta_coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_meta]
+            await meta_coll.update_one(
+                {"_id": "global"},
+                {
+                    "$set": {"last_run": now_iso},
+                    "$inc": {"posts_count": total_new},
+                    "$setOnInsert": {"scraping_enabled": ctx.settings.scraping_enabled},
+                },
+                upsert=True,
+            )
+            return
+        except Exception as exc:  # pragma: no cover
+            ctx.logger.error("meta_update_failed", error=str(exc))
+            # fall through to SQLite as a best-effort fallback
+    # SQLite fallback meta (keeps last_run fresh even when no documents inserted)
     try:
-        meta_coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_meta]
-        await meta_coll.update_one(
-            {"_id": "global"},
-            {
-                "$set": {"last_run": datetime.now(timezone.utc).isoformat()},
-                "$inc": {"posts_count": total_new},
-                "$setOnInsert": {"scraping_enabled": ctx.settings.scraping_enabled},
-            },
-            upsert=True,
-        )
+        if ctx.settings.sqlite_path:
+            db_path = ctx.settings.sqlite_path
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(db_path)
+            with conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS meta (
+                        id TEXT PRIMARY KEY,
+                        last_run TEXT,
+                        posts_count INTEGER DEFAULT 0,
+                        scraping_enabled INTEGER
+                    )
+                    """
+                )
+                # Upsert and increment posts_count by total_new
+                conn.execute(
+                    """
+                    INSERT INTO meta(id, last_run, posts_count, scraping_enabled)
+                    VALUES(?,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        last_run=excluded.last_run,
+                        posts_count=COALESCE(meta.posts_count,0)+excluded.posts_count,
+                        scraping_enabled=COALESCE(excluded.scraping_enabled, meta.scraping_enabled)
+                    """,
+                    ("global", now_iso, int(total_new or 0), int(bool(ctx.settings.scraping_enabled))),
+                )
     except Exception as exc:  # pragma: no cover
-        ctx.logger.error("meta_update_failed", error=str(exc))
+        try:
+            ctx.logger.warning("sqlite_meta_update_failed", error=str(exc))
+        except Exception:
+            pass
 
 async def update_meta_job_stats(ctx: AppContext, total_new: int, unknown_authors: int):
     """Augment meta with per-job unknown author stats (last job only)."""
@@ -772,10 +838,18 @@ async def _scroll_and_wait(page: Any, ctx: AppContext) -> None:
     """
     try:
         await page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
-    except Exception:  # pragma: no cover - ignore minor scrolling errors
+    except Exception as exc:  # pragma: no cover - ignore minor scrolling errors
+        # Do not swallow task cancellation
+        if isinstance(exc, asyncio.CancelledError):
+            raise
         pass
     SCRAPE_SCROLL_ITERATIONS.inc()
-    await page.wait_for_timeout(ctx.settings.scroll_wait_ms)
+    try:
+        await page.wait_for_timeout(ctx.settings.scroll_wait_ms)
+    except Exception as exc:
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        pass
 
 
 async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext) -> list[Post]:
@@ -794,7 +868,9 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
         body_html = (await page.content()).lower()
         if any(marker in body_html for marker in ["se connecter", "join now", "créez votre profil", "s’inscrire"]):
             ctx.logger.warning("auth_suspect", detail="Texte suggérant une page non authentifiée")
-    except Exception:
+    except Exception as exc:
+        if isinstance(exc, asyncio.CancelledError):
+            raise
         pass
 
     # Adaptive scroll: decide dynamic max based on recent productivity
@@ -818,9 +894,13 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                     dynamic_max_scroll = min(ctx.settings.adaptive_scroll_max, ctx.settings.max_scroll_steps + 2)
                 elif avg > 3:
                     dynamic_max_scroll = max(ctx.settings.adaptive_scroll_min, ctx.settings.max_scroll_steps - 1)
-    except Exception:
+    except Exception as exc:
+        if isinstance(exc, asyncio.CancelledError):
+            raise
         pass
     for step in range(dynamic_max_scroll + 1):
+        # allow cooperative cancellation between heavy DOM operations
+        await asyncio.sleep(0)
         elements: list[Any] = []
         for selector in POST_CONTAINER_SELECTORS:
             try:
@@ -829,16 +909,22 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                     if step == 0:
                         ctx.logger.info("post_container_selector_match", selector=selector, count=len(found))
                     elements.extend(found)
-            except Exception:
+            except Exception as exc:
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
                 continue
         if step == 0 and not elements:
             try:
                 await page.wait_for_timeout(1200)
-            except Exception:
+            except Exception as exc:
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
                 pass
         for el in elements:
             if len(posts) >= max_items:
                 break
+            # allow cancellation during long per-element extraction
+            await asyncio.sleep(0)
             try:
                 author_el = await el.query_selector(AUTHOR_SELECTOR)
                 text_el = await el.query_selector(TEXT_SELECTOR)
@@ -854,7 +940,9 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                                 company_val = utils.normalize_whitespace(raw_company).strip()
                                 if company_val:
                                     break
-                    except Exception:
+                    except Exception as exc:
+                        if isinstance(exc, asyncio.CancelledError):
+                            raise
                         continue
 
                 # ---------------------------
@@ -1111,39 +1199,41 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                 keep = True
                 reject_reason = None
                 try:
-                    if ctx.settings.filter_language_strict and language.lower() != (ctx.settings.default_lang or "fr").lower():
-                        keep = False; reject_reason = "language"
-                    # Domain filter: require at least one legal keyword when enabled
-                    if keep and getattr(ctx.settings, 'filter_legal_domain_only', False):
-                        tl = (text_norm or "").lower()
-                        legal_markers = (
-                            "juriste","avocat","legal","counsel","paralegal","notaire","droit","fiscal","conformité","compliance","secrétaire général","secretaire general","contentieux","litige","corporate law","droit des affaires"
-                        )
-                        if not any(m in tl for m in legal_markers):
-                            keep = False; reject_reason = reject_reason or "non_domain"
-                    if ctx.settings.filter_recruitment_only and recruitment_score < effective_threshold:
-                        if keep: keep = False; reject_reason = reject_reason or "recruitment"
-                    if ctx.settings.filter_require_author_and_permalink and (not post.author or post.author.lower() == "unknown" or not post.permalink):
-                        if keep: keep = False; reject_reason = reject_reason or "missing_core_fields"
-                    # Exclude job-seeker / availability self-promotion posts
-                    if keep and getattr(ctx.settings, 'filter_exclude_job_seekers', True):
-                        tl = (text_norm or "").lower()
-                        job_markers = (
-                            "recherche d'emploi", "recherche d\u2019emploi", "cherche un stage", "cherche un emploi",
-                            "à la recherche d'une opportunité", "a la recherche d'une opportunité",
-                            "disponible immédiatement", "disponible immediatement", "open to work", "#opentowork",
-                            "je suis à la recherche", "je suis a la recherche", "contactez-moi pour", "merci de me contacter",
-                            "mobilité géographique", "mobilite geographique", "reconversion professionnelle"
-                        )
-                        if any(m in tl for m in job_markers):
-                            keep = False; reject_reason = reject_reason or "job_seeker"
-                    # France-only heuristic
-                    if keep and getattr(ctx.settings, 'filter_france_only', True):
-                        tl = (text_norm or "").lower()
-                        fr_positive = ("france","paris","idf","ile-de-france","lyon","marseille","bordeaux","lille","toulouse","nice","nantes","rennes")
-                        foreign_negative = ("hiring in uk","remote us","canada","usa","australia","dubai","switzerland","swiss","belgium","belgique","luxembourg","portugal","espagne","spain","germany","deutschland","italy","singapore")
-                        if any(f in tl for f in foreign_negative) and not any(p in tl for p in fr_positive):
-                            keep = False; reject_reason = reject_reason or "not_fr"
+                    relaxed = bool(getattr(ctx, "_relaxed_filters", False))
+                    if not relaxed:
+                        if ctx.settings.filter_language_strict and language.lower() != (ctx.settings.default_lang or "fr").lower():
+                            keep = False; reject_reason = "language"
+                        # Domain filter: require at least one legal keyword when enabled
+                        if keep and getattr(ctx.settings, 'filter_legal_domain_only', False):
+                            tl = (text_norm or "").lower()
+                            legal_markers = (
+                                "juriste","avocat","legal","counsel","paralegal","notaire","droit","fiscal","conformité","compliance","secrétaire général","secretaire general","contentieux","litige","corporate law","droit des affaires"
+                            )
+                            if not any(m in tl for m in legal_markers):
+                                keep = False; reject_reason = reject_reason or "non_domain"
+                        if ctx.settings.filter_recruitment_only and recruitment_score < effective_threshold:
+                            if keep: keep = False; reject_reason = reject_reason or "recruitment"
+                        if ctx.settings.filter_require_author_and_permalink and (not post.author or post.author.lower() == "unknown" or not post.permalink):
+                            if keep: keep = False; reject_reason = reject_reason or "missing_core_fields"
+                        # Exclude job-seeker / availability self-promotion posts
+                        if keep and getattr(ctx.settings, 'filter_exclude_job_seekers', True):
+                            tl = (text_norm or "").lower()
+                            job_markers = (
+                                "recherche d'emploi", "recherche d\u2019emploi", "cherche un stage", "cherche un emploi",
+                                "à la recherche d'une opportunité", "a la recherche d'une opportunité",
+                                "disponible immédiatement", "disponible immediatement", "open to work", "#opentowork",
+                                "je suis à la recherche", "je suis a la recherche", "contactez-moi pour", "merci de me contacter",
+                                "mobilité géographique", "mobilite geographique", "reconversion professionnelle"
+                            )
+                            if any(m in tl for m in job_markers):
+                                keep = False; reject_reason = reject_reason or "job_seeker"
+                        # France-only heuristic
+                        if keep and getattr(ctx.settings, 'filter_france_only', True):
+                            tl = (text_norm or "").lower()
+                            fr_positive = ("france","paris","idf","ile-de-france","lyon","marseille","bordeaux","lille","toulouse","nice","nantes","rennes")
+                            foreign_negative = ("hiring in uk","remote us","canada","usa","australia","dubai","switzerland","swiss","belgium","belgique","luxembourg","portugal","espagne","spain","germany","deutschland","italy","singapore")
+                            if any(f in tl for f in foreign_negative) and not any(p in tl for p in fr_positive):
+                                keep = False; reject_reason = reject_reason or "not_fr"
                 except Exception:
                     pass
                 if keep:
@@ -1300,6 +1390,7 @@ async def process_keyword(keyword: str, ctx: AppContext, *, first_keyword: bool 
 
 async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
     # Filter out blacklisted keywords (case-insensitive)
+    meta_written = False  # ensure last_run is updated even if an exception occurs
     try:
         bl_raw = getattr(ctx.settings, 'blacklisted_keywords_raw', '') or ''
         blacklist = {b.strip().lower() for b in bl_raw.split(';') if b.strip()}
@@ -1433,30 +1524,31 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                 setattr(ctx, 'legal_daily_count', 0)
             daily_count = getattr(ctx, 'legal_daily_count', 0)
             cap = ctx.settings.legal_daily_post_cap
+            relaxed = bool(getattr(ctx, "_relaxed_filters", False))
             for p in deduped:
                 # Enforce daily cap based on persisted-accepted so far plus this batch's accepted
                 if (daily_count + accepted_in_batch) >= cap:
                     LEGAL_DAILY_CAP_REACHED.inc()
                     break
-                # Only classify if French (existing filters may already narrow) – rely on stored language
+                # Classification and gating
                 lc = classify_legal_post(p.text, language=p.language, intent_threshold=ctx.settings.legal_intent_threshold)
                 LEGAL_INTENT_CLASSIFICATIONS_TOTAL.labels(lc.intent).inc()
-                if lc.intent != 'recherche_profil':
-                    LEGAL_POSTS_DISCARDED_TOTAL.labels('intent').inc()
-                    # Track daily discarded by intent
-                    try:
-                        ctx.legal_daily_discard_intent = getattr(ctx, 'legal_daily_discard_intent', 0) + 1  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
-                    continue
-                if not lc.location_ok:
-                    LEGAL_POSTS_DISCARDED_TOTAL.labels('location').inc()
-                    try:
-                        ctx.legal_daily_discard_location = getattr(ctx, 'legal_daily_discard_location', 0) + 1  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
-                    continue
-                # Attach classification fields
+                if not relaxed:
+                    if lc.intent != 'recherche_profil':
+                        LEGAL_POSTS_DISCARDED_TOTAL.labels('intent').inc()
+                        try:
+                            ctx.legal_daily_discard_intent = getattr(ctx, 'legal_daily_discard_intent', 0) + 1  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                        continue
+                    if not lc.location_ok:
+                        LEGAL_POSTS_DISCARDED_TOTAL.labels('location').inc()
+                        try:
+                            ctx.legal_daily_discard_location = getattr(ctx, 'legal_daily_discard_location', 0) + 1  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                        continue
+                # Attach classification fields (even in relaxed, for diagnostics)
                 # Company duplicate reduction: if company repeats twice like 'ACME ACME' keep single
                 if getattr(p, 'company', None):
                     import re as _re_local
@@ -1501,12 +1593,14 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
         except Exception:
             pass
         await update_meta(ctx, len(all_new))
+        meta_written = True
         await update_meta_job_stats(ctx, len(all_new), unknown_count)
         if broadcast and EventType:  # best-effort SSE
             try:
                 await broadcast({
                     "type": EventType.JOB_COMPLETE,
-                    "posts": len(all_new),
+                    # Report persisted inserts to reflect what the user will actually see in the UI
+                    "posts": inserted,
                     "unknown_authors": unknown_count,
                 })
                 # Quota progression event
@@ -1527,6 +1621,14 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                 pass
         return len(all_new)
     finally:
+        # If anything failed before meta was updated (e.g., Playwright/browser errors),
+        # still bump last_run in SQLite/Mongo with zero increments so the dashboard
+        # doesn't appear stuck on "Cycle en cours…".
+        if not meta_written:
+            try:
+                await update_meta(ctx, 0)
+            except Exception:
+                pass
         if job_span is not None:  # pragma: no cover
             with contextlib.suppress(Exception):
                 job_span.__exit__(None, None, None)

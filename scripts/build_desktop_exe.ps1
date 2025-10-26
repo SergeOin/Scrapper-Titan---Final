@@ -33,6 +33,15 @@ $distDir = Join-Path 'dist' 'TitanScraper'
 if(!(Test-Path $distDir)){ throw "Expected dist/TitanScraper folder not found" }
 Write-Host "[build_desktop_exe] Built folder app at $distDir" -ForegroundColor Green
 
+# Copy bootstrapper for convenience
+try {
+  $bootstrap = Join-Path 'scripts' 'bootstrap_windows.ps1'
+  if(Test-Path $bootstrap){
+    Copy-Item -Force -Path $bootstrap -Destination (Join-Path $distDir 'Start-TitanScraper.ps1')
+    Write-Host "[build_desktop_exe] Added Start-TitanScraper.ps1 to dist/TitanScraper" -ForegroundColor Green
+  }
+} catch { Write-Warning "Unable to copy bootstrapper: $_" }
+
 # Optionally run a quick smoke test by launching and probing /health
 try {
   Write-Host "[build_desktop_exe] Smoke test starting..." -ForegroundColor Yellow
