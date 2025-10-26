@@ -69,8 +69,22 @@ if(!(Test-Path $icon) -and (Test-Path (Join-Path $root 'Titan Scraper logo.png')
 # Download prerequisite EXEs to build folder
 $vcExe = Join-Path $tmp 'vc_redist.x64.exe'
 $wv2Exe = Join-Path $tmp 'MicrosoftEdgeWebView2Setup.exe'
-Invoke-WebRequest -Uri $VCppUrl -OutFile $vcExe -UseBasicParsing
-Invoke-WebRequest -Uri $WebView2Url -OutFile $wv2Exe -UseBasicParsing
+
+function Download-WithRetry {
+  param([string]$Url,[string]$OutFile,[int]$Retries=3)
+  for($i=1; $i -le $Retries; $i++){
+    try {
+      Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -TimeoutSec 120
+      if(Test-Path $OutFile -PathType Leaf){ return }
+    } catch {
+      if($i -eq $Retries){ throw }
+      Start-Sleep -Seconds ([Math]::Min(5*$i,15))
+    }
+  }
+}
+
+Download-WithRetry -Url $VCppUrl -OutFile $vcExe
+Download-WithRetry -Url $WebView2Url -OutFile $wv2Exe
 
 $wxs = Join-Path $tmp 'Bundle.wxs'
 $bundleWxs | Set-Content -Path $wxs -Encoding UTF8

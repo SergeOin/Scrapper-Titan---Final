@@ -56,7 +56,7 @@ if [[ -d dist/TitanScraper ]]; then
 <dict>
   <key>CFBundleName</key><string>${APP_NAME}</string>
   <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
-  <key>CFBundleIdentifier</key><string>com.example.${APP_NAME,,}</string>
+  <key>CFBundleIdentifier</key><string>com.titanpartners.titanscraper</string>
   <key>CFBundleVersion</key><string>${VERSION_STR}</string>
   <key>CFBundleShortVersionString</key><string>${VERSION_STR}</string>
   <key>LSMinimumSystemVersion</key><string>10.15</string>
