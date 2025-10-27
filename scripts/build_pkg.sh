@@ -3,6 +3,11 @@ set -euo pipefail
 
 # Build a signed/unsigned macOS .pkg installer that installs TitanScraper.app to /Applications
 # and optionally creates a Desktop alias for the console user (best-effort) via postinstall script.
+#
+# Signing (optional):
+# - Set SIGN_IDENTITY_INSTALLER="Developer ID Installer: Your Org (TEAMID)" to sign with productsign.
+# - The identity must be in the current keychain (typically login) and unlocked.
+# - For dev-only internal usage you can leave it unsigned; Gatekeeper will warn on first open unless bypassed.
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT_DIR"
@@ -72,3 +77,12 @@ productbuild \
   "$FINAL_PKG"
 
 echo "PKG ready at $FINAL_PKG"
+
+# Optional signing using productsign if an identity is provided
+if [[ -n "${SIGN_IDENTITY_INSTALLER:-}" ]]; then
+  SIGNED_PKG="$OUT_DIR/TitanScraper-$VERSION-signed.pkg"
+  echo "Signing PKG with identity: $SIGN_IDENTITY_INSTALLER"
+  productsign --sign "$SIGN_IDENTITY_INSTALLER" "$FINAL_PKG" "$SIGNED_PKG"
+  mv -f "$SIGNED_PKG" "$FINAL_PKG"
+  echo "Signed PKG ready at $FINAL_PKG"
+fi

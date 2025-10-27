@@ -4,6 +4,11 @@ set -euo pipefail
 # Build a "bootstrapper" DMG for macOS that contains a one-click Install.command
 # which installs the TitanScraper.pkg to /Applications and launches the app.
 #
+# Optional signing:
+# - If SIGN_DMG_IDENTITY is set to a valid codesign identity (e.g., "Developer ID Application: Your Org (TEAMID)"),
+#   the DMG will be code-signed after creation. Note: code-signing a DMG is optional; Gatekeeper primarily checks the
+#   app/PKG signature and notarization. For public distribution, use Apple Developer ID and notarization.
+#
 # Output: dist/TitanScraper-bootstrap-<version>.dmg
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
@@ -82,3 +87,10 @@ ln -s /Applications "$STAGE/Applications" 2>/dev/null || true
 echo "Creating bootstrap DMG..."
 hdiutil create -volname "$APP_NAME Installer" -srcfolder "$STAGE" -ov -format UDZO "$DMG_PATH"
 echo "Bootstrap DMG created: $DMG_PATH"
+
+# Optionally sign the DMG if identity provided
+if [[ -n "${SIGN_DMG_IDENTITY:-}" ]]; then
+  echo "Signing DMG with identity: $SIGN_DMG_IDENTITY"
+  codesign --force --timestamp --sign "$SIGN_DMG_IDENTITY" "$DMG_PATH"
+  echo "Signed DMG at: $DMG_PATH"
+fi
