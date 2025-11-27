@@ -10,7 +10,7 @@
   body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif; margin: 0; padding: 1.5rem; background:#f7f9fb; color:#222; display:flex; flex-direction:column; height:100vh; }
     h1 { margin-top:0; font-size:1.4rem; }
   table { width:100%; border-collapse:collapse; margin-top:1rem; font-size:0.9rem; }
-    th, td { padding:0.5rem 0.6rem; border-bottom:1px solid #ddd; vertical-align:top; }
+    th, td { padding:0.5rem 0.6rem; border-bottom:1px solid #ddd; vertical-align:middle; }
   th { background:#eef2f5; text-align:left; position:sticky; top:0; z-index:2; }
     tr:hover { background:#f1f7fd; }
     code { background:#eee; padding:2px 4px; border-radius:4px; }
@@ -35,10 +35,10 @@
   .favorite-toggle.active { color:#facc15; }
   .delete-post { color:#dc2626; }
   .delete-post:hover { color:#b91c1c; }
-  .actions-cell { display:grid; grid-auto-flow:column; place-items:center; gap:0.35rem; }
-  th.actions-head, td.actions-cell { text-align:center; }
+  .actions-cell { display:flex; align-items:center; justify-content:center; gap:0.35rem; height:100%; min-height:2.5rem; }
+  th.actions-head, td.actions-cell { text-align:center; vertical-align:middle; }
   /* Ensure actions column content is vertically centered and doesn't wrap */
-  td.actions-cell { vertical-align:middle; white-space:nowrap; }
+  td.actions-cell { white-space:nowrap; padding-top:0.5rem; padding-bottom:0.5rem; }
   /* Keep a consistent width for the actions column */
   th.actions-head { width:90px; }
   /* Loading state for action buttons */
@@ -172,6 +172,53 @@
     function setHintAppend(text){
       if(!hintEl) return;
       hintEl.innerHTML = text;
+    }
+
+    /**
+     * Format publication date for display
+     * Shows relative time (e.g., "il y a 2 jours") + absolute date
+     */
+    function formatPublicationDate(publishedAt, collectedAt) {
+      const dateVal = publishedAt || collectedAt;
+      if (!dateVal) return '—';
+      
+      try {
+        const pubDate = new Date(dateVal);
+        if (isNaN(pubDate.getTime())) return dateVal;
+        
+        const now = new Date();
+        const diffMs = now - pubDate;
+        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+        const diffMinutes = Math.floor(diffMs / (1000 * 60));
+        
+        let relativeStr = '';
+        if (diffMinutes < 1) {
+          relativeStr = "à l'instant";
+        } else if (diffMinutes < 60) {
+          relativeStr = `il y a ${diffMinutes} min`;
+        } else if (diffHours < 24) {
+          relativeStr = `il y a ${diffHours}h`;
+        } else if (diffDays === 1) {
+          relativeStr = 'hier';
+        } else if (diffDays < 7) {
+          relativeStr = `il y a ${diffDays} jours`;
+        } else if (diffDays < 14) {
+          relativeStr = 'il y a 1 sem';
+        } else if (diffDays < 21) {
+          relativeStr = `il y a ${Math.floor(diffDays / 7)} sem`;
+        } else {
+          relativeStr = `il y a ${Math.floor(diffDays / 7)} sem`;
+        }
+        
+        // Absolute date (short format)
+        const absDate = pubDate.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
+        
+        // Combine: "il y a 2 jours (15/01)"
+        return `<span title="${pubDate.toLocaleString('fr-FR')}">${relativeStr} <small style="color:#888">(${absDate})</small></span>`;
+      } catch (_) {
+        return dateVal || '—';
+      }
     }
 
     function updateTrashBadge(count){
@@ -423,20 +470,16 @@
         const tbody = document.querySelector('table tbody');
         if(!tbody) return;
         if(data.items.length === 0){
-          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;font-size:0.8rem;color:#555;">Aucun résultat pour le moment.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;font-size:0.8rem;color:#555;">Aucun résultat pour le moment.</td></tr>';
           return;
         }
         const rows = data.items.map(p=>{
           const txt = (p.text||'');
           const short = txt.length>500? txt.substring(0,500)+'…' : txt;
-          const dateVal = p.published_at || p.collected_at;
-          let dateFmt = '';
-          try { dateFmt = new Date(dateVal).toLocaleString('fr-FR',{dateStyle:'short', timeStyle:'short'});} catch(_) { dateFmt = dateVal||''; }
+          const dateFmt = formatPublicationDate(p.published_at, p.collected_at);
           const searchFallback = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent((txt||p.author||'').slice(0,80))}`;
           const permalink = p.permalink ? `<a href="${p.permalink}" target="_blank">ouvrir</a>` : `<a href="${searchFallback}" target="_blank" title="Lien direct introuvable - recherche approximative">rechercher</a>`;
-          const status = p.status || '—';
           const metierSub = p.metier ? `<div class="meta-sub" title="Métier détecté">${String(p.metier||'').replace(/</g,'&lt;')}</div>` : '';
-          const oppBadge = p.opportunity ? '<span class="pill pill-opp" title="Signal de recrutement détecté">Opportunité</span> ' : '';
           const starActive = Number(p.is_favorite || 0) === 1;
           const starClass = starActive ? 'icon-btn favorite-toggle active' : 'icon-btn favorite-toggle';
           const starTitle = starActive ? 'Retirer des favoris' : 'Marquer en favori';
@@ -444,10 +487,9 @@
             <td><code>${p.keyword||''}</code></td>
             <td>${(p.author||'').replace(/\b(\w+\s+\w+)\s+\1\b/gi,'$1')}${metierSub}</td>
             <td>${(p.company&&p.company.toLowerCase()!==String(p.author||'').toLowerCase())?p.company:'—'}</td>
-            <td class="wrap">${oppBadge}${short.replace(/</g,'&lt;')}</td>
+            <td class="wrap">${short.replace(/</g,'&lt;')}</td>
             <td>${dateFmt}</td>
             <td>${permalink}</td>
-            <td>${status}</td>
             <td class="actions-cell">
               <button type="button" class="${starClass}" data-id="${p._id}" title="${starTitle}">★</button>
               <button type="button" class="icon-btn delete-post" data-id="${p._id}" title="Supprimer ce post">🗑</button>
@@ -472,14 +514,10 @@
       function _rowHTML(p){
         const txt = (p.text||'');
         const short = txt.length>500? txt.substring(0,500)+'…' : txt;
-        const dateVal = p.published_at || p.collected_at;
-        let dateFmt = '';
-        try { dateFmt = new Date(dateVal).toLocaleString('fr-FR',{dateStyle:'short', timeStyle:'short'});} catch(_) { dateFmt = dateVal||''; }
+        const dateFmt = formatPublicationDate(p.published_at, p.collected_at);
         const searchFallback = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent((txt||p.author||'').slice(0,80))}`;
         const permalink = p.permalink ? `<a href="${p.permalink}" target="_blank">ouvrir</a>` : `<a href="${searchFallback}" target="_blank" title="Lien direct introuvable - recherche approximative">rechercher</a>`;
-        const status = p.status || '—';
         const metierSub = p.metier ? `<div class="meta-sub" title="Métier détecté">${String(p.metier||'').replace(/</g,'&lt;')}</div>` : '';
-        const oppBadge = p.opportunity ? '<span class="pill pill-opp" title="Signal de recrutement détecté">Opportunité</span> ' : '';
         const starActive = Number(p.is_favorite || 0) === 1;
         const starClass = starActive ? 'icon-btn favorite-toggle active' : 'icon-btn favorite-toggle';
         const starTitle = starActive ? 'Retirer des favoris' : 'Marquer en favori';
@@ -488,10 +526,9 @@
           <td><code>${p.keyword||''}</code></td>
           <td>${(p.author||'').replace(/\\b(\\w+\\s+\\w+)\\s+\\1\\b/gi,'$1')}${metierSub}</td>
           <td>${companyCell}</td>
-          <td class="wrap">${oppBadge}${short.replace(/</g,'&lt;')}</td>
+          <td class="wrap">${short.replace(/</g,'&lt;')}</td>
           <td>${dateFmt}</td>
           <td>${permalink}</td>
-          <td>${status}</td>
           <td class="actions-cell">
             <button type="button" class="${starClass}" data-id="${p._id}" title="${starTitle}">★</button>
             <button type="button" class="icon-btn delete-post" data-id="${p._id}" title="Supprimer ce post">🗑</button>
@@ -677,31 +714,6 @@
         if(clearBtn){ clearBtn.addEventListener('click', ()=>{ if(input){ input.value=''; } _state.q=''; resetAndLoad(); }); }
       })();
     </script>
-  <div id="legalStatsBar" style="margin-top:.75rem; font-size:.7rem; color:#334155;"></div>
-  <script>
-    async function refreshLegalStats(){
-      try {
-        const r = await fetch('/api/legal_stats', {credentials:'include'});
-        if(!r.ok) return;
-        const data = await r.json();
-        const el = document.getElementById('legalStatsBar');
-        if(!el) return;
-        const pct = Math.min(100, Math.round((data.cap_progress||0)*100));
-        const isDone = (data.accepted||0) >= (data.cap||0);
-        const barColor = isDone ? '#16a34a' : '#2563eb';
-        let label = `${data.accepted}/${data.cap}`;
-        if(isDone){ label += ' — objectif du jour atteint'; }
-        el.innerHTML = `<div style="display:flex;align-items:center;gap:.5rem;">`+
-          `<div style=\"flex:1; background:#e2e8f0; border-radius:999px; height:8px; position:relative; overflow:hidden;\">`+
-          `<div style=\"position:absolute;left:0;top:0;height:100%;width:${pct}%;background:${barColor};transition:width .4s;\"></div>`+
-          `</div>`+
-          `<span>${label}</span>`+
-          `</div>`;
-      } catch(_) {}
-    }
-    refreshLegalStats();
-    setInterval(refreshLegalStats, 15000);
-  </script>
   <!-- Top-right actions moved into header -->
   <!-- Note: En cas de doublons visibles, ils sont généralement dus à des posts sans lien canonique (permalink). Le worker applique déjà une déduplication stricte par lien puis (auteur + date). -->
   <div id="postsScroll">
@@ -715,7 +727,6 @@
         <th>Texte</th>
   <th><a href="#" data-sort-by="published_at" data-label="Date">Date</a></th>
   <th>Lien</th>
-  <th>Statut</th>
   <th class="actions-head">Actions</th>
       </tr>
     </thead>
@@ -729,14 +740,6 @@
     {% if cc and (cc|lower) != (post.author|lower) %}{{ cc }}{% else %}—{% endif %}
   </td>
         <td class="wrap">
-          {% if post.intent %}
-            {% if post.intent == 'recherche_profil' %}
-              <span class="pill pill-intent-rp" title="Intent classé: recherche_profil">recherche_profil</span>
-            {% else %}
-              <span class="pill pill-intent-autre" title="Intent classé: autre">autre</span>
-            {% endif %}
-          {% endif %}
-          {% if post.opportunity %}<span class="pill pill-opp" title="Signal de recrutement détecté">Opportunité</span> {% endif %}
           {{ post.text[:500] }}{% if post.text|length > 500 %}…{% endif %}
         </td>
   <td>{{ (post.published_at or post.collected_at)|fmt_date }}</td>
@@ -749,7 +752,6 @@
               <a href="https://www.linkedin.com/search/results/content/?keywords={{ seed | urlencode }}" target="_blank" title="Lien direct introuvable - recherche approximative">rechercher</a>
             {% endif %}
           </td>
-  <td>{{ post.status or '—' }}</td>
         <td class="actions-cell">
           <button type="button" class="icon-btn favorite-toggle{% if post.is_favorite %} active{% endif %}" data-id="{{ post._id }}" title="Marquer en favori">★</button>
           <button type="button" class="icon-btn delete-post" data-id="{{ post._id }}" title="Supprimer ce post">🗑</button>
@@ -757,7 +759,7 @@
       </tr>
     {% endfor %}
     {% if posts|length == 0 %}
-      <tr><td colspan="8" style="text-align:center; font-size:0.8rem; color:#555;">Aucun résultat pour le moment.</td></tr>
+      <tr><td colspan="7" style="text-align:center; font-size:0.8rem; color:#555;">Aucun résultat pour le moment.</td></tr>
     {% endif %}
     </tbody>
   </table>

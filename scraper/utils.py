@@ -223,58 +223,163 @@ def retryable(*exc_types: type[BaseException]):
 
 
 # ---------------------------------------------------------------------------
-# Lightweight date parsing (placeholder)
+# Lightweight date parsing - OPTIMISÉ pour LinkedIn
 # ---------------------------------------------------------------------------
+# Mapping de fragments courants vers des minutes
 _RELATIVE_MAP = {
-    # key fragment => minutes
     "1 h": 60,
     "1h": 60,
     "1 j": 1440,
+    "1j": 1440,
 }
 
+# Maximum age for posts in days (3 weeks = 21 days)
+MAX_POST_AGE_DAYS = 21
+
+# Pattern étendu pour capturer toutes les unités de temps LinkedIn
+# IMPORTANT: Ordre des alternatives compte - les plus longs d'abord pour éviter
+# que "sem" soit capturé comme "s" (secondes)
+_RELATIVE_PATTERN_EXTENDED = re.compile(
+    r"(\d+)\s*(semaines?|seconde?|minutes?|heures?|jours?|weeks?|months?|mois|sem|min|sec|day|wk|hr|mo|h|j|d|w|s)",
+    re.IGNORECASE
+)
+
+
+def is_post_too_old(published_at: str | datetime | None, max_age_days: int = MAX_POST_AGE_DAYS) -> bool:
+    """Return True if the post is older than max_age_days (default 3 weeks).
+    
+    Args:
+        published_at: ISO datetime string or datetime object
+        max_age_days: Maximum age in days (default 21 = 3 weeks)
+    
+    Returns:
+        True if post is too old and should be filtered out.
+        False if post is recent enough.
+    
+    IMPORTANT: Retourne True (rejeter) si la date ne peut pas être déterminée
+    pour éviter d'accepter des posts potentiellement anciens.
+    """
+    if not published_at:
+        # CORRECTION: Rejeter les posts sans date pour être sûr de la fraîcheur
+        return True
+    
+    now = datetime.now(timezone.utc)
+    max_age = timedelta(days=max_age_days)
+    
+    try:
+        pub_date: Optional[datetime] = None
+        
+        if isinstance(published_at, datetime):
+            pub_date = published_at
+        elif isinstance(published_at, str):
+            # Essayer d'abord le format ISO standard
+            try:
+                pub_date = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+            except ValueError:
+                # Sinon, essayer de parser comme date relative LinkedIn
+                pub_date = parse_possible_date(published_at, now)
+        
+        if pub_date is None:
+            # CORRECTION: Rejeter si on ne peut pas déterminer la date
+            return True
+        
+        # Ensure timezone aware
+        if pub_date.tzinfo is None:
+            pub_date = pub_date.replace(tzinfo=timezone.utc)
+        
+        age = now - pub_date
+        return age > max_age
+    except Exception:
+        # CORRECTION: Rejeter en cas d'erreur de parsing
+        return True
+
+# Pattern simple pour compatibilité arrière (déprécié, utiliser _RELATIVE_PATTERN_EXTENDED)
 _RELATIVE_PATTERN = re.compile(r"(\d+)\s*(s|min|h|j)")
 
 
 def parse_possible_date(raw: str, now: Optional[datetime] = None) -> Optional[datetime]:
-    """Very small helper to parse relative LinkedIn-like timestamps.
+    """Parse relative LinkedIn-like timestamps into datetime.
 
-    Accepts fragments such as:
-        '5 min' => now - 5 minutes
-        '2 h'   => now - 2 hours
-        '1 j'   => now - 1 day
+    OPTIMISÉ: Supporte maintenant tous les formats LinkedIn FR et EN:
+        '5 min'   => now - 5 minutes
+        '2 h'     => now - 2 hours  
+        '1 j'     => now - 1 day
+        '3 j'     => now - 3 days
+        '2 sem'   => now - 2 weeks (NOUVEAU)
+        '1 w'     => now - 1 week (NOUVEAU)
+        '2 wk'    => now - 2 weeks (NOUVEAU)
+        '1 mo'    => now - 1 month (NOUVEAU)
+        '2 mois'  => now - 2 months (NOUVEAU)
 
     Returns timezone-aware UTC datetime or None if not parsed.
-    This is intentionally conservative; the worker may supply a fallback.
     """
-    raw = raw.strip().lower()
     if not raw:
         return None
+    
+    raw_clean = raw.strip().lower()
+    if not raw_clean:
+        return None
+    
     now = now or datetime.now(timezone.utc)
 
-    # Match pattern like '5 h', '12 min'
-    m = _RELATIVE_PATTERN.search(raw)
+    # Utiliser le pattern étendu pour capturer toutes les unités
+    m = _RELATIVE_PATTERN_EXTENDED.search(raw_clean)
     if m:
         value = int(m.group(1))
-        unit = m.group(2)
+        unit = m.group(2).lower()
         delta: timedelta
-        if unit == "s":
+        
+        # Secondes
+        if unit in ("s", "sec", "seconde", "secondes"):
             delta = timedelta(seconds=value)
-        elif unit == "min":
+        # Minutes
+        elif unit in ("min", "minute", "minutes"):
             delta = timedelta(minutes=value)
-        elif unit == "h":
+        # Heures
+        elif unit in ("h", "hr", "heure", "heures"):
             delta = timedelta(hours=value)
-        elif unit == "j":  # jour
+        # Jours
+        elif unit in ("j", "d", "day", "days", "jour", "jours"):
             delta = timedelta(days=value)
-        else:  # pragma: no cover
+        # Semaines (NOUVEAU - crucial pour le filtre 3 semaines)
+        elif unit in ("sem", "semaine", "semaines", "w", "wk", "week", "weeks"):
+            delta = timedelta(weeks=value)
+        # Mois (NOUVEAU - approximation 30 jours)
+        elif unit in ("mo", "mois", "month", "months"):
+            delta = timedelta(days=value * 30)
+        else:
             return None
+        
         return now - delta
 
-    # Accept some explicit forms stored in mapping
+    # Fallback: fragments explicites dans le mapping
     for frag, minutes in _RELATIVE_MAP.items():
-        if frag in raw:
+        if frag in raw_clean:
             return now - timedelta(minutes=minutes)
+    
+    # Dernière tentative: détecter des patterns textuels courants
+    # "il y a 2 semaines", "posted 3 weeks ago", etc.
+    week_patterns = [
+        (r"il y a (\d+)\s*semaine", "week"),
+        (r"(\d+)\s*semaine", "week"),
+        (r"(\d+)\s*weeks?\s*ago", "week"),
+        (r"il y a (\d+)\s*mois", "month"),
+        (r"(\d+)\s*months?\s*ago", "month"),
+        (r"il y a (\d+)\s*jour", "day"),
+        (r"(\d+)\s*days?\s*ago", "day"),
+    ]
+    
+    for pattern, unit_type in week_patterns:
+        match = re.search(pattern, raw_clean, re.IGNORECASE)
+        if match:
+            val = int(match.group(1))
+            if unit_type == "week":
+                return now - timedelta(weeks=val)
+            elif unit_type == "month":
+                return now - timedelta(days=val * 30)
+            elif unit_type == "day":
+                return now - timedelta(days=val)
 
-    # Could extend to full absolute date parse with dateutil if necessary.
     return None
 
 
@@ -298,6 +403,97 @@ class Timer:
         return False
 
 
+# ---------------------------------------------------------------------------
+# France location filter - OPTIMISÉ avec liste étendue
+# ---------------------------------------------------------------------------
+FRANCE_POSITIVE_MARKERS = [
+    # Termes généraux France
+    "france", "french", "français", "francais", "française", "francaise",
+    # Île-de-France et Paris
+    "paris", "parisien", "parisienne", "idf", "ile-de-france", "île-de-france",
+    "la défense", "la defense", "neuilly", "puteaux", "levallois",
+    "boulogne-billancourt", "versailles", "saint-denis", "nanterre",
+    "courbevoie", "issy-les-moulineaux", "cergy", "evry",
+    # Grandes métropoles
+    "lyon", "marseille", "bordeaux", "lille", "toulouse", "nice", "nantes",
+    "rennes", "strasbourg", "grenoble", "montpellier", "tours", "nancy",
+    "rouen", "reims", "clermont", "toulon", "dijon", "angers", "metz",
+    # Villes moyennes importantes
+    "aix-en-provence", "brest", "limoges", "nîmes", "nimes", "amiens",
+    "perpignan", "orléans", "orleans", "mulhouse", "caen", "besançon",
+    "saint-etienne", "le havre", "avignon", "pau", "poitiers", "bayonne",
+    # Régions administratives
+    "normandie", "bretagne", "occitanie", "paca", "auvergne", "rhône-alpes",
+    "nouvelle-aquitaine", "grand-est", "hauts-de-france", "centre-val",
+    # Codes postaux parisiens courants
+    "75001", "75002", "75008", "75009", "75016", "92",
+]
+
+FRANCE_NEGATIVE_MARKERS = [
+    # Amérique du Nord
+    "canada", "usa", "united states", "etats-unis", "états-unis",
+    "montreal", "toronto", "vancouver", "new york", "san francisco",
+    "los angeles", "chicago", "boston", "washington", "miami",
+    # Belgique
+    "belgium", "belgique", "belge", "bruxelles", "brussels", "anvers",
+    # Suisse
+    "switzerland", "swiss", "suisse", "genève", "geneve", "zurich", "zürich",
+    "lausanne", "berne", "bern",
+    # Autres pays européens francophones
+    "luxembourg", "monaco",
+    # UK
+    "uk ", "u.k.", "united kingdom", "royaume-uni", "london", "londres",
+    "manchester", "birmingham", "edinburgh",
+    # Allemagne
+    "germany", "allemagne", "deutschland", "berlin", "munich", "frankfurt",
+    "hamburg", "düsseldorf", "cologne",
+    # Autres pays européens
+    "spain", "espagne", "españa", "madrid", "barcelona",
+    "portugal", "lisbonne", "lisbon", "porto",
+    "italy", "italie", "italia", "milan", "rome", "roma",
+    "netherlands", "pays-bas", "amsterdam", "rotterdam",
+    "ireland", "irlande", "dublin",
+    # Asie/Moyen-Orient
+    "singapore", "singapour", "hong kong", "shanghai", "tokyo",
+    "dubai", "émirats", "emirats", "abu dhabi",
+    # Océanie
+    "australia", "australie", "sydney", "melbourne",
+    # Afrique (principaux centres)
+    "maroc", "morocco", "casablanca", "tunisie", "alger",
+    # Expressions de remote non-FR
+    "remote us", "hiring in uk", "remote global", "worldwide",
+]
+
+
+def is_location_france(text: str | None, strict: bool = True) -> bool:
+    """Check if the post location is likely France.
+    
+    Args:
+        text: Post text content
+        strict: If True, requires positive France marker when negative markers present
+    
+    Returns:
+        True if location appears to be France, False otherwise.
+    """
+    if not text:
+        return True  # No location info, assume OK
+    
+    low = text.lower()
+    
+    has_positive = any(marker in low for marker in FRANCE_POSITIVE_MARKERS)
+    has_negative = any(marker in low for marker in FRANCE_NEGATIVE_MARKERS)
+    
+    if strict:
+        # If negative markers present, require positive markers to confirm France
+        if has_negative:
+            return has_positive
+        # No negative markers = assume France OK
+        return True
+    else:
+        # Non-strict: accept if any positive OR no negative
+        return has_positive or not has_negative
+
+
 __all__ = [
     "random_user_agent",
     "jitter_sleep",
@@ -314,12 +510,20 @@ __all__ = [
     "TransientScrapeError",
     "parse_possible_date",
     "Timer",
+    "is_stage_or_alternance",
+    "is_post_too_old",
+    "is_location_france",
+    "STAGE_ALTERNANCE_KEYWORDS",
+    "MAX_POST_AGE_DAYS",
+    "FRANCE_POSITIVE_MARKERS",
+    "FRANCE_NEGATIVE_MARKERS",
 ]
 
 # ---------------------------------------------------------------------------
-# Recruitment signal scoring (heuristic): counts stems & phrases indicating hiring.
+# Recruitment signal scoring - OPTIMISÉ avec plus de tokens
 # ---------------------------------------------------------------------------
 _RECRUIT_TOKENS = [
+    # Tokens principaux
     "recrut",  # recrutement / recrute / recrutons
     "offre",
     "poste",
@@ -327,22 +531,68 @@ _RECRUIT_TOKENS = [
     "opportunite",
     "hiring",
     "job",
+    # Expressions de recherche
     "nous cherchons",
     "on recherche",
     "rejoignez",
     "join the team",
     "join our team",
     "embauche",
+    # Contrats (hors stage/alternance)
     "cdi",
     "cdd",
-    "alternance",
-    "stage",
-    "stagiaire",
     "mission",
+    # Expressions complètes
     "nous recherchons",
     "je recrute",
     "je recherche",
+    # NOUVEAUX TOKENS pour augmenter la couverture
+    "candidat",
+    "profil recherché",
+    "postulez",
+    "envoyez cv",
+    "intégrer",
+    "renforcer",
+    "équipe juridique",
+    "création de poste",
 ]
+
+# ---------------------------------------------------------------------------
+# Stage/Alternance exclusion keywords - RENFORCÉ avec variantes complètes
+# ---------------------------------------------------------------------------
+STAGE_ALTERNANCE_KEYWORDS = [
+    # Stage (variantes)
+    "stage", "stages", "stagiaire", "stagiaires",
+    "stage juridique", "stage avocat", "stage notaire",
+    "offre de stage", "stage pfe", "stage fin d'études",
+    # Alternance (variantes)
+    "alternance", "alternant", "alternante", "alternants",
+    "contrat alternance", "en alternance", "poste alternance",
+    # Apprentissage (variantes)
+    "apprentissage", "apprenti", "apprentie", "apprentis",
+    "contrat d'apprentissage", "contrat apprentissage",
+    # Contrat pro
+    "contrat pro", "contrat de professionnalisation",
+    # Termes anglais
+    "work-study", "internship", "intern ",  # espace après intern pour éviter "internal"
+    "interns", "trainee", "traineeship",
+    # V.I.E.
+    "v.i.e", "vie ", "volontariat international",
+]
+
+
+def is_stage_or_alternance(text: str | None) -> bool:
+    """Return True if text contains stage/alternance/apprentissage keywords.
+    
+    These posts should be excluded from collection.
+    """
+    if not text:
+        return False
+    low = text.lower()
+    for kw in STAGE_ALTERNANCE_KEYWORDS:
+        if kw in low:
+            return True
+    return False
 _MULTI_TOKEN_PRIORITY = {"nous recherchons": 2.2, "je recrute": 2.0, "je recherche": 1.6}
 
 

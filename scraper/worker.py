@@ -714,12 +714,14 @@ POST_CONTAINER_SELECTORS = [
     "div.occludable-update",
     "div[data-urn*='urn:li:activity:']",
 ]
+# AUTHOR_SELECTOR: Cibler spécifiquement le nom de l'auteur (pas tout le bloc meta)
+# LinkedIn structure: span.update-components-actor__title contient le nom dans span[dir='ltr']
 AUTHOR_SELECTOR = (
-    "a.update-components-actor__meta-link, "
-    "span.update-components-actor__meta a, "
-    "a.update-components-actor__sub-description, "
-    "a.update-components-actor__meta, "
-    "a.app-aware-link, "
+    "span.update-components-actor__title span[dir='ltr'] span[aria-hidden='true'], "
+    "span.update-components-actor__title span[dir='ltr'], "
+    "span.feed-shared-actor__name span[dir='ltr'], "
+    "span.update-components-actor__name span[dir='ltr'], "
+    "span.update-components-actor__title, "
     "span.feed-shared-actor__name, "
     "span.update-components-actor__name"
 )
@@ -729,7 +731,13 @@ TEXT_SELECTOR = (
     "span.break-words, "
     "div[dir='ltr']"
 )
-DATE_SELECTOR = "time"
+# DATE_SELECTOR: LinkedIn n'utilise plus <time>, la date relative est dans sub-description
+# Ex: "1 sem. •" ou "3 j •" dans span.update-components-actor__sub-description
+DATE_SELECTOR = (
+    "time, "  # Legacy fallback au cas où
+    "span.update-components-actor__sub-description, "
+    "span.feed-shared-actor__sub-description"
+)
 MEDIA_INDICATOR_SELECTOR = "img, video"
 PERMALINK_LINK_SELECTORS = [
     "a[href*='/feed/update/']",
@@ -741,10 +749,12 @@ COMPANY_SELECTORS = [
     # Frequent pattern: span or div containing company/organization name near actor metadata
     "span.update-components-actor__company",
     "span.update-components-actor__supplementary-info",
+    # La description contient souvent "Rôle @ Entreprise" ou "Rôle chez Entreprise"
+    "span.update-components-actor__description span[aria-hidden='true']",
+    "span.update-components-actor__description",
     "div.update-components-actor__meta span",
     "div.feed-shared-actor__subtitle span",
     "span.feed-shared-actor__description",
-    "span.update-components-actor__description",
 ]
 
 # ------------------------------------------------------------
@@ -968,19 +978,30 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                             # Prefer aria-label as it often contains the full name
                             aria = await meta_link.get_attribute("aria-label")
                             if aria:
-                                # Heuristic: cut before bullet or 'Vérifié'
+                                # aria-label format: "Vue : Nom Prénom Vérifié • 3e et + Rôle @ Entreprise"
+                                # On veut extraire seulement "Nom Prénom"
                                 cut = aria
-                                for sep in [" •", "·", "Vérifié", "Verified", "•"]:
+                                # Retirer le préfixe "Vue : " ou "View: "
+                                for prefix in ["Vue : ", "Vue: ", "View : ", "View: "]:
+                                    if cut.startswith(prefix):
+                                        cut = cut[len(prefix):]
+                                        break
+                                # Couper avant les marqueurs de certification/niveau/rôle
+                                for sep in [" Vérifié", " Verified", " •", " · ", " 1er", " 2e", " 3e", " | "]:
                                     if sep in cut:
                                         cut = cut.split(sep, 1)[0]
                                         break
                                 cut = utils.normalize_whitespace(cut).strip()
-                                if cut:
+                                if cut and len(cut) > 2:
                                     author = cut
                             if (not author or author.lower() == "unknown"):
                                 txt = await meta_link.inner_text()
                                 if txt:
                                     txt = utils.normalize_whitespace(txt).strip()
+                                    # Nettoyer le texte aussi
+                                    for sep in [" •", "·", " Vérifié", " Verified"]:
+                                        if sep in txt:
+                                            txt = txt.split(sep, 1)[0].strip()
                                     if txt:
                                         author = txt
                     except Exception:
@@ -1201,6 +1222,13 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                 try:
                     relaxed = bool(getattr(ctx, "_relaxed_filters", False))
                     if not relaxed:
+                        # NEW: Filter out posts older than configured max age (default 3 weeks)
+                        max_age = getattr(ctx.settings, 'max_post_age_days', 21)
+                        if keep and published_iso and utils.is_post_too_old(published_iso, max_age_days=max_age):
+                            keep = False; reject_reason = "too_old"
+                        # NEW: Filter out stage/alternance/apprentissage posts
+                        if keep and getattr(ctx.settings, 'filter_exclude_stage_alternance', True) and utils.is_stage_or_alternance(text_norm):
+                            keep = False; reject_reason = "stage_alternance"
                         if ctx.settings.filter_language_strict and language.lower() != (ctx.settings.default_lang or "fr").lower():
                             keep = False; reject_reason = "language"
                         # Domain filter: require at least one legal keyword when enabled
@@ -1227,12 +1255,9 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                             )
                             if any(m in tl for m in job_markers):
                                 keep = False; reject_reason = reject_reason or "job_seeker"
-                        # France-only heuristic
+                        # France-only filter using improved utils function
                         if keep and getattr(ctx.settings, 'filter_france_only', True):
-                            tl = (text_norm or "").lower()
-                            fr_positive = ("france","paris","idf","ile-de-france","lyon","marseille","bordeaux","lille","toulouse","nice","nantes","rennes")
-                            foreign_negative = ("hiring in uk","remote us","canada","usa","australia","dubai","switzerland","swiss","belgium","belgique","luxembourg","portugal","espagne","spain","germany","deutschland","italy","singapore")
-                            if any(f in tl for f in foreign_negative) and not any(p in tl for p in fr_positive):
+                            if not utils.is_location_france(text_norm, strict=True):
                                 keep = False; reject_reason = reject_reason or "not_fr"
                 except Exception:
                     pass

@@ -36,14 +36,65 @@ LEGAL_ROLE_KEYWORDS = [
 ]
 
 # Recruitment signal phrases (complementary to utils.compute_recruitment_signal)
+# OPTIMISÉ: Liste enrichie avec 60+ expressions pour maximiser la détection
 RECRUITMENT_PHRASES = [
-    # Phrases existantes
-    "nous recrutons","on recrute","je recrute","recherche un(e)","recherche son/sa","profil recherché",
-    "poste à pourvoir","poste a pourvoir","candidature","rejoindre notre équipe","join our team","we are hiring",
-    "hiring for","postulez","envoyez votre cv","offre d'emploi","offre d emploi","opportunité","opportunite",
-    # Nouvelles expressions demandées
-    "je recrute un(e) juriste","je recrute un(e) avocat collaborateur","hiring","on recherche un juriste",
-    "nous cherchons","join the team","rejoignez la direction juridique",
+    # Phrases principales de recrutement
+    "nous recrutons", "on recrute", "je recrute", "recherche un(e)", "recherche son/sa",
+    "profil recherché", "poste à pourvoir", "poste a pourvoir", "candidature",
+    "rejoindre notre équipe", "join our team", "we are hiring", "hiring for",
+    "postulez", "envoyez votre cv", "offre d'emploi", "offre d emploi",
+    "opportunité", "opportunite",
+    # Expressions juridiques spécifiques
+    "je recrute un(e) juriste", "je recrute un(e) avocat", "hiring",
+    "on recherche un juriste", "nous cherchons", "join the team",
+    "rejoignez la direction juridique", "intégrer l'équipe juridique",
+    "renforcer notre département juridique",
+    # Types de contrat (indicateurs forts)
+    "cdi", "cdd", "contrat à durée", "temps plein", "temps partiel",
+    "full time", "part time", "poste ouvert", "recrutement en cours",
+    "offre cdi", "offre cdd",
+    # NOUVELLES EXPRESSIONS pour augmenter la couverture
+    "à pourvoir", "recherche profil", "candidat idéal", "missions principales",
+    "rattaché(e) à", "rattache a", "intégrer notre équipe", "integrer notre equipe",
+    "contexte de croissance", "développement de l'activité", "renforcer l'équipe",
+    "rejoindre une équipe", "création de poste", "ouverture de poste",
+    # Expressions d'urgence/timing
+    "prise de poste", "début dès que possible", "disponibilité immédiate",
+    "démarrage rapide", "urgent",
+    # Expressions d'annonce
+    "nous recherchons", "notre client recherche", "notre cabinet recherche",
+    "pour le compte de", "dans le cadre de",
+    # Expressions de profil
+    "vous êtes", "vous avez", "vous justifiez", "expérience requise",
+    "profil souhaité", "compétences requises", "qualifications",
+    # Expressions d'entreprise
+    "notre entreprise", "notre structure", "notre groupe", "notre société",
+    "cabinet d'avocats", "cabinet juridique", "étude notariale",
+    # Expressions de localisation FR
+    "basé à paris", "poste paris", "poste lyon", "idf", "ile-de-france",
+    # Expressions de salaire/avantages (indicateurs de vraie offre)
+    "rémunération", "salaire", "package", "avantages", "télétravail possible",
+]
+
+# Stage/Alternance exclusion keywords - posts with these should be rejected
+# RENFORCÉ: Liste complète pour éviter tout faux positif
+STAGE_ALTERNANCE_EXCLUSION = [
+    # Stage (toutes variantes)
+    "stage", "stages", "stagiaire", "stagiaires", "stage juridique",
+    "stage avocat", "stage notaire", "offre de stage", "stage pfe",
+    # Alternance (toutes variantes)
+    "alternance", "alternant", "alternante", "alternants",
+    "contrat alternance", "en alternance",
+    # Apprentissage
+    "apprentissage", "apprenti", "apprentie", "apprentis",
+    "contrat d'apprentissage", "contrat apprentissage",
+    # Contrats pro
+    "contrat pro", "contrat de professionnalisation",
+    # Termes anglais
+    "work-study", "internship", "intern ", "interns",
+    "trainee", "traineeship",
+    # V.I.E. et assimilés (souvent confondus avec CDI)
+    "v.i.e", "vie ", "volontariat international",
 ]
 
 # Negative / informational phrases that should suppress recruitment labeling when no strong positive phrase
@@ -97,10 +148,17 @@ def classify_legal_post(text: str, *, language: str = "fr", intent_threshold: fl
         combined = clamp( (legal_score*0.6 + recruit_score*0.4), 0, 1 )
 
     Confidence: fraction of distinct signal categories triggered (legal, recruit, language, location).
+    
+    Note: Posts containing stage/alternance keywords are automatically rejected.
     """
     if not text:
         return LegalClassification("autre", 0.0, 0.0, [], False)
     low = _lower(text)
+
+    # EARLY EXIT: Reject stage/alternance posts immediately
+    for excl_kw in STAGE_ALTERNANCE_EXCLUSION:
+        if excl_kw in low:
+            return LegalClassification("autre", 0.0, 0.0, [], False)
 
     # Language gate
     lang_ok = (language or "fr").lower() == "fr"

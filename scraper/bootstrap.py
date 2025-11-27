@@ -70,29 +70,46 @@ class Settings(BaseSettings):
 
     # Concurrency & pacing
     concurrency_limit: int = Field(2, alias="CONCURRENCY_LIMIT")
-    per_keyword_delay_ms: int = Field(500, alias="PER_KEYWORD_DELAY_MS")  # extra pacing between keywords
+    per_keyword_delay_ms: int = Field(300, alias="PER_KEYWORD_DELAY_MS")  # reduced delay between keywords for faster collection
     global_rate_limit_per_min: int = Field(120, alias="GLOBAL_RATE_LIMIT_PER_MIN")  # soft token bucket
     rate_limit_bucket_size: int = Field(120, alias="RATE_LIMIT_BUCKET_SIZE")
     rate_limit_refill_per_sec: float = Field(2.0, alias="RATE_LIMIT_REFILL_PER_SEC")  # tokens per second
 
     # Keywords & limits
-    # Broader default keyword set to increase volume while staying on-domain (FR + common EN terms)
+    # OPTIMISÉ: Liste étendue de keywords pour maximiser le volume (50+ posts/jour)
+    # Inclut rôles, spécialisations, termes de recrutement explicites et variations FR/EN
     scrape_keywords_raw: str = Field(
-        "juriste;avocat;legal counsel;notaire;assistant juridique;paralegal;contract manager;"
-        "droit du travail;droit social;droit des affaires;compliance;rgpd;data privacy;"
-        "legal officer;corporate lawyer;juriste junior;avocat junior;clerc;legal ops",
+        # Rôles principaux
+        "juriste;avocat;notaire;paralegal;legal counsel;assistant juridique;"
+        "directeur juridique;responsable juridique;secrétaire général;secrétaire juridique;"
+        # Spécialisations juridiques
+        "droit du travail;droit social;droit des affaires;droit des sociétés;"
+        "droit fiscal;compliance;rgpd;data privacy;droit pénal;droit public;"
+        "droit immobilier;M&A;fusions acquisitions;contentieux;propriété intellectuelle;"
+        # Termes de recrutement explicites (boost volume)
+        "recrutement juriste;offre juriste;cdi juriste;poste avocat;cdi avocat;"
+        "job juridique;emploi juriste;legal job france;recrute avocat;recrute juriste;"
+        # Niveaux d'expérience
+        "juriste junior;juriste confirmé;juriste senior;avocat collaborateur;avocat associé;"
+        "clerc de notaire;legal ops;contract manager;chef de projet juridique",
         alias="SCRAPE_KEYWORDS",
     )
     # Semicolon-separated list of keywords to always ignore (case-insensitive)
     blacklisted_keywords_raw: str = Field("python;ai", alias="BLACKLISTED_KEYWORDS")
     # Raise cap per keyword to collect more candidates before classifier filtering
-    max_posts_per_keyword: int = Field(50, alias="MAX_POSTS_PER_KEYWORD")
+    max_posts_per_keyword: int = Field(80, alias="MAX_POSTS_PER_KEYWORD")
     # Extraction scrolling controls
-    # Slightly increase scroll depth to surface additional posts per keyword
-    max_scroll_steps: int = Field(7, alias="MAX_SCROLL_STEPS")  # Max scroll iterations per keyword page
-    scroll_wait_ms: int = Field(1200, alias="SCROLL_WAIT_MS")  # Wait after each scroll to allow lazy load
-    min_posts_target: int = Field(10, alias="MIN_POSTS_TARGET")  # Target minimum posts before considering extraction complete
-    recruitment_signal_threshold: float = Field(0.05, alias="RECRUITMENT_SIGNAL_THRESHOLD")  # Score threshold for recruitment classification
+    # OPTIMISÉ: Augmentation du scroll depth pour maximiser les posts par keyword
+    max_scroll_steps: int = Field(15, alias="MAX_SCROLL_STEPS")  # Max scroll iterations (augmenté 10→15)
+    scroll_wait_ms: int = Field(1000, alias="SCROLL_WAIT_MS")  # Wait après scroll (réduit 1200→1000 pour rapidité)
+    min_posts_target: int = Field(30, alias="MIN_POSTS_TARGET")  # Target minimum (augmenté 20→30)
+    recruitment_signal_threshold: float = Field(0.02, alias="RECRUITMENT_SIGNAL_THRESHOLD")  # Seuil abaissé (0.03→0.02) pour plus de couverture
+
+    # Post age filter (3 weeks = 21 days by default)
+    max_post_age_days: int = Field(21, alias="MAX_POST_AGE_DAYS")  # Posts older than this are filtered out
+    
+    # Stage/Alternance exclusion filter (enabled by default)
+    filter_exclude_stage_alternance: bool = Field(True, alias="FILTER_EXCLUDE_STAGE_ALTERNANCE")
 
     # Timeouts & retries
     navigation_timeout_ms: int = Field(15000, alias="NAVIGATION_TIMEOUT_MS")
@@ -142,7 +159,7 @@ class Settings(BaseSettings):
 
     # Misc
     enable_metrics: bool = Field(True, alias="ENABLE_METRICS")
-    httpx_timeout: int = Field(15, alias="HTTPX_TIMEOUT")
+    httpx_timeout: int = Field(20, alias="HTTPX_TIMEOUT")  # Augmenté 15→20 pour stabilité réseau
     disable_ssl_verify: bool = Field(False, alias="DISABLE_SSL_VERIFY")
     trigger_token: Optional[str] = Field(None, alias="TRIGGER_TOKEN")  # Shared secret for /trigger endpoint
     shutdown_token: Optional[str] = Field(None, alias="SHUTDOWN_TOKEN")  # Shared secret for /shutdown endpoint
@@ -162,8 +179,8 @@ class Settings(BaseSettings):
     search_geo_hint: str = Field("France", alias="SEARCH_GEO_HINT")
     # If true, only keep posts whose detected language matches DEFAULT_LANG
     filter_language_strict: bool = Field(True, alias="FILTER_LANGUAGE_STRICT")
-    # If true, discard posts that do not meet recruitment signal threshold
-    filter_recruitment_only: bool = Field(True, alias="FILTER_RECRUITMENT_ONLY")
+    # If true, discard posts that do not meet recruitment signal threshold (disabled for broader collection)
+    filter_recruitment_only: bool = Field(False, alias="FILTER_RECRUITMENT_ONLY")
     # If true, discard posts missing author or permalink (quality gate)
     filter_require_author_and_permalink: bool = Field(True, alias="FILTER_REQUIRE_AUTHOR_AND_PERMALINK")
     # Domain filtering (e.g., ensure post text contains at least one legal keyword)
@@ -177,48 +194,58 @@ class Settings(BaseSettings):
     navigation_retry_backoff_ms: int = Field(1200, alias="NAVIGATION_RETRY_BACKOFF_MS")
     # Public dashboard & autonomous worker
     dashboard_public: bool = Field(False, alias="DASHBOARD_PUBLIC")
-    autonomous_worker_interval_seconds: int = Field(0, alias="AUTONOMOUS_WORKER_INTERVAL_SECONDS")  # 0=disabled
-    # Human-like cadence (optional)
-    human_mode_enabled: bool = Field(False, alias="HUMAN_MODE_ENABLED")
-    human_active_hours_start: int = Field(8, alias="HUMAN_ACTIVE_HOURS_START")  # local hour
-    human_active_hours_end: int = Field(20, alias="HUMAN_ACTIVE_HOURS_END")    # local hour
-    human_min_cycle_pause_seconds: int = Field(60, alias="HUMAN_MIN_CYCLE_PAUSE_SECONDS")
-    human_max_cycle_pause_seconds: int = Field(180, alias="HUMAN_MAX_CYCLE_PAUSE_SECONDS")
-    human_long_break_probability: float = Field(0.08, alias="HUMAN_LONG_BREAK_PROBABILITY")
-    human_long_break_min_seconds: int = Field(600, alias="HUMAN_LONG_BREAK_MIN_SECONDS")
-    human_long_break_max_seconds: int = Field(1200, alias="HUMAN_LONG_BREAK_MAX_SECONDS")
+    # OPTIMISÉ: Mode autonome activé par défaut (1800s = 30min entre cycles)
+    # Ceci permet ~28 cycles/jour pendant 14h actives = 50+ posts/jour
+    autonomous_worker_interval_seconds: int = Field(1800, alias="AUTONOMOUS_WORKER_INTERVAL_SECONDS")
+    # Human-like cadence (optional) - Mode recommandé pour éviter détection anti-bot
+    human_mode_enabled: bool = Field(True, alias="HUMAN_MODE_ENABLED")  # ACTIVÉ par défaut
+    human_active_hours_start: int = Field(7, alias="HUMAN_ACTIVE_HOURS_START")  # Début plus tôt (7h)
+    human_active_hours_end: int = Field(22, alias="HUMAN_ACTIVE_HOURS_END")    # Fin plus tard (22h) = 15h actives
+    human_min_cycle_pause_seconds: int = Field(20, alias="HUMAN_MIN_CYCLE_PAUSE_SECONDS")  # Réduit 30→20
+    human_max_cycle_pause_seconds: int = Field(60, alias="HUMAN_MAX_CYCLE_PAUSE_SECONDS")  # Réduit 90→60
+    human_long_break_probability: float = Field(0.03, alias="HUMAN_LONG_BREAK_PROBABILITY")
+    human_long_break_min_seconds: int = Field(300, alias="HUMAN_LONG_BREAK_MIN_SECONDS")
+    human_long_break_max_seconds: int = Field(600, alias="HUMAN_LONG_BREAK_MAX_SECONDS")
     human_night_mode: bool = Field(True, alias="HUMAN_NIGHT_MODE")
     human_night_pause_min_seconds: int = Field(1800, alias="HUMAN_NIGHT_PAUSE_MIN_SECONDS")
     human_night_pause_max_seconds: int = Field(3600, alias="HUMAN_NIGHT_PAUSE_MAX_SECONDS")
-    human_max_cycles_per_hour: int = Field(6, alias="HUMAN_MAX_CYCLES_PER_HOUR")
-    # Daily quota objective (e.g. ensure at least X posts collected per active day)
-    daily_post_target: int = Field(50, alias="DAILY_POST_TARGET")
-    daily_post_soft_target: int = Field(40, alias="DAILY_POST_SOFT_TARGET")
+    human_max_cycles_per_hour: int = Field(10, alias="HUMAN_MAX_CYCLES_PER_HOUR")
+    # Daily quota objective - OPTIMISÉ pour garantir 50+ posts/jour
+    daily_post_target: int = Field(60, alias="DAILY_POST_TARGET")  # Augmenté 50→60
+    daily_post_soft_target: int = Field(45, alias="DAILY_POST_SOFT_TARGET")  # Augmenté 40→45
     # Legal domain classification & quota
-    legal_daily_post_cap: int = Field(50, alias="LEGAL_DAILY_POST_CAP")  # Hard cap persisted posts per UTC day for legal intent
-    # Make intent slightly more permissive to reduce false negatives on recruitment detection
-    legal_intent_threshold: float = Field(0.25, alias="LEGAL_INTENT_THRESHOLD")  # Threshold for classify_legal_post combined score
+    legal_daily_post_cap: int = Field(150, alias="LEGAL_DAILY_POST_CAP")  # Augmenté 100→150 pour marge
+    # OPTIMISÉ: Seuil abaissé pour accepter plus de posts de recrutement borderline
+    legal_intent_threshold: float = Field(0.15, alias="LEGAL_INTENT_THRESHOLD")  # Abaissé 0.20→0.15
     legal_keywords_override: str | None = Field(None, alias="LEGAL_KEYWORDS")  # Optional semicolon list to extend/override builtin
     # Exclusion explicite de certaines sources (auteurs / entreprises) séparées par ';'
     excluded_authors_raw: str = Field("village de la justice", alias="EXCLUDED_AUTHORS")
-    # Keywords de renfort (booster) injectés dynamiquement quand on est loin de l'objectif quotidien
-    booster_keywords_raw: str = Field("recrute;offre;hiring", alias="BOOSTER_KEYWORDS")
+    # Keywords de renfort (booster) injectés dynamiquement quand quota < 80%
+    # OPTIMISÉ: Liste étendue de booster keywords pour rattrapage rapide
+    booster_keywords_raw: str = Field(
+        "recrute juriste;recrute avocat;offre emploi juridique;cdi juriste;cdi avocat;"
+        "recrutement juridique;poste avocat;poste juriste;legal job france;embauche juriste;"
+        "opportunité juridique;rejoindre équipe juridique;direction juridique recrute;"
+        "cabinet avocat recrute;étude notariale recrute;compliance officer france",
+        alias="BOOSTER_KEYWORDS"
+    )
     # Si True on assouplit certains filtres (recruitment threshold -10%) quand quota pas atteint
     relax_filters_below_target: bool = Field(True, alias="RELAX_FILTERS_BELOW_TARGET")
-    # Ratio d'activation du booster (ex: 0.6 => si < 60% de l'objectif, on active)
-    booster_activate_ratio: float = Field(0.6, alias="BOOSTER_ACTIVATE_RATIO")
+    # Ratio d'activation du booster (ex: 0.8 => si < 80% de l'objectif, on active)
+    booster_activate_ratio: float = Field(0.8, alias="BOOSTER_ACTIVATE_RATIO")
     # Rotation automatique des booster keywords
     booster_rotation_enabled: bool = Field(True, alias="BOOSTER_ROTATION_ENABLED")
     # Taille du sous-ensemble rotatif utilisé par cycle (0 = tous)
-    booster_rotation_subset_size: int = Field(3, alias="BOOSTER_ROTATION_SUBSET_SIZE")
+    booster_rotation_subset_size: int = Field(5, alias="BOOSTER_ROTATION_SUBSET_SIZE")
     # Mélange aléatoire à chaque cycle (sinon round-robin stable)
     booster_rotation_shuffle: bool = Field(True, alias="BOOSTER_ROTATION_SHUFFLE")
 
     # Risk & pacing heuristics (anti-ban)
-    risk_auth_suspect_threshold: int = Field(2, alias="RISK_AUTH_SUSPECT_THRESHOLD")
-    risk_empty_keywords_threshold: int = Field(3, alias="RISK_EMPTY_KEYWORDS_THRESHOLD")
-    risk_cooldown_min_seconds: int = Field(120, alias="RISK_COOLDOWN_MIN_SECONDS")
-    risk_cooldown_max_seconds: int = Field(300, alias="RISK_COOLDOWN_MAX_SECONDS")
+    # OPTIMISÉ: Seuils anti-ban plus tolérants pour éviter les cooldowns excessifs
+    risk_auth_suspect_threshold: int = Field(3, alias="RISK_AUTH_SUSPECT_THRESHOLD")  # Augmenté 2→3
+    risk_empty_keywords_threshold: int = Field(5, alias="RISK_EMPTY_KEYWORDS_THRESHOLD")  # Augmenté 3→5
+    risk_cooldown_min_seconds: int = Field(90, alias="RISK_COOLDOWN_MIN_SECONDS")  # Réduit 120→90
+    risk_cooldown_max_seconds: int = Field(180, alias="RISK_COOLDOWN_MAX_SECONDS")  # Réduit 300→180
     human_jitter_min_ms: int = Field(800, alias="HUMAN_JITTER_MIN_MS")
     human_jitter_max_ms: int = Field(2500, alias="HUMAN_JITTER_MAX_MS")
     adaptive_scroll_enabled: bool = Field(True, alias="ADAPTIVE_SCROLL")
