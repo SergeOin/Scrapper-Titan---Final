@@ -109,7 +109,9 @@ class Settings(BaseSettings):
     max_scroll_steps: int = Field(15, alias="MAX_SCROLL_STEPS")  # Max scroll iterations (augmenté 10→15)
     scroll_wait_ms: int = Field(1000, alias="SCROLL_WAIT_MS")  # Wait après scroll (réduit 1200→1000 pour rapidité)
     min_posts_target: int = Field(30, alias="MIN_POSTS_TARGET")  # Target minimum (augmenté 20→30)
-    recruitment_signal_threshold: float = Field(0.02, alias="RECRUITMENT_SIGNAL_THRESHOLD")  # Seuil abaissé (0.03→0.02) pour plus de couverture
+    # Seuil de signal de recrutement - AUGMENTÉ pour exiger un vrai signal de recrutement
+    # 0.15 = nécessite des termes explicites comme "recrute", "poste", "offre d'emploi"
+    recruitment_signal_threshold: float = Field(0.15, alias="RECRUITMENT_SIGNAL_THRESHOLD")
 
     # Post age filter (3 weeks = 21 days by default)
     max_post_age_days: int = Field(21, alias="MAX_POST_AGE_DAYS")  # Posts older than this are filtered out
@@ -185,12 +187,12 @@ class Settings(BaseSettings):
     search_geo_hint: str = Field("France", alias="SEARCH_GEO_HINT")
     # If true, only keep posts whose detected language matches DEFAULT_LANG
     filter_language_strict: bool = Field(True, alias="FILTER_LANGUAGE_STRICT")
-    # If true, discard posts that do not meet recruitment signal threshold (disabled for broader collection)
-    filter_recruitment_only: bool = Field(False, alias="FILTER_RECRUITMENT_ONLY")
+    # If true, discard posts that do not meet recruitment signal threshold (ACTIVÉ pour pertinence)
+    filter_recruitment_only: bool = Field(True, alias="FILTER_RECRUITMENT_ONLY")
     # If true, discard posts missing author or permalink (quality gate)
     filter_require_author_and_permalink: bool = Field(True, alias="FILTER_REQUIRE_AUTHOR_AND_PERMALINK")
-    # Domain filtering (e.g., ensure post text contains at least one legal keyword)
-    filter_legal_domain_only: bool = Field(False, alias="FILTER_LEGAL_DOMAIN_ONLY")
+    # Domain filtering: ACTIVÉ - exige au moins un mot-clé juridique dans le post
+    filter_legal_domain_only: bool = Field(True, alias="FILTER_LEGAL_DOMAIN_ONLY")
     auto_favorite_opportunities: bool = Field(False, alias="AUTO_FAVORITE_OPPORTUNITIES")
     # Batch & resilience settings
     keywords_session_batch_size: int = Field(8, alias="KEYWORDS_SESSION_BATCH_SIZE")
@@ -221,8 +223,8 @@ class Settings(BaseSettings):
     daily_post_soft_target: int = Field(45, alias="DAILY_POST_SOFT_TARGET")  # Augmenté 40→45
     # Legal domain classification & quota
     legal_daily_post_cap: int = Field(150, alias="LEGAL_DAILY_POST_CAP")  # Augmenté 100→150 pour marge
-    # OPTIMISÉ: Seuil abaissé pour accepter plus de posts de recrutement borderline
-    legal_intent_threshold: float = Field(0.15, alias="LEGAL_INTENT_THRESHOLD")  # Abaissé 0.20→0.15
+    # Seuil de recrutement: augmenté pour plus de pertinence (0.25 = exige signal de recrutement clair)
+    legal_intent_threshold: float = Field(0.25, alias="LEGAL_INTENT_THRESHOLD")
     legal_keywords_override: str | None = Field(None, alias="LEGAL_KEYWORDS")  # Optional semicolon list to extend/override builtin
     # Exclusion explicite de certaines sources (auteurs / entreprises) séparées par ';'
     # Inclut les cabinets de recrutement (concurrents) et sources non pertinentes
