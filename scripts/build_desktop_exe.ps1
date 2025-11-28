@@ -10,8 +10,8 @@ pip install pyinstaller > $null
 pip install -r requirements.txt > $null
 pip install -r .\desktop\requirements-desktop.txt > $null
 
-# Use existing spec (desktop/pyinstaller.spec) which already includes templates & assets
-$spec = 'desktop/pyinstaller.spec'
+# Use existing spec (TitanScraper.spec at root) which already includes templates & assets
+$spec = 'TitanScraper.spec'
 
 # Pre-clean: stop any running TitanScraper.exe and remove previous dist folder to avoid file locks
 try {
