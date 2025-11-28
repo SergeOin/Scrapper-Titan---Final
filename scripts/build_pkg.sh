@@ -20,10 +20,10 @@ fi
 NAME="TitanScraper"
 APP_DIR="dist/${NAME}/${NAME}.app"
 
-# If the .app bundle is missing, but the one-folder dist exists, construct the .app now
-if [[ ! -d "$APP_DIR" ]]; then
-  if [[ -d "dist/${NAME}" ]]; then
-    echo "App bundle not found; constructing $APP_DIR from one-folder dist..."
+# Function to create .app bundle from one-folder dist
+create_app_bundle() {
+  if [[ -d "dist/${NAME}" && ! -d "$APP_DIR" ]]; then
+    echo "Creating .app bundle from one-folder dist..."
     STAGE_APP="build/${NAME}.app"
     rm -rf "$STAGE_APP"
     mkdir -p "$STAGE_APP/Contents/MacOS" "$STAGE_APP/Contents/Resources"
@@ -60,16 +60,21 @@ EOF
     if [[ -f "build/icon.icns" ]]; then
       cp -f "build/icon.icns" "$STAGE_APP/Contents/Resources/icon.icns" || true
     fi
-    mkdir -p "dist/${NAME}"
     rm -rf "$APP_DIR"
     cp -R "$STAGE_APP" "$APP_DIR"
     echo "App bundle created at $APP_DIR"
   fi
-fi
+}
 
+# Try to create .app from existing dist folder
+create_app_bundle
+
+# If still no .app, build from scratch
 if [[ ! -d "$APP_DIR" ]]; then
-  echo "TitanScraper.app not found at $APP_DIR — building app first..."
+  echo "Building app from scratch..."
   ./build_mac.sh
+  # Now try to create .app bundle again
+  create_app_bundle
 fi
 
 if [[ ! -d "$APP_DIR" ]]; then
