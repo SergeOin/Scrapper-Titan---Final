@@ -64,12 +64,13 @@ jobs:
         id: check_signing
         shell: bash
         run: |
-          if [[ -n "$P12_BASE64" && "$P12_BASE64" != "" ]]; then
+          # Check certificate by testing if P12_BASE64 has significant length (base64 cert is >1000 chars)
+          if [[ ${#P12_BASE64} -gt 100 ]]; then
             echo "has_cert=true" >> "$GITHUB_OUTPUT"
-            echo "✅ Certificate available - will sign packages"
+            echo "✅ Certificate available (${#P12_BASE64} chars) - will sign packages"
           else
             echo "has_cert=false" >> "$GITHUB_OUTPUT"
-            echo "⚠️ No certificate - building unsigned packages"
+            echo "⚠️ No certificate or too short (${#P12_BASE64} chars) - building unsigned packages"
           fi
 
       - name: Create and unlock temporary keychain
