@@ -483,7 +483,7 @@
         }
         const rows = data.items.map(p=>{
           const txt = (p.text||'');
-          const short = txt.length>500? txt.substring(0,500)+'…' : txt;
+          const short = txt.length>200? txt.substring(0,200)+'…' : txt;
           const dateFmt = formatPublicationDate(p.published_at, p.collected_at);
           const searchFallback = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent((txt||p.author||'').slice(0,80))}`;
           const permalink = p.permalink ? `<a href="${p.permalink}" target="_blank">ouvrir</a>` : `<a href="${searchFallback}" target="_blank" title="Lien direct introuvable - recherche approximative">rechercher</a>`;
@@ -530,7 +530,7 @@
 
       function _rowHTML(p){
         const txt = (p.text||'');
-        const short = txt.length>500? txt.substring(0,500)+'…' : txt;
+        const short = txt.length>200? txt.substring(0,200)+'…' : txt;
         const dateFmt = formatPublicationDate(p.published_at, p.collected_at);
         const searchFallback = `https://www.linkedin.com/search/results/content/?keywords=${safeEncodeURI((txt||p.author||'').slice(0,80))}`;
         const permalink = p.permalink ? `<a href="${p.permalink}" target="_blank">ouvrir</a>` : `<a href="${searchFallback}" target="_blank" title="Lien direct introuvable - recherche approximative">rechercher</a>`;
@@ -793,7 +793,7 @@
     {% if cc and (cc|lower) != (post.author|lower) %}{{ cc }}{% else %}—{% endif %}
   </td>
         <td class="wrap">
-          {{ post.text[:500] }}{% if post.text|length > 500 %}…{% endif %}
+          {{ post.text[:200] }}{% if post.text|length > 200 %}…{% endif %}
         </td>
   <td>{{ (post.published_at or post.collected_at)|fmt_date }}</td>
           <td>
