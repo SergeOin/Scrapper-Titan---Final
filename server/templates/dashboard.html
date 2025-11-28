@@ -39,14 +39,12 @@
   .favorite-toggle.active { color:#facc15; }
   .delete-post { color:#dc2626; }
   .delete-post:hover { color:#b91c1c; }
-  /* Actions cell: use inline display for proper table alignment */
-  .actions-cell { text-align:center; vertical-align:middle; white-space:nowrap; }
-  .actions-cell .icon-btn { margin:0 0.15rem; }
-  th.actions-head, td.actions-cell { text-align:center; vertical-align:middle; }
-  /* Ensure actions column content is vertically centered and doesn't wrap */
-  td.actions-cell { white-space:nowrap; padding-top:0.5rem; padding-bottom:0.5rem; }
-  /* Keep a consistent width for the actions column */
-  th.actions-head { width:90px; }
+  /* Actions cell: force consistent vertical alignment */
+  td.actions-cell { text-align:center !important; vertical-align:middle !important; white-space:nowrap; padding:0.5rem 0.4rem !important; }
+  td.actions-cell .icon-btn { margin:0 0.1rem; vertical-align:middle; }
+  th.actions-head { text-align:center; vertical-align:middle; width:80px; min-width:80px; }
+  /* Ensure all table cells align middle */
+  table td { vertical-align:middle; }
   /* Loading state for action buttons */
   .icon-btn[disabled] { opacity:0.6; cursor:not-allowed; transform:none; }
   .icon-btn.loading { position:relative; color:transparent; }
