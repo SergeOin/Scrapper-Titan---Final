@@ -478,9 +478,11 @@ def _try_playwright_install(user_base: Path):
                     try:
                         pv = _ver("playwright")
                     except Exception:
-                        pv = "1.55.0"
+                        pv = "1.46.0"  # Match requirements.txt default
                     major_minor = ".".join(pv.split(".")[:2])
                     default_map = {
+                        "1.44": "1117",
+                        "1.45": "1124",
                         "1.46": "1129",
                         "1.47": "1134",
                         "1.48": "1140",
@@ -493,7 +495,7 @@ def _try_playwright_install(user_base: Path):
                         "1.55": "1187",
                         "1.56": "1195",
                     }
-                    rev = default_map.get(major_minor, "1187")  # Default to latest known
+                    rev = default_map.get(major_minor, "1129")  # Default to 1.46.x (requirements.txt)
 
                 if _is_windows():
                     zip_name = "chromium-win64.zip"
