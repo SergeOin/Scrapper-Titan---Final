@@ -505,6 +505,8 @@ __all__ = [
     "keyword_density",
     "compute_score",
     "compute_recruitment_signal",
+    "is_promotional_content",
+    "PROMOTIONAL_CONTENT_KEYWORDS",
     "is_opportunity",
     "make_post_id",
     "retryable",
@@ -658,6 +660,66 @@ RECRUITMENT_AGENCY_KEYWORDS = [
     "nous recherchons pour l'un de nos clients",
     "notre cabinet recrute", "en cabinet de recrutement",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Posts promotionnels/informationnels à exclure (pas de recrutement)
+# ---------------------------------------------------------------------------
+PROMOTIONAL_CONTENT_KEYWORDS = [
+    # Événements
+    "webinaire", "webinar", "conférence", "conference", "salon", "forum",
+    "événement", "evenement", "event", "séminaire", "seminaire",
+    "inscrivez-vous", "inscrivez vous", "inscription gratuite",
+    "replay disponible", "en replay", "live demain", "en direct",
+    # Formation/Cours
+    "formation", "masterclass", "atelier", "workshop",
+    "cours de", "apprendre à", "certifiante", "certification",
+    # Publications/Articles
+    "nouvel article", "mon article", "article de blog", "article publié",
+    "nouvelle publication", "ma publication", "lire l'article",
+    "interview de", "interview avec", "podcast", "épisode",
+    "livre", "ouvrage", "parution", "vient de paraître",
+    # Célébrations/Annonces personnelles
+    "félicitations", "felicitations", "bravo", "fier de", "fière de",
+    "anniversaire", "promotion de", "nommé", "nommée",
+    "nouvelle aventure", "nouveau chapitre", "nouvelle étape",
+    "heureux d'annoncer", "heureuse d'annoncer",
+    "j'ai le plaisir", "j'ai l'honneur",
+    # Self-promo services
+    "nos services", "notre cabinet propose", "nous accompagnons",
+    "besoin d'un avocat", "besoin d'accompagnement",
+    "consultation gratuite", "premier rendez-vous offert",
+    "contactez-nous", "contactez nous", "découvrez nos",
+    # Actualités juridiques (pas recrutement)
+    "nouvelle loi", "réforme", "jurisprudence", "décision de",
+    "arrêt de la cour", "ce qu'il faut savoir", "décryptage",
+    "point sur", "analyse de",
+]
+
+
+def is_promotional_content(text: str | None) -> bool:
+    """Return True if post is promotional/informational rather than recruitment.
+    
+    These posts should be excluded as they don't offer jobs.
+    """
+    if not text:
+        return False
+    low = text.lower()
+    
+    # Must NOT contain recruitment phrases to be excluded
+    recruit_signals = [
+        "recrute", "recrutons", "poste à pourvoir", "offre d'emploi",
+        "cdi", "cdd", "nous recherchons un", "recherche un(e)"
+    ]
+    has_recruit = any(sig in low for sig in recruit_signals)
+    if has_recruit:
+        return False  # Has recruitment signal, don't exclude
+    
+    # Check promotional content
+    for kw in PROMOTIONAL_CONTENT_KEYWORDS:
+        if kw in low:
+            return True
+    return False
 
 
 def is_from_recruitment_agency(text: str | None, author: str | None = None) -> bool:

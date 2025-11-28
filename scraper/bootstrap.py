@@ -76,32 +76,36 @@ class Settings(BaseSettings):
     rate_limit_refill_per_sec: float = Field(2.0, alias="RATE_LIMIT_REFILL_PER_SEC")  # tokens per second
 
     # Keywords & limits
-    # OPTIMISÉ: Liste ciblée de keywords pour recruter les profils juridiques demandés
-    # Focus sur: Avocat, Juriste, Notaire, Paralegal, Responsable/Directeur juridique
+    # OPTIMISÉ v2: Keywords STRICTEMENT orientés recrutement pour éviter les posts informationnels
+    # Focus sur: phrases de recrutement + rôles juridiques
+    # STRATÉGIE: Combiner "signal de recrutement" + "rôle juridique" dans le keyword
     scrape_keywords_raw: str = Field(
-        # === PHRASES DE RECRUTEMENT PRIORITAIRES (demandées explicitement) ===
-        "je recrute un(e) juriste;je recrute un(e) avocat collaborateur;hiring juriste;"
-        "on recherche un juriste;nous cherchons juriste;join the team legal;"
-        # === RÔLES PRINCIPAUX (cibles) ===
-        "juriste;avocat;avocat collaborateur;avocat associé;"
-        "paralegal;notaire;clerc de notaire;"
-        "responsable juridique;directeur juridique;"
-        # === RECRUTEMENT EXPLICITE PAR RÔLE ===
+        # === PHRASES DE RECRUTEMENT EXPLICITES (haute précision) ===
         "recrute juriste;recrute avocat;recrute notaire;recrute paralegal;"
-        "cdi juriste;cdi avocat;poste juriste;poste avocat;"
-        "offre juriste;offre avocat;emploi juriste;emploi avocat;"
-        # === SPÉCIALISATIONS JURIDIQUES (France) ===
-        "juriste droit social France;juriste droit des affaires France;"
-        "juriste contrats France;juriste corporate France;"
-        "avocat droit social France;avocat droit des affaires France;"
-        # === NIVEAUX D'EXPÉRIENCE ===
-        "juriste confirmé;juriste senior;avocat senior;"
-        # === HEAD OF LEGAL / DIRECTION ===
-        "head of legal France;general counsel France;legal counsel France",
+        "nous recrutons juriste;nous recrutons avocat;"
+        "on recrute juriste;on recrute avocat;"
+        "je recrute juriste;je recrute avocat;"
+        "poste juriste;poste avocat;poste notaire;poste paralegal;"
+        "offre emploi juriste;offre emploi avocat;"
+        "cdi juriste;cdi avocat;cdi notaire;"
+        # === EXPRESSIONS DE RECHERCHE ACTIVES ===
+        "recherche juriste;recherche avocat;recherche notaire;"
+        "cherche juriste;cherche avocat;cherche notaire;"
+        "embauche juriste;embauche avocat;"
+        # === POSTES DIRECTION JURIDIQUE ===
+        "recrute responsable juridique;recrute directeur juridique;"
+        "poste responsable juridique;poste directeur juridique;"
+        "head of legal recrute;general counsel recrute;"
+        # === EXPRESSIONS AVEC CONTEXTE FRANCE ===
+        "juriste cdi France;avocat cdi France;"
+        "juriste Paris;avocat Paris;juriste Lyon;"
+        # === SPÉCIALISATIONS + RECRUTEMENT ===
+        "recrute juriste droit social;recrute juriste contrats;"
+        "recrute avocat droit des affaires;recrute compliance officer",
         alias="SCRAPE_KEYWORDS",
     )
     # Semicolon-separated list of keywords to always ignore (case-insensitive)
-    blacklisted_keywords_raw: str = Field("python;ai", alias="BLACKLISTED_KEYWORDS")
+    blacklisted_keywords_raw: str = Field("python;ai;formation;webinaire;article", alias="BLACKLISTED_KEYWORDS")
     # Raise cap per keyword to collect more candidates before classifier filtering
     max_posts_per_keyword: int = Field(80, alias="MAX_POSTS_PER_KEYWORD")
     # Extraction scrolling controls

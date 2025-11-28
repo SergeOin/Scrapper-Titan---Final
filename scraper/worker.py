@@ -1245,13 +1245,18 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                             keep = False; reject_reason = "too_old"
                         if ctx.settings.filter_language_strict and language.lower() != (ctx.settings.default_lang or "fr").lower():
                             keep = False; reject_reason = "language"
-                        # Domain filter: require at least one legal keyword when enabled
+                        # Domain filter: require SPECIFIC legal role keywords (not generic terms)
                         if keep and getattr(ctx.settings, 'filter_legal_domain_only', False):
                             tl = (text_norm or "").lower()
-                            legal_markers = (
-                                "juriste","avocat","legal","counsel","paralegal","notaire","droit","fiscal","conformité","compliance","secrétaire général","secretaire general","contentieux","litige","corporate law","droit des affaires"
+                            # STRICT legal role markers - must be specific job roles, not generic terms
+                            legal_role_markers = (
+                                "juriste", "avocat", "paralegal", "notaire", "clerc",
+                                "responsable juridique", "directeur juridique", "directrice juridique",
+                                "head of legal", "general counsel", "legal counsel",
+                                "compliance officer", "compliance manager",
+                                "contract manager", "secrétaire général", "secretaire general"
                             )
-                            if not any(m in tl for m in legal_markers):
+                            if not any(m in tl for m in legal_role_markers):
                                 keep = False; reject_reason = reject_reason or "non_domain"
                         if ctx.settings.filter_recruitment_only and recruitment_score < effective_threshold:
                             if keep: keep = False; reject_reason = reject_reason or "recruitment"
@@ -1276,6 +1281,9 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                         # NEW: Exclude posts from recruitment agencies (competitors)
                         if keep and utils.is_from_recruitment_agency(text_norm, author):
                             keep = False; reject_reason = reject_reason or "recruitment_agency"
+                        # NEW: Exclude promotional/informational content (events, articles, etc.)
+                        if keep and utils.is_promotional_content(text_norm):
+                            keep = False; reject_reason = reject_reason or "promotional_content"
                 except Exception:
                     pass
                 if keep:
