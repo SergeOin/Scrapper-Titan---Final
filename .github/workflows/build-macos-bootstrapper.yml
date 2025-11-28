@@ -148,12 +148,33 @@ jobs:
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: TitanScraper-bootstrap-${{ steps.ver.outputs.version }}-macos
           path: |
             dist/TitanScraper-bootstrap-${{ steps.ver.outputs.version }}.dmg
             dist/TitanScraper-${{ steps.ver.outputs.version }}.pkg
-          if-no-files-found: error
+          if-no-files-found: warn
+
+      - name: Create GitHub Release with assets
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          DMG="dist/TitanScraper-bootstrap-${VERSION}.dmg"
+          PKG="dist/TitanScraper-${VERSION}.pkg"
+          
+          # Delete existing release if any (for re-runs)
+          gh release delete "v${VERSION}-macos" --yes 2>/dev/null || true
+          
+          # Create new release
+          gh release create "v${VERSION}-macos" \
+            --title "TitanScraper ${VERSION} - macOS" \
+            --notes "macOS installer (unsigned)" \
+            --prerelease \
+            "$DMG" "$PKG" || echo "Release creation failed, files may be missing"
 
       - name: Cleanup keychain
         if: always() && steps.check_signing.outputs.has_cert == 'true'
