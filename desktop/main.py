@@ -29,6 +29,25 @@ import asyncio
 from typing import Any
 import base64
 
+# =============================================================================
+# CRITICAL: Set PLAYWRIGHT_BROWSERS_PATH BEFORE any playwright import happens.
+# This must be done at module load time, before scraper/session.py imports playwright.
+# =============================================================================
+def _early_playwright_path_setup() -> None:
+    """Configure Playwright browser path before any playwright import."""
+    if sys.platform == "win32":
+        user_base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "TitanScraper"
+    elif sys.platform == "darwin":
+        user_base = Path.home() / "Library" / "Application Support" / "TitanScraper"
+    else:
+        user_base = Path.home() / ".local" / "share" / "TitanScraper"
+    browsers_dir = user_base / "pw-browsers"
+    # Force set (not setdefault) to ensure it's always correct
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_dir)
+
+_early_playwright_path_setup()
+# =============================================================================
+
 try:
     import ctypes
     import ctypes.wintypes as _wt
