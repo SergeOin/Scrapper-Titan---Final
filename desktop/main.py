@@ -367,12 +367,25 @@ def _try_playwright_install(user_base: Path):
         # Ensure env path stable & writable
         browsers_dir = user_base / "pw-browsers"
         os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(browsers_dir))
+        
+        is_frozen = getattr(sys, "frozen", False)  # True when running as PyInstaller bundle
+        
         def _chromium_ready(path: Path) -> bool:
+            """Check if Chromium browser is ready to use."""
             try:
                 rev_dir = next((p for p in path.iterdir() if p.is_dir() and p.name.startswith("chromium-")), None)
                 if not rev_dir:
                     return False
-                exe = rev_dir / "chrome-win" / "chrome.exe" if _is_windows() else rev_dir / "chrome-linux" / "chrome"
+                # Check for chrome executable based on OS
+                if _is_windows():
+                    exe = rev_dir / "chrome-win" / "chrome.exe"
+                elif _is_macos():
+                    # macOS can have chrome-mac or Chromium.app structure
+                    exe = rev_dir / "chrome-mac" / "Chromium.app" / "Contents" / "MacOS" / "Chromium"
+                    if not exe.exists():
+                        exe = rev_dir / "chrome-mac" / "chrome"
+                else:
+                    exe = rev_dir / "chrome-linux" / "chrome"
                 return exe.exists()
             except Exception:
                 return False
@@ -382,7 +395,7 @@ def _try_playwright_install(user_base: Path):
             return
         # If prebaked browsers shipped inside the bundle (pw-browsers) copy them first.
         try:
-            bundle_pw = (Path(sys.executable).parent if getattr(sys, "frozen", False) else _project_root()) / 'pw-browsers'
+            bundle_pw = (Path(sys.executable).parent if is_frozen else _project_root()) / 'pw-browsers'
             if bundle_pw.exists() and not browsers_dir.exists():
                 import shutil
                 shutil.copytree(bundle_pw, browsers_dir)
@@ -391,28 +404,39 @@ def _try_playwright_install(user_base: Path):
                     return
         except Exception:
             log.warning("playwright_copy_bundle_failed", exc_info=True)
-        # Trigger install only if playwright package importable
-        import playwright  # noqa: F401
-        from subprocess import run
-        log.info("playwright_install_start target=%s", browsers_dir)
-        browsers_dir.mkdir(parents=True, exist_ok=True)
-        run([sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"], check=False)
-        # Post-check
-        if _chromium_ready(browsers_dir):
-            log.info("playwright_install_complete")
-        else:
-            log.warning("playwright_install_incomplete path=%s triggering_second_attempt", browsers_dir)
+        
+        # In PyInstaller frozen mode, sys.executable is the bundled app, not Python.
+        # Skip subprocess playwright install and go directly to HTTP fallback.
+        if not is_frozen:
+            # Trigger install only if playwright package importable and we have real Python
             try:
-                from subprocess import run as _run
-                _run([sys.executable, "-m", "playwright", "install", "chromium"], check=False)
+                import playwright  # noqa: F401
+                from subprocess import run
+                log.info("playwright_install_start target=%s", browsers_dir)
+                browsers_dir.mkdir(parents=True, exist_ok=True)
+                run([sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"], check=False)
+                # Post-check
                 if _chromium_ready(browsers_dir):
-                    log.info("playwright_second_attempt_success")
+                    log.info("playwright_install_complete")
+                    return
                 else:
-                    log.error("playwright_second_attempt_failed path=%s", browsers_dir)
+                    log.warning("playwright_install_incomplete path=%s triggering_second_attempt", browsers_dir)
+                    try:
+                        from subprocess import run as _run
+                        _run([sys.executable, "-m", "playwright", "install", "chromium"], check=False)
+                        if _chromium_ready(browsers_dir):
+                            log.info("playwright_second_attempt_success")
+                            return
+                        else:
+                            log.error("playwright_second_attempt_failed path=%s", browsers_dir)
+                    except Exception:
+                        log.exception("playwright_second_attempt_exception")
             except Exception:
-                log.exception("playwright_second_attempt_exception")
+                log.warning("playwright_subprocess_install_failed", exc_info=True)
+        else:
+            log.info("playwright_frozen_mode detected, using HTTP fallback directly")
 
-        # Fallback HTTP downloader (Windows-focused) if still not ready
+        # HTTP downloader fallback - always used in frozen mode, fallback otherwise
         if not _chromium_ready(browsers_dir):
             try:
                 log.warning("playwright_http_fallback_start path=%s", browsers_dir)
@@ -435,10 +459,22 @@ def _try_playwright_install(user_base: Path):
                     try:
                         pv = _ver("playwright")
                     except Exception:
-                        pv = "1.46.0"
+                        pv = "1.55.0"
                     major_minor = ".".join(pv.split(".")[:2])
-                    default_map = {"1.46": "1129"}
-                    rev = default_map.get(major_minor, "1129")
+                    default_map = {
+                        "1.46": "1129",
+                        "1.47": "1134",
+                        "1.48": "1140",
+                        "1.49": "1148",
+                        "1.50": "1155",
+                        "1.51": "1160",
+                        "1.52": "1165",
+                        "1.53": "1170",
+                        "1.54": "1180",
+                        "1.55": "1187",
+                        "1.56": "1195",
+                    }
+                    rev = default_map.get(major_minor, "1187")  # Default to latest known
 
                 if _is_windows():
                     zip_name = "chromium-win64.zip"
@@ -455,6 +491,7 @@ def _try_playwright_install(user_base: Path):
                 url = f"https://playwright.azureedge.net/builds/chromium/{rev}/{zip_name}"
                 log.info("playwright_http_fallback_download url=%s rev=%s", url, rev)
                 target_rev_dir = browsers_dir / f"chromium-{rev}"
+                browsers_dir.mkdir(parents=True, exist_ok=True)
                 if target_rev_dir.exists():
                     # If incomplete remove to avoid mixing
                     try:
@@ -463,20 +500,43 @@ def _try_playwright_install(user_base: Path):
                         pass
                 target_rev_dir.mkdir(parents=True, exist_ok=True)
 
-                with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
                     tmp_path = Path(tmp.name)
                 try:
-                    with urllib.request.urlopen(url) as resp, open(tmp_path, "wb") as out:
+                    log.info("playwright_http_downloading to=%s", tmp_path)
+                    with urllib.request.urlopen(url, timeout=120) as resp, open(tmp_path, "wb") as out:
                         shutil.copyfileobj(resp, out)
+                    log.info("playwright_http_download_complete size=%d", tmp_path.stat().st_size)
                     # Extract
                     with zipfile.ZipFile(tmp_path, 'r') as zf:
                         zf.extractall(target_rev_dir)
-                    # Normal shape: target_rev_dir/inner_folder/chrome.exe
-                    chrome_exe = target_rev_dir / inner_folder / ("chrome.exe" if _is_windows() else "chrome")
+                    # Verify extraction - check for chrome executable based on OS
+                    if _is_windows():
+                        chrome_exe = target_rev_dir / inner_folder / "chrome.exe"
+                    elif _is_macos():
+                        # macOS Chromium structure
+                        chrome_exe = target_rev_dir / inner_folder / "Chromium.app" / "Contents" / "MacOS" / "Chromium"
+                        if not chrome_exe.exists():
+                            chrome_exe = target_rev_dir / inner_folder / "chrome"
+                    else:
+                        chrome_exe = target_rev_dir / inner_folder / "chrome"
+                    
                     if chrome_exe.exists():
                         log.info("playwright_http_fallback_success exe=%s", chrome_exe)
+                        # On Unix, ensure executable permissions
+                        if not _is_windows():
+                            try:
+                                chrome_exe.chmod(0o755)
+                            except Exception:
+                                pass
                     else:
-                        log.error("playwright_http_fallback_missing_exe path=%s", chrome_exe)
+                        log.error("playwright_http_fallback_missing_exe expected=%s", chrome_exe)
+                        # List what was extracted for debugging
+                        try:
+                            extracted = list(target_rev_dir.rglob("*"))[:20]
+                            log.error("playwright_extracted_files sample=%s", [str(f) for f in extracted])
+                        except Exception:
+                            pass
                 finally:
                     try:
                         if tmp_path.exists():

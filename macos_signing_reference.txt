@@ -1,0 +1,10 @@
+﻿# Configuration macOS Signing - Reference
+# Genere le 2025-11-28 10:58:41
+
+NOTARY_API_KEY_ID=SUZZ6XXWGK
+NOTARY_API_ISSUER_ID=aac072db-3c62-4b4d-a3a4-695c33c1d1d7
+MAC_CERT_IDENTITY_INSTALLER=
+MAC_CERT_IDENTITY_APPLICATION=
+
+# Les valeurs sensibles sont stockees uniquement dans GitHub Secrets.
+

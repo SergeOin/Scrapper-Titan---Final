@@ -76,22 +76,28 @@ class Settings(BaseSettings):
     rate_limit_refill_per_sec: float = Field(2.0, alias="RATE_LIMIT_REFILL_PER_SEC")  # tokens per second
 
     # Keywords & limits
-    # OPTIMISÉ: Liste étendue de keywords pour maximiser le volume (50+ posts/jour)
-    # Inclut rôles, spécialisations, termes de recrutement explicites et variations FR/EN
+    # OPTIMISÉ: Liste ciblée de keywords pour recruter les profils juridiques demandés
+    # Focus sur: Avocat, Juriste, Notaire, Paralegal, Responsable/Directeur juridique
     scrape_keywords_raw: str = Field(
-        # Rôles principaux
-        "juriste;avocat;notaire;paralegal;legal counsel;assistant juridique;"
-        "directeur juridique;responsable juridique;secrétaire général;secrétaire juridique;"
-        # Spécialisations juridiques
-        "droit du travail;droit social;droit des affaires;droit des sociétés;"
-        "droit fiscal;compliance;rgpd;data privacy;droit pénal;droit public;"
-        "droit immobilier;M&A;fusions acquisitions;contentieux;propriété intellectuelle;"
-        # Termes de recrutement explicites (boost volume)
-        "recrutement juriste;offre juriste;cdi juriste;poste avocat;cdi avocat;"
-        "job juridique;emploi juriste;legal job france;recrute avocat;recrute juriste;"
-        # Niveaux d'expérience
-        "juriste junior;juriste confirmé;juriste senior;avocat collaborateur;avocat associé;"
-        "clerc de notaire;legal ops;contract manager;chef de projet juridique",
+        # === PHRASES DE RECRUTEMENT PRIORITAIRES (demandées explicitement) ===
+        "je recrute un(e) juriste;je recrute un(e) avocat collaborateur;hiring juriste;"
+        "on recherche un juriste;nous cherchons juriste;join the team legal;"
+        # === RÔLES PRINCIPAUX (cibles) ===
+        "juriste;avocat;avocat collaborateur;avocat associé;"
+        "paralegal;notaire;clerc de notaire;"
+        "responsable juridique;directeur juridique;"
+        # === RECRUTEMENT EXPLICITE PAR RÔLE ===
+        "recrute juriste;recrute avocat;recrute notaire;recrute paralegal;"
+        "cdi juriste;cdi avocat;poste juriste;poste avocat;"
+        "offre juriste;offre avocat;emploi juriste;emploi avocat;"
+        # === SPÉCIALISATIONS JURIDIQUES (France) ===
+        "juriste droit social France;juriste droit des affaires France;"
+        "juriste contrats France;juriste corporate France;"
+        "avocat droit social France;avocat droit des affaires France;"
+        # === NIVEAUX D'EXPÉRIENCE ===
+        "juriste confirmé;juriste senior;avocat senior;"
+        # === HEAD OF LEGAL / DIRECTION ===
+        "head of legal France;general counsel France;legal counsel France",
         alias="SCRAPE_KEYWORDS",
     )
     # Semicolon-separated list of keywords to always ignore (case-insensitive)
@@ -219,14 +225,22 @@ class Settings(BaseSettings):
     legal_intent_threshold: float = Field(0.15, alias="LEGAL_INTENT_THRESHOLD")  # Abaissé 0.20→0.15
     legal_keywords_override: str | None = Field(None, alias="LEGAL_KEYWORDS")  # Optional semicolon list to extend/override builtin
     # Exclusion explicite de certaines sources (auteurs / entreprises) séparées par ';'
-    excluded_authors_raw: str = Field("village de la justice", alias="EXCLUDED_AUTHORS")
+    # Inclut les cabinets de recrutement (concurrents) et sources non pertinentes
+    excluded_authors_raw: str = Field(
+        "village de la justice;michael page;robert half;hays;fed legal;fed juridique;"
+        "page personnel;expectra;adecco;manpower;randstad;spring professional;"
+        "lincoln associates;laurence simons;taylor root;major hunter;approach people;"
+        "keljob;monster;cadremploi",
+        alias="EXCLUDED_AUTHORS"
+    )
     # Keywords de renfort (booster) injectés dynamiquement quand quota < 80%
-    # OPTIMISÉ: Liste étendue de booster keywords pour rattrapage rapide
+    # OPTIMISÉ: Focus sur recrutement direct (exclut cabinets de recrutement)
     booster_keywords_raw: str = Field(
-        "recrute juriste;recrute avocat;offre emploi juridique;cdi juriste;cdi avocat;"
-        "recrutement juridique;poste avocat;poste juriste;legal job france;embauche juriste;"
-        "opportunité juridique;rejoindre équipe juridique;direction juridique recrute;"
-        "cabinet avocat recrute;étude notariale recrute;compliance officer france",
+        "recrute juriste France;recrute avocat France;cdi juriste Paris;"
+        "cdi avocat Paris;poste juriste France;poste avocat France;"
+        "direction juridique recrute;entreprise recrute juriste;"
+        "cabinet avocat recrute;etude notariale recrute;"
+        "responsable juridique France;directeur juridique France",
         alias="BOOSTER_KEYWORDS"
     )
     # Si True on assouplit certains filtres (recruitment threshold -10%) quand quota pas atteint
@@ -481,6 +495,10 @@ class AppContext:
     legal_daily_discard_location: int = 0
     # UI stats tracking date marker used by /api/legal_stats
     legal_stats_date: Optional[str] = None
+    # Relaxed mode flag (bypass strict legal filters for autonomous worker testing)
+    _relaxed_filters: bool = False
+    # Autonomous worker active flag
+    _autonomous_worker_active: bool = False
     # quick helper
     def has_valid_session(self) -> bool:
         try:

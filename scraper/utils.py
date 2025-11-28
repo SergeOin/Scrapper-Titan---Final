@@ -239,8 +239,9 @@ MAX_POST_AGE_DAYS = 21
 # Pattern étendu pour capturer toutes les unités de temps LinkedIn
 # IMPORTANT: Ordre des alternatives compte - les plus longs d'abord pour éviter
 # que "sem" soit capturé comme "s" (secondes)
+# IMPORTANT: LinkedIn utilise "sem." (avec point abréviatif) donc on ajoute \.? après sem
 _RELATIVE_PATTERN_EXTENDED = re.compile(
-    r"(\d+)\s*(semaines?|seconde?|minutes?|heures?|jours?|weeks?|months?|mois|sem|min|sec|day|wk|hr|mo|h|j|d|w|s)",
+    r"(\d+)\s*(semaines?|seconde?s?|minutes?|heures?|jours?|weeks?|months?|mois|sem\.?|min\.?|sec\.?|day|wk|hr|mo|h|j|d|w|s)",
     re.IGNORECASE
 )
 
@@ -326,7 +327,7 @@ def parse_possible_date(raw: str, now: Optional[datetime] = None) -> Optional[da
     m = _RELATIVE_PATTERN_EXTENDED.search(raw_clean)
     if m:
         value = int(m.group(1))
-        unit = m.group(2).lower()
+        unit = m.group(2).lower().rstrip('.')  # Retirer le point abréviatif si présent
         delta: timedelta
         
         # Secondes
@@ -565,19 +566,35 @@ STAGE_ALTERNANCE_KEYWORDS = [
     "stage", "stages", "stagiaire", "stagiaires",
     "stage juridique", "stage avocat", "stage notaire",
     "offre de stage", "stage pfe", "stage fin d'études",
+    "stage de fin", "stage m1", "stage m2", "stage l3",
+    "stage 6 mois", "stage 3 mois", "stage 4 mois",
+    "recherche stage", "propose un stage", "proposons un stage",
+    "accueillir un stagiaire", "accueillir une stagiaire",
+    "recrute un stagiaire", "recrute une stagiaire",
+    "recrutons un stagiaire", "recrutons une stagiaire",
     # Alternance (variantes)
     "alternance", "alternant", "alternante", "alternants",
     "contrat alternance", "en alternance", "poste alternance",
+    "poste en alternance", "offre alternance", "offre d'alternance",
+    "recrute en alternance", "recrutons en alternance",
+    "recherche alternance", "cherche alternance",
+    "profil alternant", "profil alternance",
+    "contrat en alternance", "formation en alternance",
+    "master en alternance", "licence en alternance",
     # Apprentissage (variantes)
     "apprentissage", "apprenti", "apprentie", "apprentis",
     "contrat d'apprentissage", "contrat apprentissage",
+    "recrute un apprenti", "recrute une apprentie",
+    "recherche apprenti", "offre apprentissage",
     # Contrat pro
     "contrat pro", "contrat de professionnalisation",
     # Termes anglais
     "work-study", "internship", "intern ",  # espace après intern pour éviter "internal"
-    "interns", "trainee", "traineeship",
+    "interns", "trainee", "traineeship", "working student",
     # V.I.E.
     "v.i.e", "vie ", "volontariat international",
+    # Patterns spécifiques
+    "#stage", "#alternance", "#apprentissage", "#stagiaire", "#alternant",
 ]
 
 
@@ -593,6 +610,101 @@ def is_stage_or_alternance(text: str | None) -> bool:
         if kw in low:
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Exclusion des cabinets de recrutement (concurrents)
+# ---------------------------------------------------------------------------
+RECRUITMENT_AGENCY_KEYWORDS = [
+    # Termes génériques
+    "cabinet de recrutement", "cabinet recrutement", "agence de recrutement",
+    "chasseur de têtes", "chasseurs de têtes", "headhunter", "headhunting",
+    "executive search", "talent acquisition agency", "talent acquisition",
+    "rh externalisé", "rh externe", "externalisation rh",
+    # Formulations typiques des recruteurs (variations apostrophes et possessifs)
+    "notre client recherche", "pour le compte de notre client",
+    "pour notre client", "notre client, un", "client final",
+    "mission pour", "nous recrutons pour", "mandat de recrutement",
+    "pour un de nos clients", "pour un de mes clients",
+    "l'un de nos clients", "l'un de mes clients",
+    "un de mes clients", "un de nos clients",
+    "client confidentiel", "recrute pour un client",
+    "je recrute pour", "recrute pour l'un",
+    # Cabinets connus (FR) - Legal/Juridique
+    "fed legal", "fed juridique", "fed group",
+    "michael page", "michael page legal", "page personnel",
+    "robert half", "robert half legal",
+    "hays", "hays legal", "hays france",
+    "lincoln associates", "laurence simons", "taylor root",
+    "austin bright", "edge executive", "veni consulting",
+    "altea consulting", "abries rh", "llg executive", "llg search",
+    "co-efficience", "coefficience", "andrea partners",
+    "jo&co recrutement", "laboure recrutement", "laboure avocats",
+    "approach people", "major hunter", "approachpeople", "majorhunter",
+    "morgan philips", "spencer stuart", "russell reynolds", "egon zehnder",
+    "korn ferry", "boyden", "eric salmon", "odgers berndtson",
+    "heidrick & struggles", "vidal associates",
+    # Cabinets généraux
+    "expectra", "adecco", "manpower", "randstad",
+    "spring professional", "kelly services", "synergie", "proman",
+    "start people", "crit interim", "supplay", "actual group",
+    # Job boards / intermédiaires
+    "indeed", "monster", "cadremploi", "apec.fr", "keljob", "jobteaser",
+    "welcometothejungle", "meteojob", "regionsjob", "hellowork",
+    # Expressions révélatrices
+    "consultant recrutement", "consultante recrutement", "recruiter",
+    "chargé de recrutement", "chargée de recrutement",
+    "talent manager", "talent partner", "talent specialist",
+    "nous recherchons pour l'un de nos clients",
+    "notre cabinet recrute", "en cabinet de recrutement",
+]
+
+
+def is_from_recruitment_agency(text: str | None, author: str | None = None) -> bool:
+    """Return True if post appears to come from a recruitment agency.
+    
+    These posts should be excluded as they are competitors.
+    """
+    if not text and not author:
+        return False
+    
+    # Check text content
+    if text:
+        low = text.lower()
+        for kw in RECRUITMENT_AGENCY_KEYWORDS:
+            if kw in low:
+                return True
+        
+        # Additional pattern: "Je recrute" + "pour un/le cabinet" = external recruiter
+        if "je recrute" in low and ("pour un cabinet" in low or "pour le cabinet" in low or "pour le bureau" in low):
+            return True
+        
+        # Recruitment platform keywords
+        recruitment_platform_markers = [
+            "recrutement juridique", "legaltech", "legal tech",
+            "plateforme de recrutement", "site de recrutement",
+            "#recrutementjuridique",
+        ]
+        for marker in recruitment_platform_markers:
+            if marker in low:
+                return True
+    
+    # Check author name
+    if author:
+        author_low = author.lower()
+        agency_author_markers = [
+            "michael page", "robert half", "hays", "fed legal",
+            "page personnel", "expectra", "adecco", "manpower", "randstad",
+            "recruteur", "recruteuse", "recruitment", "headhunter", "talent acquisition",
+            "lawpic", "legaltech", "jobboard", "job board",
+        ]
+        for marker in agency_author_markers:
+            if marker in author_low:
+                return True
+    
+    return False
+
+
 _MULTI_TOKEN_PRIORITY = {"nous recherchons": 2.2, "je recrute": 2.0, "je recherche": 1.6}
 
 

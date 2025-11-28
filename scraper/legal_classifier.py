@@ -22,69 +22,75 @@ from typing import List, Dict, Any
 import math
 import re
 
-# Core legal role keywords (lowercase, accent-insensitive matching recommended upstream)
+# Core legal role keywords - OPTIMISÉ pour cibler les métiers juridiques précis
+# Priorité aux rôles explicitement recherchés par le client
 LEGAL_ROLE_KEYWORDS = [
-    # Rôles détaillés (accent-insensible conseillé en amont)
-    "avocat collaborateur","avocat associé","avocat counsel","paralegal","legal counsel","juriste",
-    "responsable juridique","directeur juridique","notaire stagiaire","notaire associé","notaire salarié",
-    "notaire assistant","clerc de notaire","rédacteur d’actes","rédacteur d'actes","responsable fiscal",
-    "directeur fiscal","comptable taxateur","formaliste",
-    # Termes additionnels demandés (génériques mais utiles)
-    "avocat","notaire",
-    # Stems génériques
-    "juridique","legal","fiscal","droit"
+    # === RÔLES PRIORITAIRES (cibles principales) ===
+    # Avocats
+    "avocat", "avocat collaborateur", "avocat associé", "avocat counsel",
+    "avocat junior", "avocat senior", "avocat stagiaire",
+    # Juristes
+    "juriste", "juriste junior", "juriste confirmé", "juriste senior",
+    "juriste d'entreprise", "juriste corporate", "juriste droit social",
+    "juriste droit des affaires", "juriste contrats", "juriste contentieux",
+    # Responsables/Directeurs juridiques
+    "responsable juridique", "directeur juridique", "directrice juridique",
+    "head of legal", "chief legal officer", "clo", "general counsel",
+    # Paralegal
+    "paralegal", "paralegale", "legal assistant", "assistant juridique",
+    "assistante juridique",
+    # Notaires
+    "notaire", "notaire associé", "notaire salarié", "notaire assistant",
+    "clerc de notaire", "clerc principal", "rédacteur d'actes",
+    # === RÔLES SECONDAIRES (acceptables) ===
+    "legal counsel", "legal ops", "legal operations",
+    "contract manager", "compliance officer", "compliance manager",
+    "secrétaire général", "secretaire general",
 ]
 
-# Recruitment signal phrases (complementary to utils.compute_recruitment_signal)
-# OPTIMISÉ: Liste enrichie avec 60+ expressions pour maximiser la détection
+# Recruitment signal phrases - OPTIMISÉ pour détecter les vraies offres de recrutement
+# Phrases clés demandées par le client + extensions
 RECRUITMENT_PHRASES = [
-    # Phrases principales de recrutement
-    "nous recrutons", "on recrute", "je recrute", "recherche un(e)", "recherche son/sa",
-    "profil recherché", "poste à pourvoir", "poste a pourvoir", "candidature",
-    "rejoindre notre équipe", "join our team", "we are hiring", "hiring for",
-    "postulez", "envoyez votre cv", "offre d'emploi", "offre d emploi",
-    "opportunité", "opportunite",
-    # Expressions juridiques spécifiques
-    "je recrute un(e) juriste", "je recrute un(e) avocat", "hiring",
-    "on recherche un juriste", "nous cherchons", "join the team",
+    # === PHRASES PRIORITAIRES (demandées explicitement) ===
+    "je recrute un(e) juriste", "je recrute un(e) avocat collaborateur",
+    "je recrute un(e) avocat", "je recrute un juriste", "je recrute un avocat",
+    "hiring", "on recherche un juriste", "nous cherchons", "join the team",
+    # === PHRASES DE RECRUTEMENT FORTES ===
+    "nous recrutons", "on recrute", "je recrute", 
+    "recherche un(e)", "recherche son/sa", "recherche notre futur",
+    "poste à pourvoir", "poste a pourvoir", "offre d'emploi",
+    "rejoindre notre équipe", "join our team", "we are hiring",
+    "postulez", "envoyez votre cv", "candidature souhaitée",
+    "recrutement en cours", "nous renforçons notre équipe",
+    # === EXPRESSIONS JURIDIQUES SPÉCIFIQUES ===
     "rejoignez la direction juridique", "intégrer l'équipe juridique",
-    "renforcer notre département juridique",
-    # Types de contrat (indicateurs forts)
-    "cdi", "cdd", "contrat à durée", "temps plein", "temps partiel",
-    "full time", "part time", "poste ouvert", "recrutement en cours",
-    "offre cdi", "offre cdd",
-    # NOUVELLES EXPRESSIONS pour augmenter la couverture
-    "à pourvoir", "recherche profil", "candidat idéal", "missions principales",
-    "rattaché(e) à", "rattache a", "intégrer notre équipe", "integrer notre equipe",
-    "contexte de croissance", "développement de l'activité", "renforcer l'équipe",
-    "rejoindre une équipe", "création de poste", "ouverture de poste",
-    # Expressions d'urgence/timing
-    "prise de poste", "début dès que possible", "disponibilité immédiate",
-    "démarrage rapide", "urgent",
-    # Expressions d'annonce
-    "nous recherchons", "notre client recherche", "notre cabinet recherche",
-    "pour le compte de", "dans le cadre de",
-    # Expressions de profil
-    "vous êtes", "vous avez", "vous justifiez", "expérience requise",
-    "profil souhaité", "compétences requises", "qualifications",
-    # Expressions d'entreprise
-    "notre entreprise", "notre structure", "notre groupe", "notre société",
-    "cabinet d'avocats", "cabinet juridique", "étude notariale",
-    # Expressions de localisation FR
-    "basé à paris", "poste paris", "poste lyon", "idf", "ile-de-france",
-    # Expressions de salaire/avantages (indicateurs de vraie offre)
-    "rémunération", "salaire", "package", "avantages", "télétravail possible",
+    "renforcer notre département juridique", "équipe juridique recrute",
+    "cabinet d'avocats recrute", "étude notariale recrute",
+    "direction juridique recherche", "département juridique recrute",
+    # === INDICATEURS DE VRAIE OFFRE ===
+    "cdi", "cdd", "poste en cdi", "poste en cdd",
+    "temps plein", "full time", "création de poste",
+    "à pourvoir immédiatement", "prise de poste",
+    # === EXPRESSIONS DE PROFIL ===
+    "profil recherché", "nous recherchons", "missions principales",
+    "vous justifiez", "expérience requise", "rattaché(e) à",
+    # === LOCALISATION FRANCE (renforce la pertinence) ===
+    "basé à paris", "basé en france", "poste paris", "poste lyon",
+    "ile-de-france", "région parisienne",
 ]
 
-# Stage/Alternance exclusion keywords - posts with these should be rejected
-# RENFORCÉ: Liste complète pour éviter tout faux positif
+# Stage/Alternance exclusion keywords - posts with these should be REJECTED
+# RENFORCÉ: Liste complète pour exclure stages et alternances
 STAGE_ALTERNANCE_EXCLUSION = [
     # Stage (toutes variantes)
-    "stage", "stages", "stagiaire", "stagiaires", "stage juridique",
-    "stage avocat", "stage notaire", "offre de stage", "stage pfe",
+    "stage", "stages", "stagiaire", "stagiaires", 
+    "stage juridique", "stage avocat", "stage notaire",
+    "offre de stage", "stage pfe", "stage fin d'études",
+    "stage de fin d'études", "stage m2", "stage master",
     # Alternance (toutes variantes)
     "alternance", "alternant", "alternante", "alternants",
-    "contrat alternance", "en alternance",
+    "contrat alternance", "en alternance", "poste en alternance",
+    "offre alternance", "recherche alternance",
     # Apprentissage
     "apprentissage", "apprenti", "apprentie", "apprentis",
     "contrat d'apprentissage", "contrat apprentissage",
@@ -92,9 +98,47 @@ STAGE_ALTERNANCE_EXCLUSION = [
     "contrat pro", "contrat de professionnalisation",
     # Termes anglais
     "work-study", "internship", "intern ", "interns",
-    "trainee", "traineeship",
-    # V.I.E. et assimilés (souvent confondus avec CDI)
+    "trainee", "traineeship", "graduate program",
+    # V.I.E. et assimilés
     "v.i.e", "vie ", "volontariat international",
+    # Junior extrême (souvent = stage déguisé)
+    "premier emploi", "jeune diplômé sans expérience",
+]
+
+# === NOUVEAU: Exclusion des cabinets de recrutement (concurrents) ===
+RECRUITMENT_AGENCY_EXCLUSION = [
+    # Termes génériques cabinet de recrutement
+    "cabinet de recrutement", "cabinet recrutement", "agence de recrutement",
+    "chasseur de têtes", "chasseurs de têtes", "headhunter", "headhunting",
+    "executive search", "talent acquisition agency", "talent acquisition",
+    "rh externalisé", "rh externe", "externalisation rh",
+    # Formulations typiques des cabinets
+    "notre client recherche", "pour le compte de notre client",
+    "pour notre client", "notre client, un", "client final",
+    "mission pour", "nous recrutons pour", "mandat de recrutement",
+    "pour un de nos clients", "l'un de nos clients", "un de nos partenaires",
+    "confidentiel", "client confidentiel", "société confidentielle",
+    # Cabinets connus - France
+    "michael page", "robert half", "hays", "fed legal", "fed juridique",
+    "page personnel", "expectra", "adecco", "manpower", "randstad",
+    "spring professional", "lincoln associates", "laurence simons",
+    "taylor root", "legadvisor", "approach people", "people&baby",
+    "legal staffing", "major hunter", "joblift",
+    "morgan philips", "spencer stuart", "russell reynolds", "egon zehnder",
+    "korn ferry", "boyden", "eric salmon", "odgers berndtson",
+    "heidrick & struggles", "vidal associates", "cadreo",
+    # Cabinets juridiques spécialisés
+    "legal&hr", "legal & hr", "legalhrconsulting", "avoconseil",
+    "lawpic", "juriwork", "juritalents", "legalplace recrutement",
+    # Job boards / Agrégateurs
+    "keljob", "monster", "cadremploi", "apec ", "apec.fr",
+    "indeed", "linkedin talent", "welcometothejungle", "jobteaser",
+    "meteojob", "regionsjob", "hellowork", "lemonde emploi",
+    # Expressions révélatrices
+    "cabinet spécialisé", "acteur du recrutement", "expert en recrutement",
+    "recruteur spécialisé", "recruteur juridique", "consultant recrutement",
+    "consultante recrutement", "chargé de recrutement", "recruiter",
+    "talent manager", "talent partner", "sourceur", "sourcing",
 ]
 
 # Negative / informational phrases that should suppress recruitment labeling when no strong positive phrase
@@ -149,15 +193,20 @@ def classify_legal_post(text: str, *, language: str = "fr", intent_threshold: fl
 
     Confidence: fraction of distinct signal categories triggered (legal, recruit, language, location).
     
-    Note: Posts containing stage/alternance keywords are automatically rejected.
+    Note: Posts containing stage/alternance keywords OR from recruitment agencies are automatically rejected.
     """
     if not text:
         return LegalClassification("autre", 0.0, 0.0, [], False)
     low = _lower(text)
 
-    # EARLY EXIT: Reject stage/alternance posts immediately
+    # EARLY EXIT 1: Reject stage/alternance posts immediately
     for excl_kw in STAGE_ALTERNANCE_EXCLUSION:
         if excl_kw in low:
+            return LegalClassification("autre", 0.0, 0.0, [], False)
+    
+    # EARLY EXIT 2: Reject posts from recruitment agencies (concurrents)
+    for agency_kw in RECRUITMENT_AGENCY_EXCLUSION:
+        if agency_kw in low:
             return LegalClassification("autre", 0.0, 0.0, [], False)
 
     # Language gate
@@ -273,5 +322,6 @@ def classify_legal_post(text: str, *, language: str = "fr", intent_threshold: fl
     return LegalClassification(intent, combined, confidence, matched, location_ok)
 
 __all__ = [
-    "LegalClassification","classify_legal_post","LEGAL_ROLE_KEYWORDS"
+    "LegalClassification","classify_legal_post","LEGAL_ROLE_KEYWORDS",
+    "RECRUITMENT_AGENCY_EXCLUSION","STAGE_ALTERNANCE_EXCLUSION"
 ]

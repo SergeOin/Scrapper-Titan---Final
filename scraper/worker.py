@@ -97,6 +97,8 @@ async def _ensure_authenticated(page: Any, ctx: AppContext, logger: structlog.Bo
     """
     try:
         await page.goto("https://www.linkedin.com/feed/", timeout=ctx.settings.navigation_timeout_ms)
+        # Wait for page to fully load and LinkedIn to initialize session
+        await page.wait_for_timeout(3000)
     except Exception as exc:
         logger.warning("feed_navigation_failed", error=str(exc))
         return
@@ -1098,6 +1100,14 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                                 txt_for_date = await subdesc.inner_text()
                         except Exception:
                             pass
+                    # AMÉLIORATION: Nettoyer le texte de date avant parsing
+                    # LinkedIn format: "6 j •", "1 sem. •", "3 sem. • Modifié •"
+                    if txt_for_date:
+                        # Retirer les séparateurs et mentions parasites
+                        txt_for_date = txt_for_date.replace("•", " ").replace("·", " ")
+                        txt_for_date = txt_for_date.replace("Modifié", "").replace("Modified", "")
+                        txt_for_date = txt_for_date.replace("Edited", "").replace("Édité", "")
+                        txt_for_date = utils.normalize_whitespace(txt_for_date)
                     dt = utils.parse_possible_date(txt_for_date)
                     if dt:
                         published_iso = dt.isoformat()
@@ -1221,14 +1231,18 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                 reject_reason = None
                 try:
                     relaxed = bool(getattr(ctx, "_relaxed_filters", False))
+                    # CRITICAL FILTERS - Always applied even in relaxed mode:
+                    # 1. Stage/alternance - never collect these posts
+                    if keep and utils.is_stage_or_alternance(text_norm):
+                        keep = False; reject_reason = "stage_alternance"
+                    # 2. Recruitment agencies - exclude competitors/intermediaries
+                    if keep and utils.is_from_recruitment_agency(text_norm, author):
+                        keep = False; reject_reason = "recruitment_agency"
                     if not relaxed:
                         # NEW: Filter out posts older than configured max age (default 3 weeks)
                         max_age = getattr(ctx.settings, 'max_post_age_days', 21)
                         if keep and published_iso and utils.is_post_too_old(published_iso, max_age_days=max_age):
                             keep = False; reject_reason = "too_old"
-                        # NEW: Filter out stage/alternance/apprentissage posts
-                        if keep and getattr(ctx.settings, 'filter_exclude_stage_alternance', True) and utils.is_stage_or_alternance(text_norm):
-                            keep = False; reject_reason = "stage_alternance"
                         if ctx.settings.filter_language_strict and language.lower() != (ctx.settings.default_lang or "fr").lower():
                             keep = False; reject_reason = "language"
                         # Domain filter: require at least one legal keyword when enabled
@@ -1259,6 +1273,9 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                         if keep and getattr(ctx.settings, 'filter_france_only', True):
                             if not utils.is_location_france(text_norm, strict=True):
                                 keep = False; reject_reason = reject_reason or "not_fr"
+                        # NEW: Exclude posts from recruitment agencies (competitors)
+                        if keep and utils.is_from_recruitment_agency(text_norm, author):
+                            keep = False; reject_reason = reject_reason or "recruitment_agency"
                 except Exception:
                     pass
                 if keep:

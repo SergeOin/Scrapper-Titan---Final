@@ -639,10 +639,16 @@ def _normalize_sort(sort_by: Optional[str], sort_dir: Optional[str]) -> tuple[st
         "author": "author",
         "company": "company",
         "keyword": "keyword",
+        "metier": "metier",  # Note: metier is computed dynamically, will be sorted post-fetch
     }
     field = allowed.get((sort_by or "").lower(), "collected_at")
     direction = -1 if (sort_dir or "").lower() == "desc" or not sort_dir else (1 if sort_dir.lower() == "asc" else -1)
     return field, direction
+
+
+def _is_virtual_sort_field(field: str) -> bool:
+    """Check if field is computed dynamically and not in database."""
+    return field in ("metier",)
 
 
 def _ensure_post_flags(conn: sqlite3.Connection) -> None:
@@ -997,8 +1003,9 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
                         params.append(f'%"intent": "{intent}"%')
                 if where_clauses:
                     base_q += " WHERE " + " AND ".join(where_clauses)
-                # Order by requested field
-                sqlite_field = f"p.{sort_field}"
+                # Order by requested field (use collected_at as fallback for virtual fields like metier)
+                sql_sort_field = sort_field if not _is_virtual_sort_field(sort_field) else "collected_at"
+                sqlite_field = f"p.{sql_sort_field}"
                 dir_sql = "ASC" if sort_direction == 1 else "DESC"
                 base_q += f" ORDER BY COALESCE(f.is_favorite,0) DESC, {sqlite_field} {dir_sql} LIMIT ? OFFSET ?"
                 params.extend([limit, skip])
@@ -1243,6 +1250,12 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
     except Exception:
         # On any error, do not block results; better to show than break
         pass
+    
+    # Post-fetch sort for virtual fields (e.g., metier)
+    if rows and _is_virtual_sort_field(sort_field):
+        reverse_order = (sort_direction == -1)
+        rows = sorted(rows, key=lambda x: (x.get(sort_field) or "").lower(), reverse=reverse_order)
+    
     return rows
 
 
