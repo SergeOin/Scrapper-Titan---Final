@@ -537,7 +537,7 @@
         // Métier badge display
         const metierBadge = p.metier ? `<span class="metier-badge">${String(p.metier||'').replace(/</g,'&lt;')}</span>` : '<span style="color:#94a3b8;font-size:0.8rem;">—</span>';
         // Keyword as subtitle under author
-        const keywordSub = p.keyword ? `<div class="meta-sub" title="Mot-clé de recherche">🔑 ${String(p.keyword||'').replace(/</g,'&lt;')}</div>` : '';
+        const keywordSub = p.keyword ? `<div class="meta-sub" title="Mot-clé de recherche">${String(p.keyword||'').replace(/</g,'&lt;')}</div>` : '';
         const starActive = Number(p.is_favorite || 0) === 1;
         const starClass = starActive ? 'icon-btn favorite-toggle active' : 'icon-btn favorite-toggle';
         const starTitle = starActive ? 'Retirer des favoris' : 'Marquer en favori';
@@ -787,7 +787,7 @@
     {% for post in posts %}
       <tr data-post-id="{{ post._id }}">
         <td>{% if post.metier %}<span class="metier-badge">{{ post.metier }}</span>{% else %}<span style="color:#94a3b8;font-size:0.8rem;">—</span>{% endif %}</td>
-        <td>{{ post.author }}<div class="meta-sub" title="Mot-clé de recherche">🔑 {{ post.keyword }}</div></td>
+        <td>{{ post.author }}<div class="meta-sub" title="Mot-clé de recherche">{{ post.keyword }}</div></td>
   <td>
     {% set cc = post.company_norm or post.company %}
     {% if cc and (cc|lower) != (post.author|lower) %}{{ cc }}{% else %}—{% endif %}

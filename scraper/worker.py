@@ -57,6 +57,7 @@ from .bootstrap import (
 )
 from . import utils
 from .legal_classifier import classify_legal_post, LEGAL_ROLE_KEYWORDS
+from .legal_filter import is_legal_job_post, FilterConfig
 
 if TYPE_CHECKING:
     from .bootstrap import Settings
@@ -1284,6 +1285,20 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                         # NEW: Exclude promotional/informational content (events, articles, etc.)
                         if keep and utils.is_promotional_content(text_norm):
                             keep = False; reject_reason = reject_reason or "promotional_content"
+                        # LEGAL FILTER: Apply comprehensive legal job post filter with settings-based config
+                        if keep and getattr(ctx.settings, 'filter_legal_posts_only', True):
+                            # Use centralized helper to build FilterConfig from settings
+                            from .bootstrap import build_filter_config, LEGAL_FILTER_TOTAL, LEGAL_FILTER_ACCEPTED, LEGAL_FILTER_REJECTED
+                            filter_config = build_filter_config(ctx.settings)
+                            filter_result = is_legal_job_post(text_norm, published_iso, config=filter_config)
+                            # Update Prometheus metrics
+                            LEGAL_FILTER_TOTAL.inc()
+                            if filter_result.is_valid:
+                                LEGAL_FILTER_ACCEPTED.inc()
+                            else:
+                                LEGAL_FILTER_REJECTED.labels(filter_result.exclusion_reason or "unknown").inc()
+                                keep = False
+                                reject_reason = reject_reason or filter_result.exclusion_reason or "legal_filter_rejected"
                 except Exception:
                     pass
                 if keep:

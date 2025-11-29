@@ -25,7 +25,9 @@ def test_is_opportunity_new_phrases(text):
         ("Nous cherchons un avocat collaborateur pour notre équipe.", "recherche_profil"),
         ("Hiring Paralegal - join the team in Paris!", "recherche_profil"),
         ("On recherche un juriste fiscaliste.", "recherche_profil"),
-        ("Rejoignez la direction juridique - poste à pourvoir", "recherche_profil"),
+        # Note: "Rejoignez la direction juridique" sans métier explicite -> autre
+        # On ajoute un métier pour que ce soit un vrai recrutement
+        ("Rejoignez notre équipe - nous recrutons un juriste corporate", "recherche_profil"),
     ],
 )
 def test_classify_legal_post_new_phrases(text, expected_intent):

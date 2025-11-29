@@ -14,14 +14,34 @@ async def _seed_sqlite_with_minimal_post(ctx):
         return
     conn = sqlite3.connect(path)
     with conn:
-        try:
-            conn.execute("CREATE TABLE IF NOT EXISTS posts (id TEXT PRIMARY KEY, keyword TEXT, author TEXT, company TEXT, text TEXT, published_at TEXT, collected_at TEXT, permalink TEXT, raw_json TEXT, intent TEXT, relevance_score REAL, confidence REAL, keywords_matched TEXT, location_ok INTEGER)")
-        except Exception:
-            pass
-        # upsert one row
+        # Get existing table schema
+        cursor = conn.execute("PRAGMA table_info(posts)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if not columns:
+            # Create minimal table if not exists
+            conn.execute("""CREATE TABLE IF NOT EXISTS posts (
+                id TEXT PRIMARY KEY, keyword TEXT, author TEXT, company TEXT, 
+                text TEXT, published_at TEXT, collected_at TEXT, permalink TEXT, 
+                raw_json TEXT, language TEXT, author_profile TEXT, search_norm TEXT
+            )""")
+            columns = ['id', 'keyword', 'author', 'company', 'text', 'published_at', 
+                      'collected_at', 'permalink', 'raw_json', 'language', 'author_profile', 'search_norm']
+        
+        # Build insert based on available columns
         raw_obj = {"raw": {"sample": True}}
-        conn.execute("INSERT OR REPLACE INTO posts (id, keyword, author, company, text, published_at, collected_at, permalink, raw_json, intent, relevance_score, confidence, keywords_matched, location_ok) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                     ("test1","kw","Auteur","Societe","Texte legal avocat recrutement","2025-10-03T08:00:00Z","2025-10-03T08:01:00Z","https://linkedin.com/feed/update/urn:li:activity:123", json.dumps(raw_obj), "recherche_profil", 0.7, 0.8, "avocat;juriste", 1))
+        base_data = {
+            'id': 'test1', 'keyword': 'kw', 'author': 'Auteur', 'company': 'Societe',
+            'text': 'Texte legal avocat recrutement CDI Paris',
+            'published_at': '2025-10-03T08:00:00Z', 'collected_at': '2025-10-03T08:01:00Z',
+            'permalink': 'https://linkedin.com/feed/update/urn:li:activity:123',
+            'raw_json': json.dumps(raw_obj), 'language': 'fr', 'author_profile': None, 'search_norm': None
+        }
+        # Filter to only columns that exist in table
+        data = {k: v for k, v in base_data.items() if k in columns}
+        cols = ', '.join(data.keys())
+        placeholders = ', '.join(['?' for _ in data])
+        conn.execute(f"INSERT OR REPLACE INTO posts ({cols}) VALUES ({placeholders})", list(data.values()))
 
 async def test_api_posts_include_raw():
     ctx = await get_context()

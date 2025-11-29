@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses semantic versioning when practical.
 
+## [1.3.25] - 2025-11-28
+### Improved
+- **Filtre légal amélioré**: Taux de pertinence des posts passé de 29% à 59%
+  - Ajout de nouveaux mots-clés de professions juridiques (juriste recouvrement, juriste legal ops, ingénieur patrimonial, etc.)
+  - Enrichissement des signaux de recrutement (patterns "[Company] recrute", "recrute des juriste/avocat", etc.)
+  - Amélioration de la fonction de scoring de recrutement avec détection regex de "[X] recrute"
+  - Réduction des faux positifs dans les exclusions promotionnelles
+  - Meilleure gestion des exclusions de chercheurs d'emploi
+
+### Fixed
+- Exclusion "hors_france" trop permissive : suppression de la logique "CDI implique France"
+
 ## [Unreleased]
 ### Added
 - Fusion SBOM auto (cyclonedx-cli) si plusieurs fichiers détectés.

@@ -197,6 +197,21 @@ class Settings(BaseSettings):
     filter_require_author_and_permalink: bool = Field(True, alias="FILTER_REQUIRE_AUTHOR_AND_PERMALINK")
     # Domain filtering: ACTIVÉ - exige au moins un mot-clé juridique dans le post
     filter_legal_domain_only: bool = Field(True, alias="FILTER_LEGAL_DOMAIN_ONLY")
+    # LEGAL FILTER: Filtre complet pour offres d'emploi juridiques (scoring + exclusions)
+    filter_legal_posts_only: bool = Field(True, alias="FILTER_LEGAL_POSTS_ONLY")
+    # Seuils de scoring pour le filtre légal (ajustables)
+    legal_filter_recruitment_threshold: float = Field(0.15, alias="LEGAL_FILTER_RECRUITMENT_THRESHOLD")
+    legal_filter_legal_threshold: float = Field(0.20, alias="LEGAL_FILTER_LEGAL_THRESHOLD")
+    # Exclusions granulaires (toutes activées par défaut)
+    legal_filter_exclude_stage: bool = Field(True, alias="LEGAL_FILTER_EXCLUDE_STAGE")
+    legal_filter_exclude_freelance: bool = Field(True, alias="LEGAL_FILTER_EXCLUDE_FREELANCE")
+    legal_filter_exclude_opentowork: bool = Field(True, alias="LEGAL_FILTER_EXCLUDE_OPENTOWORK")
+    legal_filter_exclude_promo: bool = Field(True, alias="LEGAL_FILTER_EXCLUDE_PROMO")
+    legal_filter_exclude_agencies: bool = Field(True, alias="LEGAL_FILTER_EXCLUDE_AGENCIES")
+    legal_filter_exclude_foreign: bool = Field(True, alias="LEGAL_FILTER_EXCLUDE_FOREIGN")
+    legal_filter_exclude_non_legal: bool = Field(True, alias="LEGAL_FILTER_EXCLUDE_NON_LEGAL")
+    # Log verbose des exclusions (utile pour debug)
+    legal_filter_verbose: bool = Field(True, alias="LEGAL_FILTER_VERBOSE")
     auto_favorite_opportunities: bool = Field(False, alias="AUTO_FAVORITE_OPPORTUNITIES")
     # Batch & resilience settings
     keywords_session_batch_size: int = Field(8, alias="KEYWORDS_SESSION_BATCH_SIZE")
@@ -476,6 +491,168 @@ LEGAL_INTENT_CLASSIFICATIONS_TOTAL = Counter(
 LEGAL_DAILY_CAP_REACHED = Counter(
     "legal_daily_cap_reached_total", "Times the legal daily cap was reached"
 )
+
+# Legal Filter metrics (is_legal_job_post)
+LEGAL_FILTER_TOTAL = Counter(
+    "legal_filter_total", "Total posts processed by legal filter"
+)
+LEGAL_FILTER_ACCEPTED = Counter(
+    "legal_filter_accepted_total", "Posts accepted by legal filter"
+)
+LEGAL_FILTER_REJECTED = Counter(
+    "legal_filter_rejected_total", "Posts rejected by legal filter", labelnames=("reason",)
+)
+LEGAL_FILTER_AVG_SCORE = Gauge(
+    "legal_filter_avg_score", "Average score of accepted posts", labelnames=("score_type",)
+)
+
+
+# ------------------------------------------------------------
+# Helper: Build FilterConfig from Settings
+# ------------------------------------------------------------
+def build_filter_config(settings: Settings) -> "FilterConfig":
+    """Build FilterConfig from bootstrap Settings.
+    
+    Centralizes the creation of FilterConfig to ensure consistency
+    between worker, API, and other components.
+    """
+    from .legal_filter import FilterConfig
+    return FilterConfig(
+        recruitment_threshold=getattr(settings, 'legal_filter_recruitment_threshold', 0.15),
+        legal_threshold=getattr(settings, 'legal_filter_legal_threshold', 0.20),
+        exclude_stage=getattr(settings, 'legal_filter_exclude_stage', True),
+        exclude_freelance=getattr(settings, 'legal_filter_exclude_freelance', True),
+        exclude_opentowork=getattr(settings, 'legal_filter_exclude_opentowork', True),
+        exclude_promo=getattr(settings, 'legal_filter_exclude_promo', True),
+        exclude_agencies=getattr(settings, 'legal_filter_exclude_agencies', True),
+        exclude_foreign=getattr(settings, 'legal_filter_exclude_foreign', True),
+        exclude_non_legal=getattr(settings, 'legal_filter_exclude_non_legal', True),
+        verbose=getattr(settings, 'legal_filter_verbose', True),
+    )
+
+
+# ------------------------------------------------------------
+# Session Filter Statistics
+# ------------------------------------------------------------
+@dataclass
+class FilterSessionStats:
+    """Track filter statistics for a scraping session."""
+    total_processed: int = 0
+    total_accepted: int = 0
+    total_rejected: int = 0
+    # Rejection reasons
+    rejected_stage_alternance: int = 0
+    rejected_freelance: int = 0
+    rejected_opentowork: int = 0
+    rejected_promo: int = 0
+    rejected_agencies: int = 0
+    rejected_foreign: int = 0
+    rejected_non_legal: int = 0
+    rejected_low_recruitment_score: int = 0
+    rejected_low_legal_score: int = 0
+    rejected_old_post: int = 0
+    rejected_empty: int = 0
+    # Score aggregates
+    sum_recruitment_scores: float = 0.0
+    sum_legal_scores: float = 0.0
+    
+    def record_result(self, filter_result: "FilterResult") -> None:
+        """Record a filter result and update statistics."""
+        self.total_processed += 1
+        if filter_result.is_valid:
+            self.total_accepted += 1
+            self.sum_recruitment_scores += filter_result.recruitment_score
+            self.sum_legal_scores += filter_result.legal_score
+        else:
+            self.total_rejected += 1
+            reason = filter_result.exclusion_reason
+            if reason == "stage_alternance":
+                self.rejected_stage_alternance += 1
+            elif reason == "freelance_mission":
+                self.rejected_freelance += 1
+            elif reason == "chercheur_emploi":
+                self.rejected_opentowork += 1
+            elif reason == "contenu_promotionnel":
+                self.rejected_promo += 1
+            elif reason == "cabinet_recrutement":
+                self.rejected_agencies += 1
+            elif reason == "hors_france":
+                self.rejected_foreign += 1
+            elif reason == "metier_non_juridique":
+                self.rejected_non_legal += 1
+            elif reason == "score_insuffisant_recrutement":
+                self.rejected_low_recruitment_score += 1
+            elif reason == "score_insuffisant_juridique":
+                self.rejected_low_legal_score += 1
+            elif reason == "post_trop_ancien":
+                self.rejected_old_post += 1
+            elif reason == "texte_vide":
+                self.rejected_empty += 1
+    
+    @property
+    def acceptance_rate(self) -> float:
+        """Return acceptance rate (0-100%)."""
+        if self.total_processed == 0:
+            return 0.0
+        return (self.total_accepted / self.total_processed) * 100
+    
+    @property
+    def avg_recruitment_score(self) -> float:
+        """Average recruitment score of accepted posts."""
+        if self.total_accepted == 0:
+            return 0.0
+        return self.sum_recruitment_scores / self.total_accepted
+    
+    @property
+    def avg_legal_score(self) -> float:
+        """Average legal score of accepted posts."""
+        if self.total_accepted == 0:
+            return 0.0
+        return self.sum_legal_scores / self.total_accepted
+    
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON/API responses."""
+        return {
+            "total_processed": self.total_processed,
+            "total_accepted": self.total_accepted,
+            "total_rejected": self.total_rejected,
+            "acceptance_rate_percent": round(self.acceptance_rate, 1),
+            "avg_recruitment_score": round(self.avg_recruitment_score, 3),
+            "avg_legal_score": round(self.avg_legal_score, 3),
+            "rejections": {
+                "stage_alternance": self.rejected_stage_alternance,
+                "freelance": self.rejected_freelance,
+                "opentowork": self.rejected_opentowork,
+                "promotional": self.rejected_promo,
+                "agencies": self.rejected_agencies,
+                "foreign": self.rejected_foreign,
+                "non_legal": self.rejected_non_legal,
+                "low_recruitment_score": self.rejected_low_recruitment_score,
+                "low_legal_score": self.rejected_low_legal_score,
+                "old_post": self.rejected_old_post,
+                "empty": self.rejected_empty,
+            }
+        }
+    
+    def summary(self) -> str:
+        """Return a human-readable summary."""
+        return (
+            f"📊 Filtre: {self.total_accepted}/{self.total_processed} acceptés "
+            f"({self.acceptance_rate:.1f}%)\n"
+            f"   Scores moyens: recrutement={self.avg_recruitment_score:.2f}, "
+            f"juridique={self.avg_legal_score:.2f}\n"
+            f"   Rejets: stage={self.rejected_stage_alternance}, "
+            f"freelance={self.rejected_freelance}, "
+            f"opentowork={self.rejected_opentowork}, "
+            f"promo={self.rejected_promo}, "
+            f"agences={self.rejected_agencies}, "
+            f"étranger={self.rejected_foreign}, "
+            f"non-juridique={self.rejected_non_legal}"
+        )
+
+
+if TYPE_CHECKING:
+    from .legal_filter import FilterConfig, FilterResult
 
 
 # ------------------------------------------------------------
