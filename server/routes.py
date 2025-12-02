@@ -121,7 +121,14 @@ def _fmt_date(value: Optional[str]):  # value expected ISO string
     except Exception:
         return value
 
+def _remove_key_emoji(value: Optional[str]) -> str:
+    """Remove the key emoji (🔑) from text content."""
+    if not value:
+        return ""
+    return value.replace("🔑", "").strip()
+
 templates.env.filters['fmt_date'] = _fmt_date
+templates.env.filters['remove_key_emoji'] = _remove_key_emoji
 
 # ------------------------------------------------------------
 # Store for blocked LinkedIn accounts (Mongo if available, else SQLite)
@@ -641,7 +648,8 @@ def _normalize_sort(sort_by: Optional[str], sort_dir: Optional[str]) -> tuple[st
         "keyword": "keyword",
         "metier": "metier",  # Note: metier is computed dynamically, will be sorted post-fetch
     }
-    field = allowed.get((sort_by or "").lower(), "collected_at")
+    # Default to published_at for date sorting
+    field = allowed.get((sort_by or "").lower(), "published_at")
     direction = -1 if (sort_dir or "").lower() == "desc" or not sort_dir else (1 if sort_dir.lower() == "asc" else -1)
     return field, direction
 
@@ -1406,7 +1414,7 @@ async def dashboard(
             "intent": intent or "",
             "autonomous_interval": ctx.settings.autonomous_worker_interval_seconds,
             "login_initial_wait_seconds": ctx.settings.login_initial_wait_seconds,
-            "sort_by": (sort_by or "collected_at"),
+            "sort_by": (sort_by or "published_at"),
             "sort_dir": (sort_dir or "desc"),
             "mock_mode": ctx.settings.playwright_mock_mode,
             "trash_count": trash_count,
@@ -1454,7 +1462,7 @@ async def dashboard_demo(
             "intent": intent or "",
             "autonomous_interval": ctx.settings.autonomous_worker_interval_seconds,
             "login_initial_wait_seconds": ctx.settings.login_initial_wait_seconds,
-            "sort_by": (sort_by or "collected_at"),
+            "sort_by": (sort_by or "published_at"),
             "sort_dir": (sort_dir or "desc"),
             "mock_mode": ctx.settings.playwright_mock_mode,
             "trash_count": trash_count,

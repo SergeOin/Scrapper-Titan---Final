@@ -76,6 +76,12 @@
     nav.pagination a.active { background:#2563eb; color:#fff; border-color:#2563eb; }
     nav.pagination a:hover { background:#1d4ed8; color:#fff; }
     .wrap { white-space:pre-wrap; word-break:break-word; }
+    /* Expand/collapse content buttons */
+    .content-cell { position: relative; }
+    .content-text { white-space: pre-wrap; word-break: break-word; }
+    .content-truncated { max-height: none; }
+    .expand-btn { background: none; border: none; color: #2563eb; cursor: pointer; font-size: 0.75rem; padding: 2px 6px; margin-left: 4px; border-radius: 4px; }
+    .expand-btn:hover { background: #e0ecff; text-decoration: underline; }
     /* Hide legacy pagination for infinite scroll UX */
     nav.pagination { display:none !important; }
   /* Infinite loader */
@@ -226,6 +232,28 @@
         return `<span title="${pubDate.toLocaleString('fr-FR')}">${relativeStr} <small style="color:#888">(${absDate})</small></span>`;
       } catch (_) {
         return dateVal || '—';
+      }
+    }
+
+    /**
+     * Toggle content expansion (Voir plus / Voir moins)
+     */
+    function toggleContent(contentId) {
+      const span = document.getElementById(contentId);
+      if (!span) return;
+      const btn = document.querySelector(`button[data-target="${contentId}"]`);
+      const isExpanded = span.getAttribute('data-expanded') === 'true';
+      
+      if (isExpanded) {
+        // Collapse: show short version
+        span.innerHTML = span.getAttribute('data-short');
+        span.setAttribute('data-expanded', 'false');
+        if (btn) btn.textContent = 'Voir plus';
+      } else {
+        // Expand: show full version
+        span.innerHTML = span.getAttribute('data-full');
+        span.setAttribute('data-expanded', 'true');
+        if (btn) btn.textContent = 'Voir moins';
       }
     }
 
@@ -513,7 +541,7 @@
         page: 1,
         limit: 30,
         q: new URL(window.location.href).searchParams.get('q') || '',
-        sort_by: '{{ sort_by }}' || 'collected_at',
+        sort_by: '{{ sort_by }}' || 'published_at',
         sort_dir: '{{ sort_dir }}' || 'desc',
         loading: false,
         done: false,
@@ -528,9 +556,23 @@
         }
       }
 
+      // Remove key emoji (🔑) from text content
+      function removeKeyEmoji(text) {
+        return (text || '').replace(/🔑/g, '').trim();
+      }
+
+      // Generate unique ID for content expansion
+      let _contentIdCounter = 0;
+      function _genContentId() {
+        return 'content-' + (++_contentIdCounter);
+      }
+
       function _rowHTML(p){
-        const txt = (p.text||'');
-        const short = txt.length>200? txt.substring(0,200)+'…' : txt;
+        // Remove key emoji from text
+        const txt = removeKeyEmoji(p.text||'');
+        const needsExpand = txt.length > 200;
+        const short = needsExpand ? txt.substring(0,200) + '…' : txt;
+        const contentId = _genContentId();
         const dateFmt = formatPublicationDate(p.published_at, p.collected_at);
         const searchFallback = `https://www.linkedin.com/search/results/content/?keywords=${safeEncodeURI((txt||p.author||'').slice(0,80))}`;
         const permalink = p.permalink ? `<a href="${p.permalink}" target="_blank">ouvrir</a>` : `<a href="${searchFallback}" target="_blank" title="Lien direct introuvable - recherche approximative">rechercher</a>`;
@@ -542,11 +584,17 @@
         const starClass = starActive ? 'icon-btn favorite-toggle active' : 'icon-btn favorite-toggle';
         const starTitle = starActive ? 'Retirer des favoris' : 'Marquer en favori';
         const companyCell = (p.company&&String(p.company).toLowerCase()!==String(p.author||'').toLowerCase())?p.company:'—';
+        // Content cell with expand/collapse functionality
+        const escapedShort = short.replace(/</g,'&lt;');
+        const escapedFull = txt.replace(/</g,'&lt;');
+        const contentCell = needsExpand
+          ? `<td class="content-cell wrap"><span id="${contentId}" class="content-text" data-full="${escapedFull.replace(/"/g,'&quot;')}" data-short="${escapedShort.replace(/"/g,'&quot;')}" data-expanded="false">${escapedShort}</span><button type="button" class="expand-btn" data-target="${contentId}" onclick="toggleContent('${contentId}')">Voir plus</button></td>`
+          : `<td class="content-cell wrap"><span class="content-text">${escapedShort}</span></td>`;
         return `<tr data-post-id="${p._id}">
           <td>${metierBadge}</td>
           <td>${(p.author||'').replace(/\b(\w+\s+\w+)\s+\1\b/gi,'$1')}${keywordSub}</td>
           <td>${companyCell}</td>
-          <td class="wrap">${short.replace(/</g,'&lt;')}</td>
+          ${contentCell}
           <td>${dateFmt}</td>
           <td>${permalink}</td>
           <td class="actions-cell">
@@ -785,6 +833,8 @@
     </thead>
     <tbody>
     {% for post in posts %}
+      {% set clean_text = (post.text or '')|remove_key_emoji %}
+      {% set content_id = 'jinja-content-' ~ loop.index %}
       <tr data-post-id="{{ post._id }}">
         <td>{% if post.metier %}<span class="metier-badge">{{ post.metier }}</span>{% else %}<span style="color:#94a3b8;font-size:0.8rem;">—</span>{% endif %}</td>
         <td>{{ post.author }}<div class="meta-sub" title="Mot-clé de recherche">{{ post.keyword }}</div></td>
@@ -792,8 +842,13 @@
     {% set cc = post.company_norm or post.company %}
     {% if cc and (cc|lower) != (post.author|lower) %}{{ cc }}{% else %}—{% endif %}
   </td>
-        <td class="wrap">
-          {{ post.text[:200] }}{% if post.text|length > 200 %}…{% endif %}
+        <td class="content-cell wrap">
+          {% if clean_text|length > 200 %}
+            <span id="{{ content_id }}" class="content-text" data-full="{{ clean_text|e }}" data-short="{{ clean_text[:200]|e }}…" data-expanded="false">{{ clean_text[:200] }}…</span>
+            <button type="button" class="expand-btn" data-target="{{ content_id }}" onclick="toggleContent('{{ content_id }}')">Voir plus</button>
+          {% else %}
+            <span class="content-text">{{ clean_text }}</span>
+          {% endif %}
         </td>
   <td>{{ (post.published_at or post.collected_at)|fmt_date }}</td>
           <td>
@@ -801,7 +856,7 @@
               <a href="{{ post.permalink }}" target="_blank">ouvrir</a>
             {% else %}
               {# Fallback: LinkedIn search by truncated text/author to let user click anyway #}
-              {% set seed = (post.text or post.author or '')[:80] %}
+              {% set seed = (clean_text or post.author or '')[:80] %}
               <a href="https://www.linkedin.com/search/results/content/?keywords={{ seed | urlencode }}" target="_blank" title="Lien direct introuvable - recherche approximative">rechercher</a>
             {% endif %}
           </td>

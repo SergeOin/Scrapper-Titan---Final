@@ -97,6 +97,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
 
     if want_inprocess:
         if interval > 0:
+            # Lock to prevent concurrent process_job executions (avoids Playwright connection issues)
+            scrape_lock = asyncio.Lock()
+            
             async def _periodic():
                 logger = ctx.logger.bind(component="inprocess_worker")
                 logger.info("inprocess_autonomous_started", interval=interval, mode=("no_redis" if ctx.redis is None else "env_opt_in"))
@@ -110,11 +113,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
                 while True:
                     try:
                         if ctx.settings.scraping_enabled:
-                            from scraper.worker import process_job  # local import to avoid cycles
-                            # Enable relaxed mode for autonomous worker (bypass strict legal filters for testing)
-                            setattr(ctx, "_relaxed_filters", True)
-                            await process_job(ctx.settings.keywords, ctx)
-                            logger.info("inprocess_cycle_complete")
+                            # Acquire lock to ensure only one scraping job runs at a time
+                            async with scrape_lock:
+                                from scraper.worker import process_job  # local import to avoid cycles
+                                # Enable relaxed mode for autonomous worker (bypass strict legal filters for testing)
+                                setattr(ctx, "_relaxed_filters", True)
+                                await process_job(ctx.settings.keywords, ctx)
+                                logger.info("inprocess_cycle_complete")
                         else:
                             logger.debug("scraping_disabled_skip")
                         # sleep is inside try so cancellation during sleep is handled below
@@ -137,11 +142,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
             async def _kickoff_once():
                 try:
                     if ctx.settings.scraping_enabled:
-                        from scraper.worker import process_job  # local import
-                        # Enable relaxed mode for autonomous worker (bypass strict legal filters for testing)
-                        setattr(ctx, "_relaxed_filters", True)
-                        await process_job(ctx.settings.keywords, ctx)
-                        ctx.logger.info("inprocess_kickoff_complete")
+                        # Acquire lock to ensure only one scraping job runs at a time
+                        async with scrape_lock:
+                            from scraper.worker import process_job  # local import
+                            # Enable relaxed mode for autonomous worker (bypass strict legal filters for testing)
+                            setattr(ctx, "_relaxed_filters", True)
+                            await process_job(ctx.settings.keywords, ctx)
+                            ctx.logger.info("inprocess_kickoff_complete")
                 except asyncio.CancelledError:
                     # Swallow cancellation during shutdown
                     ctx.logger.info("inprocess_kickoff_cancelled")

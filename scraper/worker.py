@@ -1232,18 +1232,28 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                 reject_reason = None
                 try:
                     relaxed = bool(getattr(ctx, "_relaxed_filters", False))
-                    # CRITICAL FILTERS - Always applied even in relaxed mode:
-                    # 1. Stage/alternance - never collect these posts
+                    
+                    # === FILTRES CRITIQUES (toujours appliqués, même en mode relaxé) ===
+                    
+                    # 1. FILTRE DATE - PRIORITÉ HAUTE (rejeter les posts > 3 semaines)
+                    # Appliqué en premier car rapide et élimine beaucoup de posts
+                    max_age = getattr(ctx.settings, 'max_post_age_days', 21)
+                    if keep and utils.is_post_too_old(published_iso, max_age_days=max_age):
+                        keep = False
+                        reject_reason = "too_old"
+                    
+                    # 2. FILTRE STAGE/ALTERNANCE - PRIORITÉ HAUTE (jamais collecter)
                     if keep and utils.is_stage_or_alternance(text_norm):
-                        keep = False; reject_reason = "stage_alternance"
-                    # 2. Recruitment agencies - exclude competitors/intermediaries
+                        keep = False
+                        reject_reason = "stage_alternance"
+                    
+                    # 3. FILTRE CABINETS RECRUTEMENT - PRIORITÉ HAUTE (concurrents)
                     if keep and utils.is_from_recruitment_agency(text_norm, author):
-                        keep = False; reject_reason = "recruitment_agency"
+                        keep = False
+                        reject_reason = "recruitment_agency"
+                    
+                    # === FILTRES SECONDAIRES (sautés en mode relaxé) ===
                     if not relaxed:
-                        # NEW: Filter out posts older than configured max age (default 3 weeks)
-                        max_age = getattr(ctx.settings, 'max_post_age_days', 21)
-                        if keep and published_iso and utils.is_post_too_old(published_iso, max_age_days=max_age):
-                            keep = False; reject_reason = "too_old"
                         if ctx.settings.filter_language_strict and language.lower() != (ctx.settings.default_lang or "fr").lower():
                             keep = False; reject_reason = "language"
                         # Domain filter: require SPECIFIC legal role keywords (not generic terms)

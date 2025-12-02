@@ -179,20 +179,22 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
         except Exception:
             return False
     _headless = _login_headless()
+    
+    # Extract settings values BEFORE entering worker thread to avoid thread-safety issues
+    _login_timeout_ms = ctx.settings.playwright_login_timeout_ms
+    _captcha_max_wait_ms = ctx.settings.captcha_max_wait_ms
+    _storage_state_path = ctx.settings.storage_state
+    _session_store_path = ctx.settings.session_store_path
+    
     # On Windows, prefer sync Playwright executed in a worker thread to avoid asyncio subprocess limitations
     if sys.platform.startswith("win") and sync_playwright is not None:
         def _sync_login_impl() -> tuple[bool, dict[str, Any]]:
             try:
-                # Re-assert Windows Proactor policy in this worker thread (needed for asyncio subprocess)
-                try:
-                    _asyncio.set_event_loop_policy(_asyncio.WindowsProactorEventLoopPolicy())
-                except Exception:
-                    pass
                 with sync_playwright() as spw:
                     browser = spw.chromium.launch(headless=_headless)
                     page = browser.new_page()
                     try:
-                        page.goto("https://www.linkedin.com/login", timeout=ctx.settings.playwright_login_timeout_ms)
+                        page.goto("https://www.linkedin.com/login", timeout=_login_timeout_ms)
                         page.fill("input#username", email)
                         page.fill("input#password", password)
                         page.click("button[type=submit]")
@@ -206,7 +208,7 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                         total_wait = 0
                         step = 2000
                         has_li_at = False
-                        while total_wait < ctx.settings.captcha_max_wait_ms:
+                        while total_wait < _captcha_max_wait_ms:
                             try:
                                 cookies = page.context.cookies()
                                 has_li_at = any(c.get("name") == "li_at" for c in cookies)
@@ -219,8 +221,12 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                             page.wait_for_timeout(step)
                             total_wait += step
                         if has_li_at or page.url.startswith("https://www.linkedin.com/feed"):
-                            page.context.storage_state(path=ctx.settings.storage_state)
-                            _save_session_store(ctx, {"source": "playwright_sync", "has_li_at": has_li_at})
+                            page.context.storage_state(path=_storage_state_path)
+                            # Save session store using extracted path
+                            try:
+                                Path(_session_store_path).write_text(json.dumps({"source": "playwright_sync", "has_li_at": has_li_at}, ensure_ascii=False, indent=2), encoding="utf-8")
+                            except Exception:
+                                pass
                             browser.close()
                             return True, {"has_li_at": has_li_at}
                         browser.close()
@@ -240,55 +246,55 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=_headless)  # login visible by default unless overridden
             page = await browser.new_page()
-        try:
-            await page.goto("https://www.linkedin.com/login", timeout=ctx.settings.playwright_login_timeout_ms)
-            await page.fill("input#username", email)
-            await page.fill("input#password", password)
-            await page.click("button[type=submit]")
-            # MFA handling (best-effort if code provided)
-            if mfa_code:
-                try:
-                    await page.wait_for_selector("input[name=pin]", timeout=20_000)
-                    await page.fill("input[name=pin]", mfa_code)
-                    await page.click("button[type=submit]")
-                except Exception:
-                    pass
-            # Wait for feed or presence of li_at cookie, with extended wait for captcha manual solving
-            total_wait = 0
-            step = 2000
-            has_li_at = False
-            while total_wait < ctx.settings.captcha_max_wait_ms:
-                try:
-                    # check cookies
-                    cookies = await page.context.cookies()
-                    has_li_at = any(c.get("name") == "li_at" for c in cookies)
-                    if has_li_at:
-                        break
-                    if page.url.startswith("https://www.linkedin.com/feed"):
-                        break
-                except Exception:
-                    pass
-                await page.wait_for_timeout(step)
-                total_wait += step
-            # success if li_at present
-            if has_li_at:
-                await page.context.storage_state(path=ctx.settings.storage_state)
-                _save_session_store(ctx, {"source": "playwright", "has_li_at": True})
+            try:
+                await page.goto("https://www.linkedin.com/login", timeout=ctx.settings.playwright_login_timeout_ms)
+                await page.fill("input#username", email)
+                await page.fill("input#password", password)
+                await page.click("button[type=submit]")
+                # MFA handling (best-effort if code provided)
+                if mfa_code:
+                    try:
+                        await page.wait_for_selector("input[name=pin]", timeout=20_000)
+                        await page.fill("input[name=pin]", mfa_code)
+                        await page.click("button[type=submit]")
+                    except Exception:
+                        pass
+                # Wait for feed or presence of li_at cookie, with extended wait for captcha manual solving
+                total_wait = 0
+                step = 2000
+                has_li_at = False
+                while total_wait < ctx.settings.captcha_max_wait_ms:
+                    try:
+                        # check cookies
+                        cookies = await page.context.cookies()
+                        has_li_at = any(c.get("name") == "li_at" for c in cookies)
+                        if has_li_at:
+                            break
+                        if page.url.startswith("https://www.linkedin.com/feed"):
+                            break
+                    except Exception:
+                        pass
+                    await page.wait_for_timeout(step)
+                    total_wait += step
+                # success if li_at present
+                if has_li_at:
+                    await page.context.storage_state(path=ctx.settings.storage_state)
+                    _save_session_store(ctx, {"source": "playwright", "has_li_at": True})
+                    await browser.close()
+                    return True, {"has_li_at": True}
+                # Fallback: if on feed even if li_at not inspected
+                if page.url.startswith("https://www.linkedin.com/feed"):
+                    await page.context.storage_state(path=ctx.settings.storage_state)
+                    _save_session_store(ctx, {"source": "playwright", "on_feed": True})
+                    await browser.close()
+                    return True, {"on_feed": True}
                 await browser.close()
-                return True, {"has_li_at": True}
-            # Fallback: if on feed even if li_at not inspected
-            if page.url.startswith("https://www.linkedin.com/feed"):
-                await page.context.storage_state(path=ctx.settings.storage_state)
-                _save_session_store(ctx, {"source": "playwright", "on_feed": True})
-                await browser.close()
-                return True, {"on_feed": True}
-            await browser.close()
-            return False, {"error": "timeout or captcha/mfa not completed"}
-        except Exception as e:
-            with contextlib.suppress(Exception):  # type: ignore
-                await browser.close()
-            msg = str(e) or e.__class__.__name__
-            return False, {"error": msg}
+                return False, {"error": "timeout or captcha/mfa not completed"}
+            except Exception as e:
+                with contextlib.suppress(Exception):  # type: ignore
+                    await browser.close()
+                msg = str(e) or e.__class__.__name__
+                return False, {"error": msg}
     except NotImplementedError as e:
         # Typical on Windows if ProactorEventLoop is active. Fallback to sync Playwright in a worker thread.
         if sync_playwright is None:

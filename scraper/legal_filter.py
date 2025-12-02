@@ -64,56 +64,96 @@ LEGAL_STEMS = ["avocat", "juriste", "notaire", "paralegal", "counsel", "legal", 
 # RECRUITMENT SIGNALS (Score >= 0.15 required)
 # =============================================================================
 RECRUITMENT_SIGNALS = [
-    # Explicit recruitment phrases (demanded by client)
-    "je recrute", "nous recrutons", "on recrute",
-    "je recherche", "nous recherchons", "on recherche",
-    "cdi", "cdd", "opportunite", "poste a pourvoir",
-    "hiring", "we are hiring", "we're hiring", "we re hiring",
-    "rejoindre notre equipe", "join our team", "join the team",
-    # Additional recruitment indicators
-    "offre emploi", "offre d emploi", "recrutement",
-    "poste ouvert", "creation de poste", "temps plein", "full time",
-    "postulez", "envoyez cv", "candidature",
+    # === SIGNAUX FORTS DE RECRUTEMENT ACTIF (entreprise qui recrute) ===
+    # Formulations entreprise/employeur explicites
+    "nous recrutons", "on recrute", "notre equipe recrute",
+    "nous recherchons", "on recherche", "notre cabinet recherche",
+    "notre direction juridique recherche", "notre etude recherche",
+    # Postes à pourvoir (signal très fort)
+    "poste a pourvoir", "poste ouvert", "poste disponible",
+    "cdi a pourvoir", "cdd a pourvoir", "opportunite a saisir",
+    "creation de poste", "nouveau poste", "ouverture de poste",
+    # Appels à candidature explicites
+    "postulez", "candidatez", "envoyez cv", "envoyez votre cv",
+    "candidature a", "pour postuler", "comment postuler",
+    "adressez votre candidature", "merci d envoyer",
+    # Descriptions de poste (signaux moyens)
     "profil recherche", "missions principales", "rattache a",
-    "experience requise", "vous justifiez",
-    # Legal-specific recruitment
-    "cabinet recrute", "direction juridique recrute",
-    "equipe juridique recrute", "etude notariale recrute",
+    "experience requise", "vous justifiez", "vous disposez",
+    "nous offrons", "nous proposons", "package attractif",
+    "remuneration attractive", "selon profil",
+    # Termes contractuels (contexte emploi)
+    "cdi", "cdd", "temps plein", "full time", "temps complet",
+    # Anglais entreprise
+    "we are hiring", "we're hiring", "we re hiring",
+    "is hiring", "now hiring", "currently hiring",
+    "looking for", "is looking for", "we are looking for",
+    "join our team", "join the team",
+    
+    # === SIGNAUX SPÉCIFIQUES JURIDIQUE ===
+    "cabinet recrute", "cabinet recherche", "cabinet avocat recrute",
+    "direction juridique recrute", "equipe juridique recrute",
+    "etude notariale recrute", "etude recrute",
     "renforcer equipe juridique", "integrer equipe juridique",
-    # Variations with legal terms (high priority)
-    "recrute un juriste", "recrute une juriste", "recrute un e juriste",
-    "recrute un avocat", "recrute une avocate", "recrute un e avocat",
-    "recrute 2 avocat", "recrute 3 avocat", "recrute plusieurs avocat",
-    "recrute des juriste", "recrute des avocat",  # plural variations
-    "recherche un juriste", "recherche une juriste", "recherche juriste",
-    "recherche un avocat", "recherche une avocate", "recherche avocat",
-    "recherche son sa", "recherche son sa futur", "recherche son sa prochain",
-    # Generic strong recruitment patterns
-    "zorin recrute", "data4 recrute", "comar recrute",  # company names + recrute
-    "recrute !", "recrute!", "recrute :", "recrute:",  # emphatic patterns
-    "se renforcer", "pour se renforcer",  # hiring to strengthen team
-    # Job board / aggregator patterns
-    "offre du jour", "offre de recrutement", "recap jobs",
+    # Variations avec termes juridiques
+    "recrute un juriste", "recrute une juriste",
+    "recrute un avocat", "recrute une avocate",
+    "recherche un juriste", "recherche une juriste",
+    "recherche un avocat", "recherche une avocate",
+    "recherche son futur juriste", "recherche sa future juriste",
+    "recherche son futur avocat", "recherche sa future avocate",
+    
+    # === PATTERNS EMPHASE (souvent utilisés par recruteurs) ===
+    "recrute !", "recrute!", "urgent", "asap",
+    "offre du jour", "offre de recrutement",
     "ca recrute", "ca recrute par ici",
-    # Notarial recruitment
-    "etude recrute", "notaire recrute", "etude notariale recherche",
-    # International/bilingual patterns
-    "head of legal", "legal counsel", "legal manager",
-    "looking for", "is hiring", "is looking for",
+    
+    # === À NOTER: "je recrute" et "je recherche" sont retirés ===
+    # Car ils peuvent être utilisés par des candidats ou chasseurs de têtes
 ]
 
 # =============================================================================
 # EXCLUSION LISTS - Any match triggers immediate rejection
 # =============================================================================
 
-# Stage, Alternance, Apprentissage
+# Stage, Alternance, Apprentissage - LISTE EXHAUSTIVE
 EXCLUSION_STAGE_ALTERNANCE = [
+    # Stage (toutes variantes)
     "stage", "stagiaire", "stages", "stagiaires",
+    "stage juridique", "stage avocat", "stage notaire",
+    "offre de stage", "stage pfe", "stage fin d'etudes",
+    "stage de fin", "stage m1", "stage m2", "stage l3",
+    "stage 6 mois", "stage 3 mois", "stage 4 mois", "stage 2 mois",
+    "recherche stage", "propose un stage", "proposons un stage",
+    "accueillir un stagiaire", "accueillir une stagiaire",
+    "recrute un stagiaire", "recrute une stagiaire",
+    "recrutons un stagiaire", "recrutons une stagiaire",
+    "stagiaire juridique", "stagiaire avocat", "stagiaire notaire",
+    "eleve avocat", "eleve-avocat",
+    # Alternance (toutes variantes)
     "alternance", "alternant", "alternante", "alternants",
+    "contrat alternance", "en alternance", "poste alternance",
+    "poste en alternance", "offre alternance", "offre d alternance",
+    "recrute en alternance", "recrutons en alternance",
+    "recherche alternance", "cherche alternance",
+    "profil alternant", "profil alternance",
+    "contrat en alternance", "formation en alternance",
+    "master en alternance", "licence en alternance",
+    "juriste alternant", "juriste alternance",
+    # Apprentissage (variantes)
     "apprentissage", "apprenti", "apprentie", "apprentis",
+    "contrat d apprentissage", "contrat apprentissage",
+    "recrute un apprenti", "recrute une apprentie",
+    "recherche apprenti", "offre apprentissage",
+    # Contrat pro
     "contrat pro", "contrat de professionnalisation",
-    "internship", "intern ", "trainee", "work-study", "work study",
+    # Termes anglais
+    "internship", "intern ", "interns", "trainee", "work-study", "work study",
+    "working student", "student job", "graduate program",
+    # V.I.E.
     "vie ", "v.i.e", "volontariat international",
+    # Patterns hashtag
+    "#stage", "#alternance", "#stagiaire", "#alternant",
 ]
 
 # Freelance, missions, consultants externes
@@ -145,12 +185,58 @@ EXCLUSION_NON_FRANCE = [
 # Job seekers (#opentowork) - terms indicating the AUTHOR is job seeking, not recruiting
 EXCLUSION_JOBSEEKER = [
     "opentowork", "open to work", "#opentowork",
-    # Only exclude clear job-seeking patterns, not generic "recherche"
+    # Clear job-seeking patterns (author looking for work, not recruiting)
     "recherche emploi", "recherche poste", "recherche un poste",
     "a l ecoute du marche", "a l'ecoute du marche",
     "ouvert aux opportunites", "ouverte aux opportunites",
+    "ouvert a de nouvelles opportunites", "ouverte a de nouvelles opportunites",
     "cherche poste", "cherche emploi", "cherche un poste",
     "cherche un premier poste", "premier emploi",
+    "en recherche active", "en recherche d emploi",
+    "disponible immediatement", "disponible des maintenant",
+    "actuellement en recherche", "je suis en recherche",
+    "je suis a la recherche", "je suis a l ecoute",
+    "je me permets de", "je vous contacte",
+    "mon profil", "mon parcours", "mon cv",
+    "n hesitez pas a me contacter", "contactez moi",
+    "si vous recrutez", "si vous cherchez",
+    # First person job seeking
+    "je recherche un poste", "je recherche un emploi",
+    "je cherche un poste", "je cherche un emploi",
+    "je suis juriste", "je suis avocat", "je suis avocate",
+    "diplome de", "diplomee de",
+    "jeune diplome", "jeune diplomee",
+    "recherche premiere experience", "recherche 1ere experience",
+]
+
+# Recruitment already completed - NOT active hiring (announcement of past hire)
+EXCLUSION_RECRUITMENT_DONE = [
+    # Completed recruitment announcements
+    "a rejoint", "a rejoint notre", "a rejoint l equipe",
+    "vient de rejoindre", "vient d integrer",
+    "nous avons recrute", "nous avons embauche",
+    "nous sommes heureux d accueillir", "nous sommes fiers d accueillir",
+    "bienvenue a", "bienvenue dans l equipe", "bienvenue dans notre",
+    "welcome", "welcome to the team", "welcome on board",
+    "nouveau collaborateur", "nouvelle collaboratrice",
+    "nouvelle recrue", "notre nouveau", "notre nouvelle",
+    "a pris ses fonctions", "a pris son poste",
+    "vient de prendre ses fonctions",
+    "vient d etre nomme", "vient d etre nommee",
+    "a ete nomme", "a ete nommee", "est nomme", "est nommee",
+    "a integre", "vient d integrer", "integration reussie",
+    "nous felicitons", "felicitations a",
+    "est arrive", "est arrivee", "vient d arriver",
+    "renforce notre equipe",
+    # NOTE: "rejoindre notre equipe" retiré car utilisé dans les offres actives
+    # "pour rejoindre notre équipe" est un signal de recrutement actif
+    "bonne arrivee", "heureux de compter",
+    "accueillons", "nous accueillons",
+    # Promotions/Internal moves (not external hiring)
+    "promotion", "promu", "promue",
+    "evolution interne", "mobilite interne",
+    "nouvelle fonction", "nouvelles fonctions",
+    "prend la direction", "prend la tete",
 ]
 
 # Promotional content - Only exclude clear non-recruitment promotional content
@@ -163,6 +249,23 @@ EXCLUSION_PROMOTIONAL = [
     "inscrivez-vous", "reservez votre place", "places limitees",
     "lien en bio", "lien dans les commentaires",
     "replay", "rediffusion",
+]
+
+# Sponsored/Promotional content markers
+EXCLUSION_SPONSORED = [
+    "sponsorise", "sponsored", "publicite", "pub ",
+    "annonce payee", "partenariat", "contenu sponsorise",
+    "#ad", "#pub", "#sponsored",
+]
+
+# Emotional/Personal posts (not job offers)
+EXCLUSION_EMOTIONAL = [
+    "fier de", "fiere de", "bravo a", "felicitations a",
+    "merci a", "heureux de", "heureuse de",
+    "anniversaire", "bon weekend", "bonne annee",
+    "joyeux noel", "bonnes fetes", "meilleurs voeux",
+    "incroyable equipe", "super equipe", "team building",
+    "retour sur", "throwback", "#tbt", "#throwback",
 ]
 
 # Competing recruitment agencies
@@ -329,48 +432,82 @@ def calculate_recruitment_score(text: str) -> Tuple[float, List[str]]:
     Calculate recruitment signal score.
     Returns (score, matched_signals).
     Score >= 0.15 required for valid post.
+    
+    IMPORTANT: Distingue entre:
+    - Entreprise qui recrute ACTIVEMENT (score élevé)
+    - Simple mention de recrutement sans contexte actif (score faible)
+    - Recrutement terminé ou candidat qui cherche (score 0 - exclu ailleurs)
     """
     matched = []
     normalized = normalize_text(text)
     
+    # Check standard recruitment signals
     for signal in RECRUITMENT_SIGNALS:
         if signal in normalized:
             matched.append(signal)
     
-    # IMPROVED: Check for generic "[Company] recrute" pattern using regex
+    # Check for "[Company] recrute" pattern using regex
     import re
-    generic_recrute_pattern = re.search(r'\b\w+\s+recrute\b', normalized)
+    generic_recrute_pattern = re.search(r'\b[a-z]+\s+recrute\b', normalized)
     if generic_recrute_pattern and "recrute" not in matched:
-        matched.append("recrute")
+        matched.append("[entreprise] recrute")
     
     if not matched:
         return 0.0, []
     
-    # Base score for having recruitment signal
-    score = 0.20  # Increased from 0.15 to be more inclusive
+    # === SCORING SYSTEM REVU ===
+    score = 0.0
     
-    # Bonus for strong explicit signals
-    strong_signals = ["je recrute", "nous recrutons", "on recrute", "cdi", "cdd", 
-                      "poste a pourvoir", "hiring", "we are hiring", "we re hiring",
-                      "recrute un juriste", "recrute un avocat", "recrute une juriste",
-                      "recrute une avocate", "offre du jour", "offre de recrutement",
-                      "recrute des juriste", "recrute des avocat", "recrute !",
-                      "se renforcer"]
+    # SIGNAUX TRÈS FORTS (entreprise qui recrute activement)
+    very_strong_signals = [
+        "nous recrutons", "on recrute", "notre equipe recrute",
+        "poste a pourvoir", "poste ouvert", "cdi a pourvoir", "cdd a pourvoir",
+        "postulez", "candidatez", "envoyez cv", "envoyez votre cv",
+        "we are hiring", "is hiring", "now hiring", "currently hiring",
+        "cabinet recrute", "direction juridique recrute", "equipe juridique recrute",
+        "recrute un juriste", "recrute une juriste", "recrute un avocat", "recrute une avocate",
+    ]
+    very_strong_count = sum(1 for s in very_strong_signals if s in normalized)
+    if very_strong_count > 0:
+        score += 0.30 + min(0.30, very_strong_count * 0.10)
+    
+    # SIGNAUX FORTS (contexte recrutement clair)
+    strong_signals = [
+        "nous recherchons", "on recherche", "recherche un juriste", "recherche une juriste",
+        "recherche un avocat", "recherche une avocate", "cdi", "cdd",
+        "creation de poste", "opportunite", "temps plein",
+        "profil recherche", "missions principales",
+        "looking for", "join our team",
+    ]
     strong_count = sum(1 for s in strong_signals if s in normalized)
-    score += min(0.35, strong_count * 0.12)  # Increased bonus per strong signal
+    if strong_count > 0:
+        score += 0.20 + min(0.20, strong_count * 0.05)
     
-    # Bonus for "[X] recrute" pattern (company + recrute)
+    # SIGNAUX MOYENS (peuvent être ambigus)
+    medium_signals = [
+        "experience requise", "rattache a", "vous justifiez",
+        "package", "remuneration",
+    ]
+    medium_count = sum(1 for s in medium_signals if s in normalized)
+    if medium_count > 0:
+        score += min(0.15, medium_count * 0.05)
+    
+    # BONUS pour pattern "[Entreprise] recrute"
     if generic_recrute_pattern:
-        score += 0.15
+        score += 0.20
     
-    # Bonus for multiple signals
-    score += min(0.25, len(matched) * 0.07)  # Increased multiplier
+    # MALUS: Première personne du singulier ("je recrute") = potentiellement chasseur de têtes
+    first_person_singular = any(fp in normalized for fp in [
+        "je recrute", "je recherche", "je cherche"
+    ])
+    if first_person_singular and very_strong_count == 0:
+        # Réduire le score si pas de signal d'entreprise
+        score = max(0, score - 0.15)
     
-    # Extra bonus for combined legal + recruitment context
+    # BONUS: Contexte juridique + recrutement combiné
     legal_recruitment_patterns = [
         "cabinet recrute", "direction juridique recrute", "etude recrute",
-        "law firm recrute", "recherche un juriste", "recherche une juriste",
-        "recherche un avocat", "recherche une avocate"
+        "etude notariale recrute", "equipe juridique",
     ]
     if any(pat in normalized for pat in legal_recruitment_patterns):
         score += 0.15
@@ -399,26 +536,45 @@ def check_exclusions(
     Check if post should be excluded.
     Returns ExclusionResult with reason if excluded.
     
-    Exclusion priority (configurable via FilterConfig):
-    1. Stage/Alternance/Apprentissage (config.exclude_stage)
-    2. Freelance/Missions (config.exclude_freelance)
-    3. Non-France locations (config.exclude_foreign)
-    4. Job seekers (#opentowork) (config.exclude_opentowork)
-    5. Promotional content (config.exclude_promo)
-    6. Recruitment agencies (config.exclude_agencies)
-    7. Non-legal professions (config.exclude_non_legal)
-    8. Posts older than 3 weeks
+    ORDRE DE PRIORITÉ DES FILTRES (optimisé pour performance):
+    1. Posts trop anciens (> 3 semaines) - RAPIDE, élimine beaucoup
+    2. Stage/Alternance/Apprentissage - CRITIQUE, jamais accepter
+    3. Freelance/Missions - Exclure missions courtes
+    4. Non-France locations - Filtrage géographique
+    5. Job seekers (#opentowork) - Chercheurs d'emploi, pas recruteurs
+    6. Promotional content - Contenu non-recrutement
+    7. Recruitment agencies - Concurrents
+    8. Non-legal professions - Hors domaine juridique
     """
     if config is None:
         config = FilterConfig()  # Use defaults
         
     normalized = normalize_text(text)
     
-    # 1. Stage/Alternance - HIGHEST PRIORITY
+    # 0. FILTRE DATE - EN PREMIER (rapide et élimine beaucoup de posts)
+    if post_date:
+        now = datetime.now(timezone.utc)
+        if post_date.tzinfo is None:
+            post_date = post_date.replace(tzinfo=timezone.utc)
+        age = now - post_date
+        if age > timedelta(weeks=3):
+            return ExclusionResult(True, "post_trop_ancien", 
+                                   [f"{age.days} jours"])
+    
+    # 1. Stage/Alternance - PRIORITÉ MAXIMALE (jamais accepter)
     if config.exclude_stage:
+        # Vérification exhaustive avec tous les termes
         for term in EXCLUSION_STAGE_ALTERNANCE:
             if term in normalized:
-                return ExclusionResult(True, "stage_alternance", [term])
+                # Double vérification: s'assurer que ce n'est pas un faux positif
+                # Ex: "stage de développement de carrière" vs "offre de stage"
+                false_positive_contexts = [
+                    "stade",  # "stade de france" != "stage"
+                    "stage de carriere",  # métaphore
+                ]
+                is_false_positive = any(fp in normalized for fp in false_positive_contexts)
+                if not is_false_positive:
+                    return ExclusionResult(True, "stage_alternance", [term])
     
     # 2. Freelance/Missions
     if config.exclude_freelance:
@@ -431,12 +587,35 @@ def check_exclusions(
         matched_locations = [loc for loc in EXCLUSION_NON_FRANCE if loc in normalized]
         if matched_locations:
             # Check if France is also mentioned (could be multi-location role OR comparison post)
-            france_indicators = ["france", "paris", "lyon", "marseille", "bordeaux", 
-                               "toulouse", "nantes", "lille", "strasbourg", "nice",
-                               "rennes", "grenoble", "montpellier", "ile-de-france",
-                               "ile de france", "idf", "region parisienne",
-                               "voreppe", "compiègne", "compiegne", "cholet", "saint-denis", 
-                               "saint denis"]  # Added more French cities
+            # Extended list of French cities/regions
+            france_indicators = [
+                # Grandes villes
+                "france", "paris", "lyon", "marseille", "bordeaux", 
+                "toulouse", "nantes", "lille", "strasbourg", "nice",
+                "rennes", "grenoble", "montpellier", "la defense",
+                # Régions
+                "ile-de-france", "ile de france", "idf", "region parisienne",
+                "hauts-de-france", "hauts de france", "auvergne", "rhone-alpes",
+                "paca", "provence", "normandie", "bretagne", "occitanie",
+                "nouvelle-aquitaine", "nouvelle aquitaine", "grand est",
+                # Villes moyennes
+                "angers", "dijon", "reims", "le havre", "saint-etienne",
+                "toulon", "clermont-ferrand", "villeurbanne", "metz", "besancon",
+                "orleans", "rouen", "mulhouse", "perpignan", "caen",
+                "boulogne-billancourt", "nancy", "argenteuil", "roubaix",
+                "tourcoing", "dunkerque", "avignon", "nimes", "poitiers",
+                "aix-en-provence", "aix en provence", "versailles", "pau",
+                "la rochelle", "limoges", "tours", "amiens", "annecy",
+                "brest", "le mans", "saint-nazaire", "colmar", "troyes",
+                "lorient", "quimper", "valence", "chambery", "niort",
+                "vannes", "chartres", "laval", "cholet", "saint-denis",
+                "saint denis", "voreppe", "compiegne", "neuilly",
+                # Arrondissements Paris
+                "paris 1", "paris 2", "paris 3", "paris 4", "paris 5",
+                "paris 6", "paris 7", "paris 8", "paris 9", "paris 10",
+                "paris 11", "paris 12", "paris 13", "paris 14", "paris 15",
+                "paris 16", "paris 17", "paris 18", "paris 19", "paris 20",
+            ]
             has_france = any(f in normalized for f in france_indicators)
             
             # Foreign location explicitly mentioned = exclude (CDI/CDD alone don't prove France)
@@ -444,17 +623,29 @@ def check_exclusions(
             if not has_france:
                 return ExclusionResult(True, "hors_france", matched_locations)
     
-    # 4. Job seekers - Only exclude if it's clearly the author seeking, not recruiting
+    # 4. Job seekers - Exclude if the author is seeking work, not recruiting
     if config.exclude_opentowork:
         for term in EXCLUSION_JOBSEEKER:
             if term in normalized:
-                # Don't exclude if strong recruitment signals present
-                has_recruitment = any(sig in normalized for sig in [
-                    "recrute", "recruiting", "hiring", "cdi", "cdd", 
-                    "poste a pourvoir", "nous recherchons", "on recherche"
+                # Strong first-person job seeking signals = definitely exclude
+                first_person_seeking = any(fp in normalized for fp in [
+                    "je recherche", "je cherche", "je suis a", "mon cv", "mon profil",
+                    "je suis juriste", "je suis avocat", "disponible immediatement"
                 ])
-                if not has_recruitment:
+                # Only keep if it has VERY strong company recruitment signals
+                has_company_recruitment = any(sig in normalized for sig in [
+                    "nous recrutons", "on recrute", "notre equipe recrute",
+                    "poste a pourvoir", "cdi a pourvoir", "cdd a pourvoir"
+                ])
+                if first_person_seeking or not has_company_recruitment:
                     return ExclusionResult(True, "chercheur_emploi", [term])
+    
+    # 4b. Recruitment already done - Exclude welcome/arrival announcements
+    if config.exclude_opentowork:  # Reuse same config flag
+        for term in EXCLUSION_RECRUITMENT_DONE:
+            if term in normalized:
+                # This is announcing someone ALREADY hired, not an active job posting
+                return ExclusionResult(True, "recrutement_termine", [term])
     
     # 5. Promotional content - more lenient
     if config.exclude_promo:
@@ -467,6 +658,28 @@ def check_exclusions(
             ])
             if not has_recruitment:
                 return ExclusionResult(True, "contenu_promotionnel", matched_promo)
+    
+    # 5b. Sponsored content
+    if config.exclude_sponsored:
+        matched_sponsored = [term for term in EXCLUSION_SPONSORED if term in normalized]
+        if matched_sponsored:
+            # Don't exclude if clear recruitment signal
+            has_recruitment = any(sig in normalized for sig in [
+                "recrute", "cdi", "cdd", "poste a pourvoir"
+            ])
+            if not has_recruitment:
+                return ExclusionResult(True, "contenu_sponsorise", matched_sponsored)
+    
+    # 5c. Emotional/Personal posts
+    if config.exclude_emotional:
+        matched_emotional = [term for term in EXCLUSION_EMOTIONAL if term in normalized]
+        if matched_emotional:
+            # Don't exclude if clear recruitment signal
+            has_recruitment = any(sig in normalized for sig in [
+                "recrute", "cdi", "cdd", "poste a pourvoir", "hiring"
+            ])
+            if not has_recruitment:
+                return ExclusionResult(True, "post_emotionnel", matched_emotional)
     
     # 6. Recruitment agencies
     if config.exclude_agencies:
@@ -557,6 +770,8 @@ class FilterConfig:
     exclude_agencies: bool = True
     exclude_foreign: bool = True
     exclude_non_legal: bool = True
+    exclude_sponsored: bool = True
+    exclude_emotional: bool = True
     # Logging
     verbose: bool = True
 
@@ -690,7 +905,10 @@ __all__ = [
     "EXCLUSION_NON_FRANCE",
     "EXCLUSION_JOBSEEKER",
     "EXCLUSION_PROMOTIONAL",
+    "EXCLUSION_SPONSORED",
+    "EXCLUSION_EMOTIONAL",
     "EXCLUSION_RECRUITMENT_AGENCIES",
     "EXCLUSION_NON_LEGAL_JOBS",
+    "EXCLUSION_RECRUITMENT_DONE",
     "DEFAULT_FILTER_CONFIG",
 ]

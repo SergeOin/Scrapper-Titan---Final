@@ -233,15 +233,16 @@ _RELATIVE_MAP = {
     "1j": 1440,
 }
 
-# Maximum age for posts in days (3 weeks = 21 days)
+# Maximum age for posts in days (3 weeks = 21 days) - STRICTEMENT APPLIQUÉ
 MAX_POST_AGE_DAYS = 21
 
-# Pattern étendu pour capturer toutes les unités de temps LinkedIn
+# Pattern étendu pour capturer toutes les unités de temps LinkedIn (FR et EN)
 # IMPORTANT: Ordre des alternatives compte - les plus longs d'abord pour éviter
 # que "sem" soit capturé comme "s" (secondes)
 # IMPORTANT: LinkedIn utilise "sem." (avec point abréviatif) donc on ajoute \.? après sem
+# NOUVEAU: Support des formats avec "il y a", "ago", etc.
 _RELATIVE_PATTERN_EXTENDED = re.compile(
-    r"(\d+)\s*(semaines?|seconde?s?|minutes?|heures?|jours?|weeks?|months?|mois|sem\.?|min\.?|sec\.?|day|wk|hr|mo|h|j|d|w|s)",
+    r"(?:il\s+y\s+a\s+)?(\d+)\s*(semaines?|seconde?s?|minutes?|heures?|jours?|weeks?|months?|mois|ans?|years?|sem\.?|min\.?|sec\.?|day|wk|hr|mo|yr|h|j|d|w|s|m)(?:\s+ago)?",
     re.IGNORECASE
 )
 
@@ -257,11 +258,11 @@ def is_post_too_old(published_at: str | datetime | None, max_age_days: int = MAX
         True if post is too old and should be filtered out.
         False if post is recent enough.
     
-    IMPORTANT: Retourne True (rejeter) si la date ne peut pas être déterminée
-    pour éviter d'accepter des posts potentiellement anciens.
+    CRITIQUE: Cette fonction est STRICTE - un post sans date valide est REJETÉ
+    pour garantir la fraîcheur des données collectées.
     """
     if not published_at:
-        # CORRECTION: Rejeter les posts sans date pour être sûr de la fraîcheur
+        # CRITIQUE: Rejeter les posts sans date pour garantir la fraîcheur
         return True
     
     now = datetime.now(timezone.utc)
@@ -273,15 +274,20 @@ def is_post_too_old(published_at: str | datetime | None, max_age_days: int = MAX
         if isinstance(published_at, datetime):
             pub_date = published_at
         elif isinstance(published_at, str):
+            # Nettoyer la chaîne d'entrée
+            clean_str = published_at.strip()
+            if not clean_str:
+                return True
+            
             # Essayer d'abord le format ISO standard
             try:
-                pub_date = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+                pub_date = datetime.fromisoformat(clean_str.replace('Z', '+00:00'))
             except ValueError:
                 # Sinon, essayer de parser comme date relative LinkedIn
-                pub_date = parse_possible_date(published_at, now)
+                pub_date = parse_possible_date(clean_str, now)
         
         if pub_date is None:
-            # CORRECTION: Rejeter si on ne peut pas déterminer la date
+            # CRITIQUE: Rejeter si on ne peut pas déterminer la date
             return True
         
         # Ensure timezone aware
@@ -289,9 +295,13 @@ def is_post_too_old(published_at: str | datetime | None, max_age_days: int = MAX
             pub_date = pub_date.replace(tzinfo=timezone.utc)
         
         age = now - pub_date
+        
+        # Log pour diagnostic (en mode debug seulement)
+        # print(f"DEBUG: Post age = {age.days} days, max = {max_age_days}, reject = {age > max_age}")
+        
         return age > max_age
     except Exception:
-        # CORRECTION: Rejeter en cas d'erreur de parsing
+        # CRITIQUE: Rejeter en cas d'erreur de parsing (sécurité)
         return True
 
 # Pattern simple pour compatibilité arrière (déprécié, utiliser _RELATIVE_PATTERN_EXTENDED)
@@ -301,23 +311,33 @@ _RELATIVE_PATTERN = re.compile(r"(\d+)\s*(s|min|h|j)")
 def parse_possible_date(raw: str, now: Optional[datetime] = None) -> Optional[datetime]:
     """Parse relative LinkedIn-like timestamps into datetime.
 
-    OPTIMISÉ: Supporte maintenant tous les formats LinkedIn FR et EN:
+    OPTIMISÉ v3: Supporte tous les formats LinkedIn FR et EN:
         '5 min'   => now - 5 minutes
         '2 h'     => now - 2 hours  
         '1 j'     => now - 1 day
         '3 j'     => now - 3 days
-        '2 sem'   => now - 2 weeks (NOUVEAU)
-        '1 w'     => now - 1 week (NOUVEAU)
-        '2 wk'    => now - 2 weeks (NOUVEAU)
-        '1 mo'    => now - 1 month (NOUVEAU)
-        '2 mois'  => now - 2 months (NOUVEAU)
+        '2 sem'   => now - 2 weeks (CRITIQUE pour filtre 3 semaines)
+        '2 sem.'  => now - 2 weeks (avec point)
+        '1 w'     => now - 1 week
+        '2 wk'    => now - 2 weeks
+        '1 mo'    => now - 1 month
+        '2 mois'  => now - 2 months
+        '1 an'    => now - 1 year (REJETÉ automatiquement par is_post_too_old)
+        'il y a 2 semaines' => now - 2 weeks
+        '3 weeks ago' => now - 3 weeks
 
     Returns timezone-aware UTC datetime or None if not parsed.
     """
     if not raw:
         return None
     
+    # Nettoyer le texte: retirer •, Modifié, etc.
     raw_clean = raw.strip().lower()
+    raw_clean = raw_clean.replace("•", " ").replace("·", " ")
+    raw_clean = raw_clean.replace("modifié", "").replace("modified", "")
+    raw_clean = raw_clean.replace("édité", "").replace("edited", "")
+    raw_clean = re.sub(r"\s+", " ", raw_clean).strip()
+    
     if not raw_clean:
         return None
     
@@ -334,7 +354,9 @@ def parse_possible_date(raw: str, now: Optional[datetime] = None) -> Optional[da
         if unit in ("s", "sec", "seconde", "secondes"):
             delta = timedelta(seconds=value)
         # Minutes
-        elif unit in ("min", "minute", "minutes"):
+        elif unit in ("min", "minute", "minutes", "m"):
+            # Attention: "m" peut être mois en anglais, mais LinkedIn utilise "mo"
+            # Donc "m" seul = minutes
             delta = timedelta(minutes=value)
         # Heures
         elif unit in ("h", "hr", "heure", "heures"):
@@ -342,12 +364,15 @@ def parse_possible_date(raw: str, now: Optional[datetime] = None) -> Optional[da
         # Jours
         elif unit in ("j", "d", "day", "days", "jour", "jours"):
             delta = timedelta(days=value)
-        # Semaines (NOUVEAU - crucial pour le filtre 3 semaines)
+        # Semaines (CRITIQUE pour le filtre 3 semaines)
         elif unit in ("sem", "semaine", "semaines", "w", "wk", "week", "weeks"):
             delta = timedelta(weeks=value)
-        # Mois (NOUVEAU - approximation 30 jours)
+        # Mois (approximation 30 jours)
         elif unit in ("mo", "mois", "month", "months"):
             delta = timedelta(days=value * 30)
+        # Années (approximation 365 jours - ces posts seront rejetés)
+        elif unit in ("an", "ans", "yr", "year", "years"):
+            delta = timedelta(days=value * 365)
         else:
             return None
         
@@ -368,6 +393,8 @@ def parse_possible_date(raw: str, now: Optional[datetime] = None) -> Optional[da
         (r"(\d+)\s*months?\s*ago", "month"),
         (r"il y a (\d+)\s*jour", "day"),
         (r"(\d+)\s*days?\s*ago", "day"),
+        (r"(\d+)\s*ans?", "year"),
+        (r"(\d+)\s*years?\s*ago", "year"),
     ]
     
     for pattern, unit_type in week_patterns:
@@ -380,6 +407,8 @@ def parse_possible_date(raw: str, now: Optional[datetime] = None) -> Optional[da
                 return now - timedelta(days=val * 30)
             elif unit_type == "day":
                 return now - timedelta(days=val)
+            elif unit_type == "year":
+                return now - timedelta(days=val * 365)
 
     return None
 
@@ -405,64 +434,103 @@ class Timer:
 
 
 # ---------------------------------------------------------------------------
-# France location filter - OPTIMISÉ avec liste étendue
+# France location filter - OPTIMISÉ v3 avec liste complète
 # ---------------------------------------------------------------------------
 FRANCE_POSITIVE_MARKERS = [
     # Termes généraux France
     "france", "french", "français", "francais", "française", "francaise",
-    # Île-de-France et Paris
+    "hexagone", "sur le territoire", "en france",
+    # Île-de-France et Paris (exhaustif)
     "paris", "parisien", "parisienne", "idf", "ile-de-france", "île-de-france",
     "la défense", "la defense", "neuilly", "puteaux", "levallois",
     "boulogne-billancourt", "versailles", "saint-denis", "nanterre",
-    "courbevoie", "issy-les-moulineaux", "cergy", "evry",
+    "courbevoie", "issy-les-moulineaux", "cergy", "evry", "évry",
+    "creteil", "créteil", "bobigny", "montreuil", "vincennes",
+    "rueil", "rueil-malmaison", "suresnes", "colombes",
+    "asnieres", "asnières", "clamart", "meudon", "sevres", "sèvres",
+    "saint-germain", "le vesinet", "maisons-laffitte",
+    "paris 1", "paris 2", "paris 3", "paris 4", "paris 5",
+    "paris 6", "paris 7", "paris 8", "paris 9", "paris 10",
+    "paris 11", "paris 12", "paris 13", "paris 14", "paris 15",
+    "paris 16", "paris 17", "paris 18", "paris 19", "paris 20",
     # Grandes métropoles
     "lyon", "marseille", "bordeaux", "lille", "toulouse", "nice", "nantes",
     "rennes", "strasbourg", "grenoble", "montpellier", "tours", "nancy",
     "rouen", "reims", "clermont", "toulon", "dijon", "angers", "metz",
     # Villes moyennes importantes
-    "aix-en-provence", "brest", "limoges", "nîmes", "nimes", "amiens",
-    "perpignan", "orléans", "orleans", "mulhouse", "caen", "besançon",
-    "saint-etienne", "le havre", "avignon", "pau", "poitiers", "bayonne",
+    "aix-en-provence", "aix en provence", "brest", "limoges", "nîmes", "nimes", "amiens",
+    "perpignan", "orléans", "orleans", "mulhouse", "caen", "besançon", "besancon",
+    "saint-etienne", "saint etienne", "le havre", "avignon", "pau", "poitiers", "bayonne",
+    "la rochelle", "chambery", "chambéry", "annecy", "valence", "troyes",
+    "lorient", "quimper", "vannes", "saint-nazaire", "cholet", "niort",
+    "chartres", "laval", "colmar", "bourges", "cherbourg", "calais",
     # Régions administratives
-    "normandie", "bretagne", "occitanie", "paca", "auvergne", "rhône-alpes",
-    "nouvelle-aquitaine", "grand-est", "hauts-de-france", "centre-val",
-    # Codes postaux parisiens courants
-    "75001", "75002", "75008", "75009", "75016", "92",
+    "normandie", "bretagne", "occitanie", "paca", "auvergne", "rhône-alpes", "rhone-alpes",
+    "nouvelle-aquitaine", "nouvelle aquitaine", "grand-est", "grand est", 
+    "hauts-de-france", "hauts de france", "centre-val", "centre val de loire",
+    "pays de la loire", "bourgogne", "franche-comté", "franche comte",
+    "alsace", "lorraine", "picardie", "champagne",
+    # Départements (codes)
+    "75", "77", "78", "91", "92", "93", "94", "95",
+    "69", "13", "31", "33", "59", "06", "44", "67",
+    # Expressions de localisation
+    "basé à paris", "base a paris", "poste à paris", "poste a paris",
+    "bureau de paris", "bureau de lyon", "agence de paris",
+    "localisation paris", "localisation lyon", "localisation france",
 ]
 
 FRANCE_NEGATIVE_MARKERS = [
     # Amérique du Nord
-    "canada", "usa", "united states", "etats-unis", "états-unis",
-    "montreal", "toronto", "vancouver", "new york", "san francisco",
-    "los angeles", "chicago", "boston", "washington", "miami",
+    "canada", "usa", "united states", "etats-unis", "états-unis", "american",
+    "montreal", "montréal", "toronto", "vancouver", "ottawa", "quebec", "québec",
+    "new york", "san francisco", "california", "californie",
+    "los angeles", "chicago", "boston", "washington", "miami", "seattle",
+    "texas", "florida", "floride",
     # Belgique
     "belgium", "belgique", "belge", "bruxelles", "brussels", "anvers",
+    "antwerp", "gent", "gand", "liege", "liège", "charleroi",
     # Suisse
-    "switzerland", "swiss", "suisse", "genève", "geneve", "zurich", "zürich",
-    "lausanne", "berne", "bern",
-    # Autres pays européens francophones
-    "luxembourg", "monaco",
+    "switzerland", "swiss", "suisse", "genève", "geneve", "geneva",
+    "zurich", "zürich", "lausanne", "berne", "bern", "basel", "bâle",
+    "canton de", "zürichsee",
+    # Autres pays francophones
+    "luxembourg", "luxembourgeois", "monaco",
     # UK
-    "uk ", "u.k.", "united kingdom", "royaume-uni", "london", "londres",
-    "manchester", "birmingham", "edinburgh",
+    "uk ", "u.k.", "united kingdom", "royaume-uni", "british", "britannique",
+    "london", "londres", "manchester", "birmingham", "edinburgh", "édimbourg",
+    "liverpool", "leeds", "glasgow", "bristol", "cardiff",
     # Allemagne
-    "germany", "allemagne", "deutschland", "berlin", "munich", "frankfurt",
-    "hamburg", "düsseldorf", "cologne",
+    "germany", "allemagne", "deutschland", "german", "allemand",
+    "berlin", "munich", "münchen", "frankfurt", "francfort",
+    "hamburg", "hambourg", "düsseldorf", "dusseldorf", "cologne", "köln",
+    "stuttgart", "hannover", "hanovre",
     # Autres pays européens
-    "spain", "espagne", "españa", "madrid", "barcelona",
-    "portugal", "lisbonne", "lisbon", "porto",
-    "italy", "italie", "italia", "milan", "rome", "roma",
-    "netherlands", "pays-bas", "amsterdam", "rotterdam",
-    "ireland", "irlande", "dublin",
+    "spain", "espagne", "españa", "spanish", "espagnol", "madrid", "barcelona", "barcelone",
+    "portugal", "portugais", "lisbonne", "lisbon", "lisboa", "porto",
+    "italy", "italie", "italia", "italian", "italien", "milan", "milano", "rome", "roma", "turin", "florence",
+    "netherlands", "pays-bas", "holland", "hollande", "dutch", "amsterdam", "rotterdam", "la haye",
+    "ireland", "irlande", "irish", "irlandais", "dublin",
+    "poland", "pologne", "warsaw", "varsovie", "cracovie",
+    "austria", "autriche", "vienna", "vienne",
+    "sweden", "suède", "stockholm", "denmark", "danemark", "copenhagen", "copenhague",
     # Asie/Moyen-Orient
-    "singapore", "singapour", "hong kong", "shanghai", "tokyo",
-    "dubai", "émirats", "emirats", "abu dhabi",
+    "singapore", "singapour", "hong kong", "shanghai", "tokyo", "beijing", "pékin",
+    "dubai", "dubaï", "émirats", "emirats", "abu dhabi", "qatar", "doha",
+    "saudi", "arabie", "israel", "israël", "tel aviv",
     # Océanie
-    "australia", "australie", "sydney", "melbourne",
-    # Afrique (principaux centres)
-    "maroc", "morocco", "casablanca", "tunisie", "alger",
+    "australia", "australie", "australian", "australien", "sydney", "melbourne", "brisbane",
+    "new zealand", "nouvelle-zélande", "auckland",
+    # Afrique
+    "maroc", "morocco", "marocain", "casablanca", "rabat",
+    "tunisie", "tunisia", "tunis",
+    "alger", "algerie", "algérie", "algeria",
+    "sénégal", "senegal", "dakar",
+    "cote d ivoire", "côte d'ivoire", "abidjan",
     # Expressions de remote non-FR
-    "remote us", "hiring in uk", "remote global", "worldwide",
+    "remote us", "remote usa", "remote uk", "remote canada",
+    "hiring in uk", "hiring in us", "hiring globally",
+    "remote global", "worldwide", "international remote",
+    "work from anywhere", "travail à distance international",
 ]
 
 
@@ -475,23 +543,39 @@ def is_location_france(text: str | None, strict: bool = True) -> bool:
     
     Returns:
         True if location appears to be France, False otherwise.
+    
+    LOGIQUE:
+    - Si aucun marqueur de localisation: ACCEPTER (assume France par défaut)
+    - Si marqueur France présent: ACCEPTER
+    - Si marqueur étranger présent SANS marqueur France: REJETER (en mode strict)
+    - Si les deux sont présents: ACCEPTER (le post mentionne France + autre pays)
     """
     if not text:
-        return True  # No location info, assume OK
+        return True  # No location info, assume France OK
     
     low = text.lower()
     
-    has_positive = any(marker in low for marker in FRANCE_POSITIVE_MARKERS)
-    has_negative = any(marker in low for marker in FRANCE_NEGATIVE_MARKERS)
+    # Compter les marqueurs trouvés
+    positive_matches = [marker for marker in FRANCE_POSITIVE_MARKERS if marker in low]
+    negative_matches = [marker for marker in FRANCE_NEGATIVE_MARKERS if marker in low]
+    
+    has_positive = len(positive_matches) > 0
+    has_negative = len(negative_matches) > 0
+    
+    # Si aucun marqueur géographique: assume France (posts sans localisation explicite)
+    if not has_positive and not has_negative:
+        return True
     
     if strict:
-        # If negative markers present, require positive markers to confirm France
+        # Mode strict: si pays étranger mentionné, exiger une mention France aussi
         if has_negative:
+            # Exception: si le post mentionne "France" et un autre pays, accepter
+            # (ex: "Cabinet à Paris avec bureaux à Londres" = OK)
             return has_positive
-        # No negative markers = assume France OK
+        # Pas de pays étranger = assume France
         return True
     else:
-        # Non-strict: accept if any positive OR no negative
+        # Mode non-strict: accept si France mentionné OU si pas d'étranger
         return has_positive or not has_negative
 
 

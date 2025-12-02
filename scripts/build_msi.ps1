@@ -65,7 +65,7 @@ $productWxs = @"
   <Product Id="*" Name="$Name" Language="1036" Version="$Version" Manufacturer="$Manufacturer" UpgradeCode="{5C7C7B8C-1E2D-4B0E-8B93-1F6C7B0C2F71}" Codepage="1252">
   <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
   <MajorUpgrade DowngradeErrorMessage="Une version plus recente est deja installee." />
-    <MediaTemplate/>
+    <MediaTemplate EmbedCab="yes"/>
     <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="ARPNOMODIFY" Value="1" />
   <!-- Removed ARPINSTALLLOCATION to avoid CNDL1077 warning -->
@@ -88,12 +88,15 @@ ${iconXml}
     <!-- Application files -->
     <ComponentGroup Id="AppComponents" Directory="INSTALLFOLDER">
       <Component Id="cmpMain" Guid="{A3E3AC9F-6DD4-4E65-93D8-4F8A2B4D1001}">
-        <File Id="filExe" Source="$resolvedExe" KeyPath="yes" />
-        <Shortcut Id="StartMenuShortcut" Advertise="yes" Directory="AppProgramMenu" Name="$ProgramMenuName" WorkingDirectory="INSTALLFOLDER" />
+        <File Id="filExe" Name="TitanScraper.exe" Source="$resolvedExe" KeyPath="yes" />
+      </Component>
+      <Component Id="cmpStartMenuShortcut" Guid="{B2E3AC9F-6DD4-4E65-93D8-4F8A2B4D1002}">
+        <Shortcut Id="StartMenuShortcut" Directory="AppProgramMenu" Name="$ProgramMenuName" WorkingDirectory="INSTALLFOLDER" Target="[INSTALLFOLDER]TitanScraper.exe" Icon="AppIcon" />
         <RemoveFolder Id="RemoveAppProgramMenu" Directory="AppProgramMenu" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\$Manufacturer\$Name" Name="startmenu" Type="integer" Value="1" KeyPath="yes"/>
       </Component>
       <Component Id="cmpDesktopShortcut" Guid="{D0B7B5D7-23AB-4AF2-8C14-2A9E6F2F9A21}">
-        <Shortcut Id="DesktopShortcut" Name="$ProgramMenuName" Directory="DesktopFolder" WorkingDirectory="INSTALLFOLDER" Target="[INSTALLFOLDER]$ExeName" />
+        <Shortcut Id="DesktopShortcut" Name="$ProgramMenuName" Directory="DesktopFolder" WorkingDirectory="INSTALLFOLDER" Target="[INSTALLFOLDER]TitanScraper.exe" Icon="AppIcon" />
         <RegistryValue Root="HKCU" Key="Software\$Manufacturer\$Name" Name="desktop" Type="integer" Value="1" KeyPath="yes"/>
       </Component>
     </ComponentGroup>

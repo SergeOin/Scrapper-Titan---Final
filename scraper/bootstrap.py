@@ -76,49 +76,56 @@ class Settings(BaseSettings):
     rate_limit_refill_per_sec: float = Field(2.0, alias="RATE_LIMIT_REFILL_PER_SEC")  # tokens per second
 
     # Keywords & limits
-    # OPTIMISÉ v2: Keywords STRICTEMENT orientés recrutement pour éviter les posts informationnels
-    # Focus sur: phrases de recrutement + rôles juridiques
-    # STRATÉGIE: Combiner "signal de recrutement" + "rôle juridique" dans le keyword
+    # OPTIMISÉ v3: Keywords orientés volume + qualité
+    # Stratégie: Combiner "signal de recrutement" + "rôle juridique" pour précision
+    # IMPORTANT: Plus de keywords = plus de cycles = plus de posts/jour
     scrape_keywords_raw: str = Field(
-        # === PHRASES DE RECRUTEMENT EXPLICITES (haute précision) ===
+        # === RECRUTEMENT DIRECT (précision maximale) ===
         "recrute juriste;recrute avocat;recrute notaire;recrute paralegal;"
         "nous recrutons juriste;nous recrutons avocat;"
         "on recrute juriste;on recrute avocat;"
         "je recrute juriste;je recrute avocat;"
-        "poste juriste;poste avocat;poste notaire;poste paralegal;"
+        # === OFFRES D'EMPLOI EXPLICITES ===
+        "poste juriste;poste avocat;poste notaire;"
         "offre emploi juriste;offre emploi avocat;"
         "cdi juriste;cdi avocat;cdi notaire;"
-        # === EXPRESSIONS DE RECHERCHE ACTIVES ===
+        "cdd juriste;cdd avocat;"
+        # === RECHERCHE DE PROFILS ===
         "recherche juriste;recherche avocat;recherche notaire;"
-        "cherche juriste;cherche avocat;cherche notaire;"
-        "embauche juriste;embauche avocat;"
+        "cherche juriste;cherche avocat;"
         # === POSTES DIRECTION JURIDIQUE ===
         "recrute responsable juridique;recrute directeur juridique;"
         "poste responsable juridique;poste directeur juridique;"
-        "head of legal recrute;general counsel recrute;"
-        # === EXPRESSIONS AVEC CONTEXTE FRANCE ===
-        "juriste cdi France;avocat cdi France;"
-        "juriste Paris;avocat Paris;juriste Lyon;"
-        # === SPÉCIALISATIONS + RECRUTEMENT ===
-        "recrute juriste droit social;recrute juriste contrats;"
-        "recrute avocat droit des affaires;recrute compliance officer",
+        "head of legal;general counsel;legal counsel;"
+        # === CONTEXTE FRANCE (pour volume) ===
+        "juriste Paris;avocat Paris;juriste Lyon;avocat Lyon;"
+        "juriste France;avocat France;"
+        "juriste Bordeaux;juriste Marseille;juriste Lille;"
+        # === SPÉCIALISATIONS JURIDIQUES ===
+        "juriste droit social;juriste contrats;juriste corporate;"
+        "avocat droit des affaires;compliance officer;"
+        "juriste conformite;juriste contentieux;"
+        # === CABINET / ENTREPRISE ===
+        "cabinet avocat recrute;cabinet juridique recrute;"
+        "direction juridique recrute;equipe juridique;"
+        "etude notariale recrute",
         alias="SCRAPE_KEYWORDS",
     )
     # Semicolon-separated list of keywords to always ignore (case-insensitive)
     blacklisted_keywords_raw: str = Field("python;ai;formation;webinaire;article", alias="BLACKLISTED_KEYWORDS")
     # Raise cap per keyword to collect more candidates before classifier filtering
-    max_posts_per_keyword: int = Field(80, alias="MAX_POSTS_PER_KEYWORD")
+    max_posts_per_keyword: int = Field(50, alias="MAX_POSTS_PER_KEYWORD")  # Réduit 80→50 pour qualité
     # Extraction scrolling controls
-    # OPTIMISÉ: Augmentation du scroll depth pour maximiser les posts par keyword
-    max_scroll_steps: int = Field(15, alias="MAX_SCROLL_STEPS")  # Max scroll iterations (augmenté 10→15)
-    scroll_wait_ms: int = Field(1000, alias="SCROLL_WAIT_MS")  # Wait après scroll (réduit 1200→1000 pour rapidité)
-    min_posts_target: int = Field(30, alias="MIN_POSTS_TARGET")  # Target minimum (augmenté 20→30)
+    # OPTIMISÉ v3: Scroll plus profond mais timeout raisonnable
+    max_scroll_steps: int = Field(20, alias="MAX_SCROLL_STEPS")  # Max scroll iterations (augmenté 15→20)
+    scroll_wait_ms: int = Field(800, alias="SCROLL_WAIT_MS")  # Wait après scroll (réduit 1000→800 pour rapidité)
+    min_posts_target: int = Field(15, alias="MIN_POSTS_TARGET")  # Target minimum (réduit 30→15 pour éviter timeout)
     # Seuil de signal de recrutement - AUGMENTÉ pour exiger un vrai signal de recrutement
     # 0.15 = nécessite des termes explicites comme "recrute", "poste", "offre d'emploi"
     recruitment_signal_threshold: float = Field(0.15, alias="RECRUITMENT_SIGNAL_THRESHOLD")
 
-    # Post age filter (3 weeks = 21 days by default)
-    max_post_age_days: int = Field(21, alias="MAX_POST_AGE_DAYS")  # Posts older than this are filtered out
+    # Post age filter (3 weeks = 21 days - STRICTEMENT APPLIQUÉ)
+    max_post_age_days: int = Field(21, alias="MAX_POST_AGE_DAYS")  # CRITIQUE: Posts > 21 jours REJETÉS
     
     # Stage/Alternance exclusion filter (enabled by default)
     filter_exclude_stage_alternance: bool = Field(True, alias="FILTER_EXCLUDE_STAGE_ALTERNANCE")
@@ -221,15 +228,15 @@ class Settings(BaseSettings):
     navigation_retry_backoff_ms: int = Field(1200, alias="NAVIGATION_RETRY_BACKOFF_MS")
     # Public dashboard & autonomous worker
     dashboard_public: bool = Field(False, alias="DASHBOARD_PUBLIC")
-    # OPTIMISÉ: Mode autonome activé par défaut (1800s = 30min entre cycles)
-    # Ceci permet ~28 cycles/jour pendant 14h actives = 50+ posts/jour
-    autonomous_worker_interval_seconds: int = Field(1800, alias="AUTONOMOUS_WORKER_INTERVAL_SECONDS")
+    # OPTIMISÉ v3: Mode autonome plus fréquent (900s = 15min entre cycles)
+    # Ceci permet ~56 cycles/jour pendant 14h actives = 100+ posts/jour potentiels
+    autonomous_worker_interval_seconds: int = Field(900, alias="AUTONOMOUS_WORKER_INTERVAL_SECONDS")
     # Human-like cadence (optional) - Mode recommandé pour éviter détection anti-bot
     human_mode_enabled: bool = Field(True, alias="HUMAN_MODE_ENABLED")  # ACTIVÉ par défaut
-    human_active_hours_start: int = Field(7, alias="HUMAN_ACTIVE_HOURS_START")  # Début plus tôt (7h)
-    human_active_hours_end: int = Field(22, alias="HUMAN_ACTIVE_HOURS_END")    # Fin plus tard (22h) = 15h actives
-    human_min_cycle_pause_seconds: int = Field(20, alias="HUMAN_MIN_CYCLE_PAUSE_SECONDS")  # Réduit 30→20
-    human_max_cycle_pause_seconds: int = Field(60, alias="HUMAN_MAX_CYCLE_PAUSE_SECONDS")  # Réduit 90→60
+    human_active_hours_start: int = Field(6, alias="HUMAN_ACTIVE_HOURS_START")  # Début très tôt (6h)
+    human_active_hours_end: int = Field(23, alias="HUMAN_ACTIVE_HOURS_END")    # Fin tardive (23h) = 17h actives
+    human_min_cycle_pause_seconds: int = Field(10, alias="HUMAN_MIN_CYCLE_PAUSE_SECONDS")  # Réduit 20→10
+    human_max_cycle_pause_seconds: int = Field(30, alias="HUMAN_MAX_CYCLE_PAUSE_SECONDS")  # Réduit 60→30
     human_long_break_probability: float = Field(0.03, alias="HUMAN_LONG_BREAK_PROBABILITY")
     human_long_break_min_seconds: int = Field(300, alias="HUMAN_LONG_BREAK_MIN_SECONDS")
     human_long_break_max_seconds: int = Field(600, alias="HUMAN_LONG_BREAK_MAX_SECONDS")
@@ -255,13 +262,23 @@ class Settings(BaseSettings):
         alias="EXCLUDED_AUTHORS"
     )
     # Keywords de renfort (booster) injectés dynamiquement quand quota < 80%
-    # OPTIMISÉ: Focus sur recrutement direct (exclut cabinets de recrutement)
+    # OPTIMISÉ v3: Focus sur recrutement direct + variété géographique
     booster_keywords_raw: str = Field(
+        # Volume général France
         "recrute juriste France;recrute avocat France;cdi juriste Paris;"
         "cdi avocat Paris;poste juriste France;poste avocat France;"
+        # Directions juridiques
         "direction juridique recrute;entreprise recrute juriste;"
-        "cabinet avocat recrute;etude notariale recrute;"
-        "responsable juridique France;directeur juridique France",
+        "responsable juridique recrute;directeur juridique recrute;"
+        # Autres villes pour diversité
+        "juriste Nantes;juriste Toulouse;juriste Strasbourg;"
+        "avocat Bordeaux;avocat Nice;avocat Rennes;"
+        # Spécialisations en demande
+        "juriste rgpd;juriste dpo;compliance manager;"
+        "legal counsel France;head of legal Paris;"
+        # Cabinets
+        "cabinet avocat Paris recrute;etude notariale Paris;"
+        "cabinet affaires recrute",
         alias="BOOSTER_KEYWORDS"
     )
     # Si True on assouplit certains filtres (recruitment threshold -10%) quand quota pas atteint

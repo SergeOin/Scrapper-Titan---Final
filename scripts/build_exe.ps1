@@ -57,8 +57,24 @@ if(-not $Slug -or $Slug.Trim() -eq ''){
 if($Mode -eq 'desktop'){
   Write-Host "[build_exe] Mode=desktop (desktop/main.py entrypoint)" -ForegroundColor Yellow
   $entry = 'desktop/main.py'
-  # Hidden imports needed when freezing from desktop layer
-  $hidden = @('--hidden-import','server.main','--hidden-import','scraper.bootstrap')
+  # Hidden imports AND collect-all for pywebview and pythonnet to ensure all submodules/data are bundled
+  $hidden = @(
+    '--hidden-import','server.main',
+    '--hidden-import','scraper.bootstrap',
+    '--hidden-import','webview',
+    '--hidden-import','webview.platforms',
+    '--hidden-import','webview.platforms.winforms',
+    '--hidden-import','webview.platforms.edgechromium',
+    '--hidden-import','webview.util',
+    '--hidden-import','webview.js',
+    '--hidden-import','clr_loader',
+    '--hidden-import','pythonnet',
+    '--hidden-import','clr',
+    '--hidden-import','bottle',
+    '--hidden-import','proxy_tools',
+    '--collect-all','webview',
+    '--collect-all','clr_loader'
+  )
 } else {
   Write-Host "[build_exe] Mode=server (scripts/run_server.py entrypoint)" -ForegroundColor Yellow
   $entry = 'scripts/run_server.py'
