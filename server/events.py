@@ -22,6 +22,7 @@ class EventType(str, Enum):
     HEALTH = "health"  # reserved for future proactive pings
     QUOTA = "quota"  # daily quota milestone events
     RISK_COOLDOWN = "risk_cooldown"  # anti-ban cooldown triggered
+    NEW_POST = "new_post"  # individual post scraped and saved
 
 _listeners: List[asyncio.Queue[Dict[str, Any]]] = []
 _lock = asyncio.Lock()

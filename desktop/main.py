@@ -509,7 +509,12 @@ def _try_playwright_install(user_base: Path):
                     zip_name = "chromium-linux.zip"
                     inner_folder = "chrome-linux"
 
-                url = f"https://playwright.azureedge.net/builds/chromium/{rev}/{zip_name}"
+                # Try multiple CDN URLs - Playwright changed their CDN structure
+                urls_to_try = [
+                    f"https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/{rev}/{zip_name}",
+                    f"https://playwright.azureedge.net/builds/chromium/{rev}/{zip_name}",
+                ]
+                url = urls_to_try[0]  # Primary URL
                 log.info("playwright_http_fallback_download url=%s rev=%s", url, rev)
                 target_rev_dir = browsers_dir / f"chromium-{rev}"
                 browsers_dir.mkdir(parents=True, exist_ok=True)
@@ -525,9 +530,38 @@ def _try_playwright_install(user_base: Path):
                     tmp_path = Path(tmp.name)
                 try:
                     log.info("playwright_http_downloading to=%s", tmp_path)
-                    with urllib.request.urlopen(url, timeout=120) as resp, open(tmp_path, "wb") as out:
-                        shutil.copyfileobj(resp, out)
-                    log.info("playwright_http_download_complete size=%d", tmp_path.stat().st_size)
+                    
+                    # Try multiple URLs in case one fails
+                    download_success = False
+                    for try_url in urls_to_try:
+                        try:
+                            log.info("playwright_trying_url url=%s", try_url)
+                            req = urllib.request.Request(try_url, headers={"User-Agent": "Mozilla/5.0"})
+                            with urllib.request.urlopen(req, timeout=180) as resp, open(tmp_path, "wb") as out:
+                                total_size = int(resp.headers.get('Content-Length', 0))
+                                downloaded = 0
+                                chunk_size = 1024 * 1024  # 1MB chunks
+                                while True:
+                                    chunk = resp.read(chunk_size)
+                                    if not chunk:
+                                        break
+                                    out.write(chunk)
+                                    downloaded += len(chunk)
+                                    if total_size > 0:
+                                        pct = int(100 * downloaded / total_size)
+                                        log.info("playwright_download_progress %d%% (%d/%d MB)", pct, downloaded // (1024*1024), total_size // (1024*1024))
+                            if tmp_path.stat().st_size > 10_000_000:  # At least 10MB
+                                download_success = True
+                                log.info("playwright_http_download_complete size=%d url=%s", tmp_path.stat().st_size, try_url)
+                                break
+                        except Exception as e:
+                            log.warning("playwright_url_failed url=%s error=%s", try_url, str(e))
+                            continue
+                    
+                    if not download_success:
+                        log.error("playwright_all_urls_failed")
+                        raise RuntimeError("All download URLs failed")
+                    
                     # Extract
                     with zipfile.ZipFile(tmp_path, 'r') as zf:
                         zf.extractall(target_rev_dir)
@@ -1182,13 +1216,35 @@ def main():
         )
     except Exception:
         pass
-    # Launch Playwright dependency installation in background to avoid blocking UI (perceived faster startup)
-    def _bg_playwright():  # pragma: no cover (background helper)
-        try:
-            _try_playwright_install(user_base)
-        except Exception:
-            logging.getLogger("desktop").exception("playwright_background_install_failed")
-    threading.Thread(target=_bg_playwright, name="playwright-install", daemon=True).start()
+    
+    # =========================================================================
+    # CRITICAL: Install Chromium BEFORE starting server (synchronous)
+    # This ensures the browser is ready when scraping starts
+    # =========================================================================
+    log.info("chromium_check_start")
+    try:
+        from desktop.chromium_installer import ensure_chromium_installed, is_chromium_ready, get_browsers_dir
+        browsers_dir = get_browsers_dir()
+        
+        if not is_chromium_ready(browsers_dir):
+            log.info("chromium_not_ready, starting_installation")
+            # Show progress window and download synchronously
+            if not ensure_chromium_installed(browsers_dir, show_progress=True):
+                log.error("chromium_installation_failed")
+                _message_box(
+                    APP_DISPLAY_NAME,
+                    (
+                        "Impossible de télécharger le navigateur Chromium.\n"
+                        "Vérifiez votre connexion internet et réessayez.\n\n"
+                        "Si le problème persiste, exécutez manuellement:\n"
+                        "playwright install chromium"
+                    ),
+                )
+                return
+        log.info("chromium_ready path=%s", browsers_dir)
+    except Exception as e:
+        log.exception("chromium_check_failed: %s", e)
+        # Continue anyway - the error will appear later if Chromium is really missing
 
     # Proactive: verify pywebview import early so we can log a clear diagnostic if packaging missed it
     try:  # pragma: no cover - diagnostic only

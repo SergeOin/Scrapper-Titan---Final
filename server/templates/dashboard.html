@@ -92,6 +92,12 @@
   /* Scroll container for posts only */
   #postsScroll { flex:1; overflow:auto; margin-top:.5rem; background:#fff; border:1px solid #e2e8f0; border-radius:8px; padding:0 .5rem; }
   #postsScroll table { margin-top:.5rem; }
+  /* Animation progressive pour l'affichage des posts */
+  @keyframes fadeSlideIn { 
+    from { opacity:0; transform:translateY(15px); }
+    to { opacity:1; transform:translateY(0); }
+  }
+  tr.post-animate { animation: fadeSlideIn 0.3s ease forwards; opacity:0; }
     /* Neutral header link styling (no blue, no underline) */
     th a { color:#222; text-decoration:none; display:flex; align-items:center; gap:4px; }
     th a:visited { color:#222; }
@@ -117,14 +123,14 @@
         <input type="hidden" name="sort_by" value="{{ sort_by }}" />
         <input type="hidden" name="sort_dir" value="{{ sort_dir }}" />
         <input type="hidden" name="page" value="1" />
-  <button type="submit" class="btn-outline">Exporter au format Excel</button>
+  <button type="submit" id="exportBtn" class="btn-outline"><span id="exportBtnText">Exporter au format Excel</span><span id="exportBtnSpinner" class="inline-spinner" style="display:none;margin-left:6px;"></span></button>
       </form>
       <button id="logoutBtn" type="button" class="btn-outline">Se déconnecter</button>
     </div>
   </div>
 
   <div id="statusContainer" data-interval="{{ autonomous_interval or 0 }}" data-init-wait="{{ login_initial_wait_seconds or 120 }}" style="margin-top:0.75rem; font-size:0.9rem; display:flex; align-items:center; gap:.75rem;">
-  <div id="statusHint" class="status-hint status-hint-wait" aria-live="polite"><span class="inline-spinner" aria-hidden="true"></span>Cycle en cours…</div>
+  <div id="statusHint" class="status-hint status-hint-wait" aria-live="polite"><span class="inline-spinner" aria-hidden="true"></span>Initialisation…</div>
   </div>
   <style>
   /* Status line removed; only hint banner remains */
@@ -434,7 +440,7 @@
             setHintVisible(true);
           } else {
             // Initial: immediate launch message with spinner (no artificial wait)
-            setHintHTML(`${spinner}Cycle en cours…`, 'status-hint-wait');
+            setHintHTML(`${spinner}${baseText}`, 'status-hint-ok');
             setHintVisible(true);
             if (!_autoTriggeredFirstRun) {
               _autoTriggeredFirstRun = true;
@@ -490,6 +496,71 @@
     }
     const _toggleEl = document.getElementById('toggleBtn');
     if (_toggleEl) _toggleEl.addEventListener('click', toggleScraping);
+    
+    // ========== QUEUE POUR AFFICHAGE PROGRESSIF DES POSTS SSE ==========
+    const _postQueue = [];
+    let _postQueueRunning = false;
+    const _POST_DISPLAY_DELAY = 150; // ms entre chaque post
+    
+    function _queueNewPost(post) {
+      _postQueue.push(post);
+      if (!_postQueueRunning) {
+        _processPostQueue();
+      }
+    }
+    
+    async function _processPostQueue() {
+      if (_postQueueRunning) return;
+      _postQueueRunning = true;
+      
+      while (_postQueue.length > 0) {
+        const p = _postQueue.shift();
+        _displayNewPost(p);
+        if (_postQueue.length > 0) {
+          await new Promise(r => setTimeout(r, _POST_DISPLAY_DELAY));
+        }
+      }
+      
+      _postQueueRunning = false;
+    }
+    
+    function _displayNewPost(p) {
+      const tbody = document.querySelector('table tbody');
+      if (!tbody) return;
+      
+      // Check if post already exists
+      if (document.querySelector(`tr[data-post-id="${p._id}"]`)) return;
+      
+      const rowHTML = _rowHTML({
+        _id: p._id,
+        keyword: p.keyword,
+        author: p.author,
+        company: p.company,
+        permalink: p.permalink,
+        text: p.text,
+        published_at: p.published_at,
+        collected_at: p.collected_at,
+        metier: p.metier,
+        is_favorite: 0
+      });
+      
+      // Insert at the top of the table with animation
+      const tmp = document.createElement('tbody');
+      tmp.innerHTML = rowHTML;
+      const row = tmp.firstChild;
+      if (row) {
+        row.classList.add('post-animate');
+        // Insert at top (sorted by most recent)
+        const firstRow = tbody.querySelector('tr');
+        if (firstRow) {
+          tbody.insertBefore(row, firstRow);
+        } else {
+          tbody.appendChild(row);
+        }
+      }
+    }
+    // ========== FIN QUEUE AFFICHAGE PROGRESSIF ==========
+    
     // Auto refresh posts if a new run detected
     let _lastRunSeen = null;
     async function refreshPosts(){
@@ -638,10 +709,18 @@
             return;
           }
           if(items.length > 0){
-            const html = items.map(_rowHTML).join('');
             if(_state.page === 1 && tbody.children.length > 0){ tbody.innerHTML = ''; }
-            const tmp = document.createElement('tbody'); tmp.innerHTML = html; // to avoid doing innerHTML+=
-            while(tmp.firstChild){ tbody.appendChild(tmp.firstChild); }
+            // Affichage progressif : ajouter les posts un par un avec animation
+            for(let i = 0; i < items.length; i++){
+              const rowHTML = _rowHTML(items[i]);
+              const tmp = document.createElement('tbody'); tmp.innerHTML = rowHTML;
+              const row = tmp.firstChild;
+              if(row){
+                row.classList.add('post-animate');
+                row.style.animationDelay = (i * 80) + 'ms';
+                tbody.appendChild(row);
+              }
+            }
             _state.page += 1;
             if(items.length < _state.limit){ _state.done = true; }
             // hide end-of-list if we just appended more
@@ -688,8 +767,11 @@
         es.onmessage = async (ev)=>{
           try {
             const payload = JSON.parse(ev.data);
-            if(payload.type === 'job_complete'){
-              await refreshPosts();
+            if(payload.type === 'new_post' && payload.post){
+              // Progressive display: add new post to the table with staggered delay
+              _queueNewPost(payload.post);
+            } else if(payload.type === 'job_complete'){
+              // Ne pas recharger les posts - ils ont été ajoutés progressivement via SSE
               await refreshStatus();
               await refreshTrashCount();
               showToast(`Cycle terminé (${payload.posts} posts)`, 'info');
@@ -765,6 +847,28 @@
           await fetch('/api/session/logout', { method:'POST' });
         } catch(_) { /* ignore */ }
         window.location.href = '/login';
+      });
+    }
+    
+    // Export Excel handler with loading spinner
+    const exportForm = document.getElementById('exportForm');
+    const exportBtn = document.getElementById('exportBtn');
+    const exportBtnText = document.getElementById('exportBtnText');
+    const exportBtnSpinner = document.getElementById('exportBtnSpinner');
+    if (exportForm && exportBtn) {
+      exportForm.addEventListener('submit', (ev) => {
+        // Show loading state
+        exportBtn.disabled = true;
+        if(exportBtnText) exportBtnText.textContent = 'Génération en cours…';
+        if(exportBtnSpinner) exportBtnSpinner.style.display = 'inline-block';
+        showToast('Export Excel en cours de génération…', 'info');
+        
+        // Reset button after download starts (form submit triggers file download)
+        setTimeout(() => {
+          exportBtn.disabled = false;
+          if(exportBtnText) exportBtnText.textContent = 'Exporter au format Excel';
+          if(exportBtnSpinner) exportBtnSpinner.style.display = 'none';
+        }, 3000);
       });
     }
   </script>

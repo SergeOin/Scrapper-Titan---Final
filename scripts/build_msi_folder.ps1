@@ -110,7 +110,6 @@ ${productWxs} = @"
     <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
     <MediaTemplate/>
 ${iconXml}
-    
 
     <Feature Id="MainFeature" Title="$Name" Level="1">
       <ComponentGroupRef Id="CG_AppFiles" />
@@ -132,7 +131,7 @@ ${iconXml}
       <Component Id="cmpStartMenu" Guid="*">
         <Shortcut Id="StartMenuShortcut" Name="$Name" Directory="AppProgramMenu" WorkingDirectory="INSTALLFOLDER" Target="[INSTALLFOLDER]$ExeName" />
         <RemoveFolder Id="RemoveAppProgramMenu" Directory="AppProgramMenu" On="uninstall" />
-  <RegistryValue Root="HKCU" Key="Software\$Manufacturer\$Name" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
+        <RegistryValue Root="HKCU" Key="Software\$Manufacturer\$Name" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
       </Component>
     </DirectoryRef>
 

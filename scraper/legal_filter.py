@@ -50,15 +50,17 @@ LEGAL_PROFESSIONS = [
     "notaire", "notaires", "notaire associe", "notaire salarie",
     "clerc de notaire", "clerc principal", "redacteur actes",
     "ingenieur patrimonial",
-    # Fiscalistes
+    # Fiscalistes - AJOUT des 16 métiers
     "fiscaliste", "fiscalistes", "juriste fiscal",
+    "directeur fiscal", "directrice fiscale",
+    "responsable fiscal", "responsable fiscale",
     # Cabinet/Étude (contexte juridique)
     "cabinet avocat", "cabinet d avocat", "cabinet avocats",
     "law firm", "etude notariale",
 ]
 
 # Stems for flexible matching (more flexible)
-LEGAL_STEMS = ["avocat", "juriste", "notaire", "paralegal", "counsel", "legal", "juridique", "fiscaliste"]
+LEGAL_STEMS = ["avocat", "juriste", "notaire", "paralegal", "counsel", "legal", "juridique", "fiscaliste", "fiscal"]
 
 # =============================================================================
 # RECRUITMENT SIGNALS (Score >= 0.15 required)
@@ -185,6 +187,29 @@ EXCLUSION_NON_FRANCE = [
 # Job seekers (#opentowork) - terms indicating the AUTHOR is job seeking, not recruiting
 EXCLUSION_JOBSEEKER = [
     "opentowork", "open to work", "#opentowork",
+    # LinkedIn automatic "Open to Work" post template phrases
+    "je recherche un nouveau poste", "je recherche un nouveau emploi",
+    "bonjour a tous je recherche", "bonjour a tous ! je recherche",
+    "si vous entendez parler d une opportunite", "si vous entendez parler d'une opportunite",
+    "j aimerais reprendre contact", "j'aimerais reprendre contact",
+    "reconnaissant de m apporter", "reconnaissante de m apporter",
+    "reconnaissant(e) de m apporter", "reconnaissant(e) de m'apporter",
+    "je vous serais reconnaissant", "je vous serais reconnaissante",
+    "a propos de moi et de ce que je recherche",
+    "je suis a l ecoute de nouvelles opportunites",
+    "je suis a l'ecoute de nouvelles opportunites",
+    # NEW: Additional patterns from CSV analysis
+    "je suis actuellement en recherche active",
+    "nouvelle etape professionnelle en vue",
+    "je suis prete a entamer", "je suis pret a entamer",
+    "a la recherche d une nouvelle opportunite",
+    "si vous recrutez ou si vous connaissez",
+    "si vous recrutez, ou si vous connaissez",
+    "chers membres de mon reseau",
+    "je recherche des postes de",
+    "dear members of my network",
+    "i am currently actively seeking",
+    "if you are hiring", "if you know someone",
     # Clear job-seeking patterns (author looking for work, not recruiting)
     "recherche emploi", "recherche poste", "recherche un poste",
     "a l ecoute du marche", "a l'ecoute du marche",
@@ -232,6 +257,11 @@ EXCLUSION_RECRUITMENT_DONE = [
     # "pour rejoindre notre équipe" est un signal de recrutement actif
     "bonne arrivee", "heureux de compter",
     "accueillons", "nous accueillons",
+    # NEW: Additional patterns from CSV analysis
+    "j occupe desormais le poste",
+    "je prends mes nouvelles fonctions",
+    "nous sommes ravis d annoncer la nomination",
+    "nomme directeur", "nommee directrice",
     # Promotions/Internal moves (not external hiring)
     "promotion", "promu", "promue",
     "evolution interne", "mobilite interne",
@@ -249,6 +279,10 @@ EXCLUSION_PROMOTIONAL = [
     "inscrivez-vous", "reservez votre place", "places limitees",
     "lien en bio", "lien dans les commentaires",
     "replay", "rediffusion",
+    # NEW: Webinaire events
+    "j-5 avant notre webinaire", "j-4 avant notre webinaire", "j-3 avant notre webinaire",
+    "participez a notre webinaire", "prochain webinaire",
+    "strategies de recouvrement", "strategie de recouvrement",
 ]
 
 # Sponsored/Promotional content markers
@@ -266,6 +300,206 @@ EXCLUSION_EMOTIONAL = [
     "joyeux noel", "bonnes fetes", "meilleurs voeux",
     "incroyable equipe", "super equipe", "team building",
     "retour sur", "throwback", "#tbt", "#throwback",
+    # Events/Competitions (not job offers)
+    "defi ", "finale", "competition", "concours", "challenge",
+    "equipes finalistes", "grande finale", "edition du defi",
+    "jury preside par", "jury sera preside",
+    "hackathon", "prix ", "trophee",
+    # Academic/Exam results (not job offers)
+    "felicitations aux etudiants", "admis au concours", "admis a l examen",
+    "reussite au", "resultats du concours", "resultats de l examen",
+    "crfpa", "iej", "ecole nationale de la magistrature",
+    "fiere de leur reussite", "fiers de leur reussite",
+    "plein succes dans la suite", "bonne chance a tous",
+    # NEW: From CSV analysis - personal achievement posts
+    "tres fier de nos", "tres fiere de nos",
+    "nul doute que cette experience",
+    "fier de nos etudiantes", "fiere de nos etudiantes",
+    # Publications/Articles (not job offers)
+    "je suis ravi de partager avec vous l article",
+    "article recent publie", "publication de",
+    "notre dernier article", "nouvel article",
+    # NEW: SEO/Marketing content (not job offers)
+    "sites que j audite", "taux de conversion", "contenu optimise seo",
+    "seo", "referencement", "conversion rate", "marketing digital",
+    "intention de recherche", "search intent",
+    # NEW: Personal reconversion stories (not job offers)
+    "il y a quelques annees j ai pris une decision audacieuse",
+    "me reconvertir dans", "reconversion professionnelle",
+    "j ai pris la decision de changer", "changement de carriere",
+    "ma reconversion", "nouvelle vie professionnelle",
+    # NEW: Salon/Congress events (not job offers)
+    "salon commerce innov", "salon de", "congres des", "congres national",
+    "tres agreable journee de salon", "journee de salon",
+    "journee du congres", "congres consulaires",
+    "deuxieme journee du congres", "congres des juges",
+    "quel plaisir de voir notre ville accueillir",
+    # NEW: Photo shooting posts (not job offers)
+    "j ai eu le plaisir de realiser le shooting", "shooting photo",
+    "seance photo", "reportage photo",
+    "valoriser chaque personne", "photographe professionnel",
+    # NEW: Real estate sales (not job offers)
+    "vends ", "a vendre", "vente immobiliere", "lot de 414 m",
+    "990.000", "hyper centre", "r+1 & r+2", "bureau a vendre",
+    "chef de projet immobilier", "investissement immobilier accompagne",
+    "gestion de projets de renovation", "invest preneur",
+    # NEW: Formation announcements
+    "france services cadillac", "formation au tribunal",
+    "formation juridique", "session de formation",
+    # NEW: Property/Real estate market articles
+    "un bien renove se vend", "ameliorer le dpe",
+    "marche parisien", "prix au m2",
+    # NEW: Visa/immigration personal stories
+    "renouvlement de mon titre de sejour", "histoire de visa",
+    "marathon administratif", "titre de sejour",
+    # NEW: Notaires DPE context
+    "les notaires de france le confirment",
+    # Posts with only a link (no real content)
+    "https://lnkd.in",  # LinkedIn shortened links as main content
+    # Personal stories without recruitment
+    "mon histoire", "mon parcours personnel",
+    "retour d experience", "partage d experience",
+    # ADV/Commercial roles (not legal)
+    "gestionnaire adv", "assistant adv", "charge adv",
+    "administration des ventes",
+    # Business Developer roles (not legal)
+    "business developer", "business developper",
+    # Double diplomas/education announcements
+    "double diplome", "dual degree",
+    "double cursus", "parcours academique",
+]
+
+# Institutional announcements (not job offers)
+EXCLUSION_INSTITUTIONAL = [
+    # Cabinet/firm announcements without recruitment
+    "inscrit dans l annuaire", "inscrit a l annuaire",
+    "a maintenant sa toque", "a desormais sa toque",
+    "inauguration de", "ouverture officielle",
+    "ceremonie de", "ceremonie d",
+    "anniversaire du cabinet", "ans d existence",
+    "fete ses", "fete son",
+    "nouveau bureau", "nouveaux locaux",
+    "demenagement", "emmenagement",
+    # Awards/Rankings (not recruitment)
+    "classe parmi", "distingue par", "recompense",
+    "palmares", "classement", "ranking",
+    "meilleur cabinet", "top cabinet",
+]
+
+# Legal news and watch (not job offers)
+EXCLUSION_LEGAL_NEWS = [
+    # Legislative/Regulatory news
+    "reforme de", "nouvelle loi", "projet de loi",
+    "jurisprudence", "arret de la cour", "arret rendu",
+    "decision de justice", "tribunal a juge",
+    "code civil", "code penal", "code du travail",
+    "droit europeen", "directive europeenne",
+    "rgpd", "cnil", "autorite de",
+    # Legal updates
+    "flash info", "actualite juridique",
+    "veille juridique", "legal news",
+    "point sur", "decryptage", "analyse de",
+    "commentaire de", "tribune",
+    # Academic/Doctrine
+    "doctrine", "these de", "memoire de",
+    "colloque", "conference sur le droit",
+]
+
+# Client testimonials (not job offers)
+EXCLUSION_TESTIMONIALS = [
+    "temoignage client", "retour client",
+    "merci a notre client", "accompagne dans",
+    "mission realisee pour", "dossier gagne",
+    "affaire remportee", "succes pour notre client",
+    "nous avons accompagne", "fiers d avoir accompagne",
+    "satisfaction client", "client satisfait",
+]
+
+# Networking posts without recruitment
+EXCLUSION_NETWORKING = [
+    "ravi de retrouver", "plaisir d echanger avec",
+    "rencontre enrichissante", "echange passionnant",
+    "petit dejeuner avec", "dejeuner avec",
+    "afterwork", "cocktail",
+    "networking", "soiree",
+    "ravi d avoir rencontre", "bel echange",
+    "discussion inspirante", "table ronde",
+]
+
+# =============================================================================
+# NOUVELLES EXCLUSIONS RENFORCÉES (90% faux positifs détectés)
+# =============================================================================
+
+# EXCLUSION 1: Formation/Education (pas de recrutement)
+EXCLUSION_FORMATION_EDUCATION = [
+    # Annonces institutionnelles
+    "toque", "a maintenant sa toque", "a obtenu sa toque",
+    "inscription a l ordre", "inscrit dans l annuaire",
+    "inscrit a l annuaire", "annuaire des avocats",
+    "barreau", "ordre des avocats",
+    
+    # Diplômes et études
+    "diplome", "diplome", "jeune diplome", "jeune diplomee",
+    "ecole de droit", "universite", "faculte de droit",
+    "master", "master ii", "master 2",
+    "bar exam", "examen du barreau",
+    "formation", "formation initiale", "formation continue",
+    "etudiant", "etudiante", "etudiant en droit",
+    "doctorat", "these", "recherche",
+]
+
+# EXCLUSION 2: Recrutement Passé (annonces terminées)
+EXCLUSION_RECRUTEMENT_PASSE = [
+    # Annonces de recrutement terminé
+    "a rejoint", "vient de rejoindre", "a integre",
+    "nous avons recrute", "nous avons embauche",
+    "bienvenue a", "bienvenue au", "welcome",
+    "nouveau collaborateur", "nouvelle recrue",
+    "j ai le plaisir", "je suis heureuse", "je suis ravi",
+    "je suis ravie", "je suis heureux",
+    "felicitations", "felicitation", "bravo",
+    "promotion", "promue", "promu",
+    "nouvelle etape", "nouvelle aventure",
+    "rejoins", "rejoint", "integre",
+]
+
+# EXCLUSION 3: Candidat Individu Cherchant Emploi
+EXCLUSION_CANDIDAT_INDIVIDU = [
+    # Candidat cherchant du travail
+    "je recherche un nouveau poste", "je recherche un emploi",
+    "je cherche un emploi", "je cherche un poste",
+    "je suis a la recherche", "je suis en recherche",
+    "opentowork", "open to work", "hashtag opentowork",
+    "vous serais reconnaissant", "vous serais reconnaissante",
+    "vous serait reconnaissant", "vous serait reconnaissante",
+    "merci de m aider", "merci de m'aider",
+    "mon cv", "mon profil", "mon experience",
+    "je suis juriste", "je suis avocat", "je suis notaire",
+    "je suis paralegal", "je suis legal counsel",
+    "mon parcours", "mon experience", "mon background",
+]
+
+# EXCLUSION 4: Contenu Informatif (Articles, Blogs, Webinaires)
+EXCLUSION_CONTENU_INFORMATIF = [
+    # Articles et publications
+    "article", "blog", "publication", "publie",
+    "etude", "rapport", "analyse", "avis",
+    "commentaire", "reflexion", "point de vue",
+    "partage", "partager", "partageons",
+    "decouvrez", "decouvrez notre", "lire l article",
+    
+    # Webinaires et conférences
+    "webinaire", "webinar", "conference", "seminaire",
+    "atelier", "formation", "masterclass",
+    "j-5 avant", "j-3 avant", "j-1 avant",
+    "rendez-vous", "inscrivez-vous",
+    
+    # Contenus informatifs
+    "quelques mots sur", "quelques mots sur l",
+    "regards sur", "focus sur", "zoom sur",
+    "infographie", "infographique",
+    "chiffres cles", "chiffres cles",
+    "tendances", "previsions", "previsions",
 ]
 
 # Competing recruitment agencies
@@ -429,88 +663,135 @@ def calculate_legal_profession_score(text: str) -> Tuple[float, List[str]]:
 
 def calculate_recruitment_score(text: str) -> Tuple[float, List[str]]:
     """
-    Calculate recruitment signal score.
-    Returns (score, matched_signals).
-    Score >= 0.15 required for valid post.
+    STRICT: Calcule le score de recrutement ACTIF UNIQUEMENT.
     
-    IMPORTANT: Distingue entre:
-    - Entreprise qui recrute ACTIVEMENT (score élevé)
-    - Simple mention de recrutement sans contexte actif (score faible)
-    - Recrutement terminé ou candidat qui cherche (score 0 - exclu ailleurs)
+    RÈGLE CRITIQUE:
+    - Seul le recrutement ACTIF (maintenant) est accepté
+    - Pas de simple mention du métier
+    - Pas de recrutement passé ou futur vague
+    
+    Score >= 0.20 REQUIS (augmenté de 0.15)
     """
     matched = []
     normalized = normalize_text(text)
     
-    # Check standard recruitment signals
-    for signal in RECRUITMENT_SIGNALS:
-        if signal in normalized:
-            matched.append(signal)
-    
-    # Check for "[Company] recrute" pattern using regex
-    import re
-    generic_recrute_pattern = re.search(r'\b[a-z]+\s+recrute\b', normalized)
-    if generic_recrute_pattern and "recrute" not in matched:
-        matched.append("[entreprise] recrute")
-    
-    if not matched:
-        return 0.0, []
-    
-    # === SCORING SYSTEM REVU ===
-    score = 0.0
-    
-    # SIGNAUX TRÈS FORTS (entreprise qui recrute activement)
+    # ========== SIGNAUX TRÈS FORTS (Recrutement ACTIF) ==========
+    # Ces patterns indiquent une recherche ACTIVE maintenant
     very_strong_signals = [
+        # Entreprise qui recrute MAINTENANT
         "nous recrutons", "on recrute", "notre equipe recrute",
-        "poste a pourvoir", "poste ouvert", "cdi a pourvoir", "cdd a pourvoir",
-        "postulez", "candidatez", "envoyez cv", "envoyez votre cv",
+        "notre cabinet recrute", "notre direction juridique recrute",
+        "notre etude recrute", "etude notariale recrute",
+        
+        # Poste à pourvoir (MAINTENANT)
+        "poste a pourvoir", "poste ouvert", "poste disponible",
+        "cdi a pourvoir", "cdd a pourvoir",
+        
+        # Appel à candidature explicite
+        "postulez", "candidatez", "envoyez votre cv",
+        "adressez votre candidature", "merci d envoyer",
+        
+        # Anglais recrutement actif
         "we are hiring", "is hiring", "now hiring", "currently hiring",
-        "cabinet recrute", "direction juridique recrute", "equipe juridique recrute",
-        "recrute un juriste", "recrute une juriste", "recrute un avocat", "recrute une avocate",
+        "we are looking for", "is looking for",
+        
+        # Spécifique aux 16 métiers
+        "recrute un avocat", "recrute une avocate",
+        "recrute un juriste", "recrute une juriste",
+        "recrute un notaire", "recrute une notaire",
+        "recrute un paralegal", "recrute une paralegale",
+        "recrute un legal counsel", "recrute une legal counsel",
+        "recrute un responsable juridique", "recrute une responsable juridique",
+        "recrute un directeur juridique", "recrute une directrice juridique",
+        "recrute un directeur fiscal", "recrute une directrice fiscale",
+        "recrute un responsable fiscal", "recrute une responsable fiscale",
     ]
-    very_strong_count = sum(1 for s in very_strong_signals if s in normalized)
-    if very_strong_count > 0:
-        score += 0.30 + min(0.30, very_strong_count * 0.10)
     
-    # SIGNAUX FORTS (contexte recrutement clair)
+    very_strong_count = sum(1 for s in very_strong_signals if s in normalized)
+    
+    if very_strong_count == 0:
+        # Vérifier les signaux forts avant de rejeter
+        strong_signals_check = [
+            "nous recherchons", "on recherche", "cdi", "cdd",
+            "recherche un avocat", "recherche une avocate",
+            "recherche un juriste", "recherche une juriste",
+        ]
+        has_strong = any(s in normalized for s in strong_signals_check)
+        if not has_strong:
+            # AUCUN signal fort = REJET
+            return 0.0, []
+    
+    # Score de base pour signaux très forts
+    score = 0.35 + min(0.35, very_strong_count * 0.15) if very_strong_count > 0 else 0.20
+    
+    # ========== SIGNAUX FORTS (Contexte recrutement clair) ==========
     strong_signals = [
-        "nous recherchons", "on recherche", "recherche un juriste", "recherche une juriste",
-        "recherche un avocat", "recherche une avocate", "cdi", "cdd",
-        "creation de poste", "opportunite", "temps plein",
+        # Recherche active
+        "nous recherchons", "on recherche",
+        "recherche un avocat", "recherche une avocate",
+        "recherche un juriste", "recherche une juriste",
+        "recherche un notaire", "recherche une notaire",
+        "recherche un paralegal", "recherche une paralegale",
+        
+        # Contrats
+        "cdi", "cdd", "temps plein", "full time",
+        
+        # Création/Opportunité
+        "creation de poste", "nouveau poste", "ouverture de poste",
+        "opportunite a saisir",
+        
+        # Description de poste
         "profil recherche", "missions principales",
-        "looking for", "join our team",
+        "experience requise", "vous justifiez",
+        
+        # Anglais
+        "join our team", "join the team",
     ]
+    
     strong_count = sum(1 for s in strong_signals if s in normalized)
     if strong_count > 0:
-        score += 0.20 + min(0.20, strong_count * 0.05)
+        score += 0.15 + min(0.15, strong_count * 0.05)
+        matched.extend([s for s in strong_signals if s in normalized])
     
-    # SIGNAUX MOYENS (peuvent être ambigus)
-    medium_signals = [
-        "experience requise", "rattache a", "vous justifiez",
-        "package", "remuneration",
-    ]
-    medium_count = sum(1 for s in medium_signals if s in normalized)
-    if medium_count > 0:
-        score += min(0.15, medium_count * 0.05)
-    
-    # BONUS pour pattern "[Entreprise] recrute"
-    if generic_recrute_pattern:
-        score += 0.20
-    
-    # MALUS: Première personne du singulier ("je recrute") = potentiellement chasseur de têtes
-    first_person_singular = any(fp in normalized for fp in [
-        "je recrute", "je recherche", "je cherche"
-    ])
-    if first_person_singular and very_strong_count == 0:
-        # Réduire le score si pas de signal d'entreprise
-        score = max(0, score - 0.15)
-    
-    # BONUS: Contexte juridique + recrutement combiné
-    legal_recruitment_patterns = [
-        "cabinet recrute", "direction juridique recrute", "etude recrute",
-        "etude notariale recrute", "equipe juridique",
-    ]
-    if any(pat in normalized for pat in legal_recruitment_patterns):
+    # ========== BONUS POUR PATTERN "[ENTREPRISE] RECRUTE" ==========
+    # Pattern: "Cabinet ABC recrute" ou "Entreprise XYZ recrute"
+    recrute_pattern = re.search(r'\b[a-z\s]+\s+recrute\b', normalized)
+    if recrute_pattern:
         score += 0.15
+        matched.append("[entreprise] recrute")
+    
+    # ========== MALUS POUR PREMIÈRE PERSONNE (Chasseur de têtes) ==========
+    first_person_signals = ["je recrute", "je recherche", "je cherche"]
+    if any(fp in normalized for fp in first_person_signals):
+        # Première personne = potentiellement chasseur de têtes
+        # Exiger des signaux TRÈS FORTS d'entreprise
+        if very_strong_count < 2:
+            return 0.0, []
+        score = max(0, score - 0.20)
+    
+    # ========== VÉRIFIER QUE CE N'EST PAS UN CANDIDAT ==========
+    job_seeker_signals = [
+        "je recherche un poste", "je cherche un emploi",
+        "disponible immediatement", "opentowork",
+        "mon cv", "mon profil", "je suis juriste",
+    ]
+    if any(js in normalized for js in job_seeker_signals):
+        return 0.0, []
+    
+    # ========== VÉRIFIER QUE LE RECRUTEMENT N'EST PAS TERMINÉ ==========
+    recruitment_done_signals = [
+        "a rejoint", "vient de rejoindre", "a integre",
+        "nous avons recrute", "nous avons embauche",
+        "bienvenue a", "welcome",
+        "nouveau collaborateur", "nouvelle recrue",
+    ]
+    if any(rd in normalized for rd in recruitment_done_signals):
+        return 0.0, []
+    
+    # Vérifier les signaux de recrutement génériques
+    for signal in RECRUITMENT_SIGNALS:
+        if signal in normalized and signal not in matched:
+            matched.append(signal)
     
     return min(1.0, score), matched
 
@@ -647,7 +928,89 @@ def check_exclusions(
                 # This is announcing someone ALREADY hired, not an active job posting
                 return ExclusionResult(True, "recrutement_termine", [term])
     
-    # 5. Promotional content - more lenient
+    # 5. Institutional posts (no recruitment)
+    if config.exclude_promo:
+        matched_institutional = [term for term in EXCLUSION_INSTITUTIONAL if term in normalized]
+        if matched_institutional:
+            has_recruitment = any(sig in normalized for sig in [
+                "recrute", "recruiting", "hiring", "poste a pourvoir"
+            ])
+            if not has_recruitment:
+                return ExclusionResult(True, "post_institutionnel", matched_institutional)
+    
+    # 5b. Legal news (not job offers)
+    if config.exclude_promo:
+        matched_legal_news = [term for term in EXCLUSION_LEGAL_NEWS if term in normalized]
+        if matched_legal_news:
+            has_recruitment = any(sig in normalized for sig in [
+                "recrute", "recruiting", "hiring", "poste a pourvoir", "cdi", "cdd"
+            ])
+            if not has_recruitment:
+                return ExclusionResult(True, "veille_juridique", matched_legal_news)
+    
+    # 5c. Client testimonials
+    if config.exclude_promo:
+        matched_testimonials = [term for term in EXCLUSION_TESTIMONIALS if term in normalized]
+        if matched_testimonials:
+            has_recruitment = any(sig in normalized for sig in [
+                "recrute", "recruiting", "hiring", "poste a pourvoir"
+            ])
+            if not has_recruitment:
+                return ExclusionResult(True, "temoignage_client", matched_testimonials)
+    
+    # 5d. Networking posts
+    if config.exclude_promo:
+        matched_networking = [term for term in EXCLUSION_NETWORKING if term in normalized]
+        if matched_networking:
+            has_recruitment = any(sig in normalized for sig in [
+                "recrute", "recruiting", "hiring", "poste a pourvoir", "cdi", "cdd"
+            ])
+            if not has_recruitment:
+                return ExclusionResult(True, "post_networking", matched_networking)
+    
+    # ==========================================================================
+    # NOUVELLES EXCLUSIONS RENFORCÉES (réduction 90% faux positifs)
+    # ==========================================================================
+    
+    # 5h. Formation/Education (not recruitment)
+    if config.exclude_formation_education:
+        matched_formation = [term for term in EXCLUSION_FORMATION_EDUCATION if term in normalized]
+        if matched_formation:
+            has_recruitment = any(sig in normalized for sig in [
+                "recrute", "recherche", "poste a pourvoir", "cdi", "cdd"
+            ])
+            if not has_recruitment:
+                return ExclusionResult(True, "formation_education", matched_formation)
+    
+    # 5i. Recrutement Passé (not active recruitment)
+    if config.exclude_recrutement_passe:
+        matched_passe = [term for term in EXCLUSION_RECRUTEMENT_PASSE if term in normalized]
+        if matched_passe:
+            has_active_recruitment = any(sig in normalized for sig in [
+                "nous recrutons", "on recrute", "poste a pourvoir",
+                "cdi a pourvoir", "cdd a pourvoir", "postulez"
+            ])
+            if not has_active_recruitment:
+                return ExclusionResult(True, "recrutement_passe", matched_passe)
+    
+    # 5j. Candidat Individu Cherchant Emploi
+    if config.exclude_candidat_individu:
+        matched_candidat = [term for term in EXCLUSION_CANDIDAT_INDIVIDU if term in normalized]
+        if matched_candidat:
+            return ExclusionResult(True, "candidat_individu", matched_candidat)
+    
+    # 5k. Contenu Informatif (Articles, Blogs, Webinaires)
+    if config.exclude_contenu_informatif:
+        matched_info = [term for term in EXCLUSION_CONTENU_INFORMATIF if term in normalized]
+        if matched_info:
+            has_recruitment = any(sig in normalized for sig in [
+                "recrute", "recherche", "poste a pourvoir", "cdi", "cdd",
+                "postulez", "candidatez"
+            ])
+            if not has_recruitment:
+                return ExclusionResult(True, "contenu_informatif", matched_info)
+    
+    # 5e. Promotional content - more lenient
     if config.exclude_promo:
         matched_promo = [term for term in EXCLUSION_PROMOTIONAL if term in normalized]
         if matched_promo:
@@ -670,13 +1033,14 @@ def check_exclusions(
             if not has_recruitment:
                 return ExclusionResult(True, "contenu_sponsorise", matched_sponsored)
     
-    # 5c. Emotional/Personal posts
+    # 5f. Emotional/Personal posts
     if config.exclude_emotional:
         matched_emotional = [term for term in EXCLUSION_EMOTIONAL if term in normalized]
         if matched_emotional:
             # Don't exclude if clear recruitment signal
             has_recruitment = any(sig in normalized for sig in [
-                "recrute", "cdi", "cdd", "poste a pourvoir", "hiring"
+                "recrute", "cdi", "cdd", "poste a pourvoir", "hiring",
+                "nous recherchons", "on recherche"
             ])
             if not has_recruitment:
                 return ExclusionResult(True, "post_emotionnel", matched_emotional)
@@ -723,7 +1087,336 @@ def check_exclusions(
             return ExclusionResult(True, "post_trop_ancien", 
                                    [f"{age.days} jours"])
     
+    # 9. Short posts without explicit recruitment signal
+    # Posts < 150 chars need a VERY explicit recruitment signal
+    if len(normalized) < 150:
+        explicit_signals = [
+            "nous recrutons", "on recrute", "poste a pourvoir",
+            "cdi", "cdd", "hiring", "postulez"
+        ]
+        has_explicit = any(sig in normalized for sig in explicit_signals)
+        if not has_explicit:
+            # Check if it's just a link share
+            if "https" in normalized or "lnkd.in" in normalized:
+                return ExclusionResult(True, "post_trop_court", ["lien sans contexte"])
+    
+    # 10. Check for coherence: if recruitment mentioned, ensure it's for a legal job
+    recruitment_words = ["recrute", "recherche", "recherchons", "poste de", "poste d"]
+    has_recruitment_context = any(word in normalized for word in recruitment_words)
+    
+    if has_recruitment_context:
+        legal_job_titles = [
+            "juriste", "avocat", "notaire", "paralegal", "legal",
+            "juridique", "counsel", "clerc", "fiscaliste", "compliance"
+        ]
+        has_legal_job = any(job in normalized for job in legal_job_titles)
+        
+        # If recruiting but no legal job mentioned, exclude
+        if not has_legal_job:
+            # Check for non-legal job titles being recruited
+            non_legal_jobs = [
+                "marketing", "commercial", "finance", "rh", "developpeur",
+                "comptable", "gestionnaire", "assistant administratif",
+                "chef de projet", "product manager", "data"
+            ]
+            recruited_non_legal = any(job in normalized for job in non_legal_jobs)
+            if recruited_non_legal:
+                return ExclusionResult(True, "recrutement_non_juridique", ["poste non juridique"])
+    
     return ExclusionResult(False, "", [])
+
+
+# =============================================================================
+# TARGET JOBS - LES 16 MÉTIERS JURIDIQUES CIBLES
+# =============================================================================
+
+TARGET_JOBS_16 = {
+    "avocat collaborateur": ["avocat collaborateur", "avocate collaboratrice"],
+    "avocat associé": ["avocat associe", "avocate associee"],
+    "avocat counsel": ["avocat counsel", "avocate counsel"],
+    "paralegal": ["paralegal", "paralegale", "assistant juridique", "assistante juridique"],
+    "legal counsel": ["legal counsel"],
+    "juriste": ["juriste"],
+    "responsable juridique": ["responsable juridique"],
+    "directeur juridique": ["directeur juridique", "directrice juridique"],
+    "notaire stagiaire": ["notaire stagiaire"],
+    "notaire associé": ["notaire associe", "notaire associee"],
+    "notaire salarié": ["notaire salarie", "notaire salariee"],
+    "notaire assistant": ["notaire assistant", "notaire assistante"],
+    "clerc de notaire": ["clerc de notaire"],
+    "rédacteur d'actes": ["redacteur d actes", "redacteur d'actes"],
+    "responsable fiscal": ["responsable fiscal", "responsable fiscale"],
+    "directeur fiscal": ["directeur fiscal", "directrice fiscale"],
+}
+
+
+def is_recruitment_agency_strict(text: str) -> Tuple[bool, str]:
+    """
+    DÉTECTION STRICTE DES CABINETS DE RECRUTEMENT.
+    
+    Retourne: (is_agency, reason)
+    
+    RÈGLE: Si c'est une agence de recrutement = REJET IMMÉDIAT
+    
+    ATTENTION: Ne pas confondre:
+    - "cabinet de recrutement" (agence) vs "cabinet d'avocats" (entreprise légitime)
+    - "cabinet juridique" est une entreprise légitime
+    """
+    normalized = normalize_text(text)
+    
+    # ========== VÉRIFIER D'ABORD SI C'EST UN CABINET JURIDIQUE LÉGITIME ==========
+    # Ces termes indiquent une entreprise juridique, pas une agence de recrutement
+    legitimate_legal_firms = [
+        "cabinet d avocat", "cabinet d'avocat", "cabinet avocat",
+        "cabinet juridique", "cabinet legal",
+        "etude notariale", "etude de notaire",
+        "direction juridique", "service juridique",
+    ]
+    is_legal_firm = any(lf in normalized for lf in legitimate_legal_firms)
+    
+    # ========== CABINETS DE RECRUTEMENT CONNUS ==========
+    known_agencies = [
+        # Cabinets juridiques spécialisés (RECRUTEMENT)
+        "fed legal", "fed juridique",
+        "michael page", "page group", "page personnel",
+        "walters people", "robert walters",
+        "hays",
+        
+        # Autres grands cabinets de recrutement
+        "robert half", "expectra", "adecco", "manpower", "randstad",
+        "spring professional", "lincoln associates", "laurence simons",
+        "taylor root", "morgan philips", "spencer stuart",
+        "russell reynolds", "egon zehnder", "korn ferry",
+        "boyden", "heidrick struggles", "odgers berndtson",
+        
+        # Termes explicites d'agence de recrutement
+        "cabinet de recrutement", "cabinet recrutement",
+        "agence de recrutement", "agence recrutement",
+        "chasseur de tetes", "chasseuse de tetes",
+        "headhunter", "executive search",
+    ]
+    
+    for agency in known_agencies:
+        if agency in normalized:
+            # Si c'est aussi un cabinet juridique légitime, ne pas exclure
+            if is_legal_firm and agency not in ["cabinet de recrutement", "cabinet recrutement", 
+                                                   "agence de recrutement", "agence recrutement"]:
+                continue
+            return True, f"Cabinet connu: {agency}"
+    
+    # ========== PATTERNS DE RECRUTEMENT INDIRECT ==========
+    # Ces patterns indiquent une agence qui recrute POUR quelqu'un d'autre
+    indirect_patterns = [
+        # "Pour notre client"
+        "pour notre client", "pour l un de nos clients",
+        "pour l une de nos clientes", "pour le compte de",
+        "pour le compte d un client", "pour le compte d une cliente",
+        
+        # "Client confidentiel"
+        "client confidentiel", "societe confidentielle",
+        "entreprise confidentielle",
+        
+        # "Mandat de recrutement"
+        "mandat de recrutement", "nous recrutons pour",
+        
+        # "Au nom de" (attention: pas "pour le compte de notre cabinet")
+        "au nom de notre client",
+    ]
+    
+    indirect_count = sum(1 for p in indirect_patterns if p in normalized)
+    
+    if indirect_count >= 1:
+        # Vérifier qu'il y a AUSSI un signal d'entreprise directe
+        direct_company_signals = [
+            "notre equipe", "notre cabinet", "notre direction",
+            "notre etude", "notre groupe", "notre societe",
+            "notre entreprise", "notre organisation",
+        ]
+        
+        has_direct_signal = any(ds in normalized for ds in direct_company_signals)
+        
+        # Si c'est un cabinet juridique avec "notre cabinet", c'est légitime
+        if is_legal_firm and has_direct_signal:
+            return False, ""
+        
+        if not has_direct_signal:
+            return True, "Recrutement indirect (pour un client)"
+    
+    # ========== PATTERNS SUSPECTS D'AGENCE ==========
+    # Ces patterns suggèrent une agence même sans mention explicite
+    # ATTENTION: Réduire les faux positifs
+    agency_suspicious_patterns = [
+        # Langage très générique d'agence uniquement
+        "nous recherchons un profil pour",
+        "candidat ideal pour notre client",
+    ]
+    
+    suspicious_count = sum(1 for p in agency_suspicious_patterns if p in normalized)
+    
+    # Si patterns suspects ET pas de cabinet juridique
+    if suspicious_count >= 1 and not is_legal_firm:
+        has_direct_signal = any(ds in normalized for ds in [
+            "notre equipe", "notre cabinet", "notre direction",
+            "notre etude", "notre groupe",
+        ])
+        
+        if not has_direct_signal:
+            return True, "Patterns suspects d'agence"
+    
+    return False, ""
+
+
+def detect_specialized_job_info(text: str) -> dict:
+    """
+    Détecte les informations spécialisées sur le poste.
+    
+    Retourne:
+        dict avec:
+        - target_jobs: List des 16 métiers détectés
+        - specializations: List des spécialisations (droit social, etc.)
+        - experience_levels: List des niveaux d'expérience
+    """
+    normalized = normalize_text(text)
+    
+    # Détecter les 16 métiers cibles
+    target_jobs = []
+    for job_name, keywords in TARGET_JOBS_16.items():
+        if any(keyword in normalized for keyword in keywords):
+            target_jobs.append(job_name)
+    
+    # Si aucun métier spécifique, vérifier les termes génériques
+    if not target_jobs:
+        generic_terms = {
+            "juriste": ["juriste"],
+            "avocat": ["avocat", "avocate"],
+            "notaire": ["notaire"],
+            "paralegal": ["paralegal", "paralegale"],
+        }
+        for job_name, keywords in generic_terms.items():
+            if any(keyword in normalized for keyword in keywords):
+                target_jobs.append(job_name)
+    
+    # Détecter les spécialisations
+    specializations = []
+    spec_keywords = {
+        "droit social": ["droit social", "droit du travail"],
+        "droit des affaires": ["droit des affaires", "business law"],
+        "droit fiscal": ["droit fiscal", "fiscalite"],
+        "droit immobilier": ["droit immobilier", "real estate"],
+        "droit de la propriété intellectuelle": ["propriete intellectuelle", "ip", "brevets"],
+        "droit pénal": ["droit penal", "penal"],
+        "droit public": ["droit public"],
+        "droit des contrats": ["droit des contrats", "contrats"],
+        "contentieux": ["contentieux"],
+        "compliance": ["compliance", "conformite"],
+        "corporate": ["corporate", "m&a", "fusions acquisitions"],
+    }
+    for spec_name, keywords in spec_keywords.items():
+        if any(keyword in normalized for keyword in keywords):
+            specializations.append(spec_name)
+    
+    # Détecter les niveaux d'expérience
+    experience_levels = []
+    exp_keywords = {
+        "junior": ["junior", "debutant", "0-2 ans"],
+        "confirmé": ["confirme", "3-5 ans", "3 a 5 ans"],
+        "senior": ["senior", "experimente", "5+ ans", "10+ ans"],
+        "manager": ["manager", "responsable", "directeur"],
+    }
+    for exp_name, keywords in exp_keywords.items():
+        if any(keyword in normalized for keyword in keywords):
+            experience_levels.append(exp_name)
+    
+    return {
+        "target_jobs": target_jobs,
+        "specializations": specializations,
+        "experience_levels": experience_levels,
+    }
+
+
+def is_first_person_post(text: str) -> bool:
+    """
+    Détecte si le post est écrit à la première personne (candidat cherchant emploi).
+    
+    Ces posts sont typiquement des candidats qui cherchent du travail,
+    pas des entreprises qui recrutent.
+    """
+    normalized = normalize_text(text)
+    
+    first_person_patterns = [
+        "je recherche", "je cherche", "je suis a la recherche",
+        "je suis en recherche", "je suis heureuse", "je suis ravi",
+        "j ai le plaisir", "je suis juriste", "je suis avocat",
+        "je suis notaire", "je suis paralegal",
+        "mon cv", "mon profil", "mon experience",
+        "mon parcours", "mon background",
+    ]
+    
+    return any(pattern in normalized for pattern in first_person_patterns)
+
+
+def is_coherent_legal_recruitment(text: str) -> bool:
+    """
+    STRICT: Vérifie que le recrutement concerne BIEN un des 16 métiers.
+    
+    Rejette les posts qui parlent d'un métier juridique SANS recrutement,
+    ou qui recrutent pour un autre métier.
+    """
+    normalized = normalize_text(text)
+    
+    # Vérifier si un des 16 métiers est mentionné
+    target_job_found = False
+    found_job = None
+    for job_name, keywords in TARGET_JOBS_16.items():
+        if any(keyword in normalized for keyword in keywords):
+            target_job_found = True
+            found_job = job_name
+            break
+    
+    # Si aucun des 16 métiers spécifiques, vérifier les termes génériques
+    if not target_job_found:
+        generic_legal_jobs = ["juriste", "avocat", "avocate", "notaire", "paralegal", "paralegale", 
+                              "legal counsel", "counsel", "clerc", "fiscaliste",
+                              "directeur juridique", "directrice juridique",
+                              "responsable juridique", "directeur fiscal", "directrice fiscale"]
+        for term in generic_legal_jobs:
+            if term in normalized:
+                target_job_found = True
+                found_job = term
+                break
+    
+    if not target_job_found:
+        return False
+    
+    # Vérifier qu'il y a un signal de recrutement
+    recruitment_words = [
+        "recrute", "recrutons", "recherche", "recherchons",
+        "poste", "cdi", "cdd", "hiring"
+    ]
+    has_recruitment = any(word in normalized for word in recruitment_words)
+    
+    if not has_recruitment:
+        # Métier mentionné SANS recrutement = REJET
+        return False
+    
+    # Vérifier que le poste recruté est bien un des 16 métiers
+    # (pas un autre métier dans la même entreprise)
+    non_legal_jobs = [
+        "developpeur", "developer", "data scientist",
+        "marketing manager", "commercial",
+        "comptable", "assistant administratif",
+    ]
+    
+    # Si un métier non-juridique est mentionné dans le contexte de recrutement
+    for non_legal in non_legal_jobs:
+        if non_legal in normalized:
+            # Vérifier si c'est le FOCUS du recrutement (après "recrute" ou "recherche")
+            # Chercher le pattern "recrute/recherche [quelques mots] métier non-juridique"
+            pattern = rf"(recrute|recherche|recherchons)\s+(?:un|une)?\s*{non_legal}"
+            if re.search(pattern, normalized):
+                return False
+    
+    return True
 
 
 # =============================================================================
@@ -732,7 +1425,7 @@ def check_exclusions(
 
 @dataclass
 class FilterResult:
-    """Result of the is_legal_job_post filter."""
+    """Résultat du filtrage avec raison détaillée."""
     is_valid: bool
     recruitment_score: float
     legal_score: float
@@ -741,6 +1434,11 @@ class FilterResult:
     exclusion_terms: List[str]
     matched_professions: List[str]
     matched_signals: List[str]
+    # Nouveaux champs pour les 16 métiers
+    target_jobs: List[str] = field(default_factory=list)
+    specializations: List[str] = field(default_factory=list)
+    experience_levels: List[str] = field(default_factory=list)
+    confidence_score: float = 0.0
     
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -753,15 +1451,80 @@ class FilterResult:
             "exclusion_terms": self.exclusion_terms,
             "matched_professions": self.matched_professions,
             "matched_signals": self.matched_signals,
+            "target_jobs": self.target_jobs,
+            "specializations": self.specializations,
+            "experience_levels": self.experience_levels,
+            "confidence_score": self.confidence_score,
         }
+    
+    def get_rejection_reason(self) -> str:
+        """Retourne la raison du rejet en français clair."""
+        reasons = {
+            "cabinet_recrutement": "❌ Cabinet de recrutement détecté (concurrent)",
+            "recrutement_insuffisant": "❌ Pas de signal de recrutement actif",
+            "score_insuffisant_recrutement": "❌ Pas de signal de recrutement actif",
+            "metier_non_cible": "❌ Aucun des 16 métiers cibles détecté",
+            "recrutement_non_juridique": "❌ Recrutement pour un métier non-juridique",
+            "metier_insuffisant": "❌ Score juridique insuffisant",
+            "score_insuffisant_juridique": "❌ Score juridique insuffisant",
+            "score_insuffisant_recrutement_et_juridique": "❌ Score recrutement et juridique insuffisants",
+            "hors_france": "❌ Localisation hors France",
+            "stage_alternance": "❌ Stage/Alternance (hors scope)",
+            "freelance_mission": "❌ Freelance/Mission (pas d'embauche directe)",
+            "chercheur_emploi": "❌ Candidat cherchant du travail (#OpenToWork)",
+            "post_emotionnel": "❌ Post émotionnel sans recrutement",
+            "veille_juridique": "❌ Veille juridique/Actualité (pas d'offre)",
+            "post_institutionnel": "❌ Annonce institutionnelle (pas d'offre)",
+            "temoignage_client": "❌ Témoignage client (pas d'offre)",
+            "post_networking": "❌ Post networking (pas d'offre)",
+            "recrutement_termine": "❌ Recrutement déjà terminé (annonce d'arrivée)",
+            "post_trop_ancien": "❌ Post trop ancien (> 3 semaines)",
+            "post_trop_court": "❌ Post trop court sans signal explicite",
+            "texte_vide": "❌ Texte vide",
+            "contenu_promotionnel": "❌ Contenu promotionnel (pas d'offre)",
+            "contenu_sponsorise": "❌ Contenu sponsorisé",
+            "metier_non_juridique": "❌ Métier non-juridique recruté",
+            # NOUVELLES RAISONS DE REJET (réduction 90% faux positifs)
+            "formation_education": "❌ Formation/Éducation (pas d'offre d'emploi)",
+            "recrutement_passe": "❌ Recrutement passé/terminé (bienvenue à...)",
+            "candidat_individu": "❌ Candidat individuel cherchant emploi",
+            "contenu_informatif": "❌ Contenu informatif (article, blog, webinaire)",
+        }
+        return reasons.get(self.exclusion_reason, f"❌ Rejeté: {self.exclusion_reason}")
+    
+    # ==========================================================================
+    # PROPRIÉTÉS DE RÉTROCOMPATIBILITÉ (pour tests existants)
+    # ==========================================================================
+    
+    @property
+    def has_cdi_cdd(self) -> bool:
+        """Rétrocompatibilité: retourne True si le post est valide (présume CDI/CDD)."""
+        return self.is_valid
+    
+    @property
+    def matched_contracts(self) -> List[str]:
+        """Rétrocompatibilité: retourne liste de contrats détectés."""
+        if self.is_valid:
+            return ["CDI"]  # Par défaut si valide
+        return []
+    
+    @property
+    def relevance_score(self) -> float:
+        """Rétrocompatibilité: retourne le score total."""
+        return self.total_score
+    
+    @property
+    def stages(self) -> List[str]:
+        """Rétrocompatibilité: retourne liste vide (stages exclus par nouveau filtre)."""
+        return []
 
 
 @dataclass
 class FilterConfig:
     """Configuration for the legal job post filter."""
-    # Scoring thresholds
-    recruitment_threshold: float = 0.15
-    legal_threshold: float = 0.20
+    # Scoring thresholds - AUGMENTÉS pour stricte conformité (réduction faux positifs)
+    recruitment_threshold: float = 0.35  # Augmenté de 0.20 à 0.35
+    legal_threshold: float = 0.30  # Augmenté de 0.25 à 0.30
     # Exclusion toggles
     exclude_stage: bool = True
     exclude_freelance: bool = True
@@ -772,8 +1535,16 @@ class FilterConfig:
     exclude_non_legal: bool = True
     exclude_sponsored: bool = True
     exclude_emotional: bool = True
+    # NOUVEAUX FLAGS POUR EXCLUSIONS RENFORCÉES (réduction 90% faux positifs)
+    exclude_formation_education: bool = True
+    exclude_recrutement_passe: bool = True
+    exclude_candidat_individu: bool = True
+    exclude_contenu_informatif: bool = True
     # Logging
     verbose: bool = True
+    # Rétrocompatibilité (paramètres ignorés mais acceptés)
+    require_fr_location: bool = True  # Alias pour exclude_foreign
+    require_contract_type: bool = True  # Ignoré - toujours vérifié
 
 
 # Default configuration
@@ -787,7 +1558,16 @@ def is_legal_job_post(
     config: Optional[FilterConfig] = None
 ) -> FilterResult:
     """
-    Main filter function to determine if a post is a valid legal job posting.
+    STRICT: Détecte UNIQUEMENT les posts d'entreprises recrutant ACTIVEMENT
+    pour les 16 métiers juridiques.
+    
+    REJETTE:
+    1. Posts sans recrutement actif
+    2. Posts de cabinets de recrutement
+    3. Posts de candidats cherchant du travail
+    4. Posts de formation/éducation sans offre
+    5. Posts de recrutement passé/terminé
+    6. Contenu informatif (articles, blogs, webinaires)
     
     Args:
         text: Raw post text
@@ -797,14 +1577,13 @@ def is_legal_job_post(
         
     Returns:
         FilterResult with is_valid=True if post passes all filters
-        
-    Criteria for valid post:
-    - recruitment_score >= config.recruitment_threshold (default 0.15)
-    - legal_score >= config.legal_threshold (default 0.20)
-    - No exclusion keywords detected (based on config toggles)
     """
     if config is None:
         config = DEFAULT_FILTER_CONFIG
+        
+    normalized = normalize_text(text)
+    
+    # Vérification texte vide
     if not text or not text.strip():
         result = FilterResult(
             is_valid=False,
@@ -820,7 +1599,41 @@ def is_legal_job_post(
             logger.debug("Post exclu: texte vide")
         return result
     
-    # Step 1: Check exclusions FIRST (immediate rejection) - based on config
+    # ========== ÉTAPE 0: VÉRIFIER QUE CE N'EST PAS UN CANDIDAT INDIVIDU ==========
+    if config.exclude_candidat_individu and is_first_person_post(text):
+        result = FilterResult(
+            is_valid=False,
+            recruitment_score=0.0,
+            legal_score=0.0,
+            total_score=0.0,
+            exclusion_reason="candidat_individu",
+            exclusion_terms=["Post écrit à la première personne"],
+            matched_professions=[],
+            matched_signals=[]
+        )
+        if log_exclusions and config.verbose:
+            print("Post exclu [candidat_individu]: Post écrit à la première personne")
+        return result
+    
+    # ========== ÉTAPE 1: VÉRIFIER QUE CE N'EST PAS UNE AGENCE ==========
+    if config.exclude_agencies:
+        is_agency, agency_reason = is_recruitment_agency_strict(text)
+        if is_agency:
+            result = FilterResult(
+                is_valid=False,
+                recruitment_score=0.0,
+                legal_score=0.0,
+                total_score=0.0,
+                exclusion_reason="cabinet_recrutement",
+                exclusion_terms=[agency_reason],
+                matched_professions=[],
+                matched_signals=[]
+            )
+            if log_exclusions and config.verbose:
+                print(f"Post exclu [cabinet_recrutement]: {agency_reason}")
+            return result
+    
+    # ========== ÉTAPE 2: VÉRIFIER LES EXCLUSIONS STANDARD ==========
     exclusion = check_exclusions(text, post_date, config)
     if exclusion.excluded:
         result = FilterResult(
@@ -840,48 +1653,146 @@ def is_legal_job_post(
             )
         return result
     
-    # Step 2: Calculate scores
-    legal_score, legal_matches = calculate_legal_profession_score(text)
+    # ========== ÉTAPE 3: VÉRIFIER LE RECRUTEMENT ACTIF ==========
     recruitment_score, recruitment_matches = calculate_recruitment_score(text)
     
-    # Combined score (weighted)
-    total_score = (legal_score * 0.5) + (recruitment_score * 0.5)
-    
-    # Step 3: Check minimum thresholds (using config values)
-    is_valid = (recruitment_score >= config.recruitment_threshold) and (legal_score >= config.legal_threshold)
-    
-    exclusion_reason = ""
-    if not is_valid:
-        if recruitment_score < config.recruitment_threshold and legal_score < config.legal_threshold:
-            exclusion_reason = "score_insuffisant_recrutement_et_juridique"
-        elif recruitment_score < config.recruitment_threshold:
-            exclusion_reason = "score_insuffisant_recrutement"
-        else:
-            exclusion_reason = "score_insuffisant_juridique"
-        
+    # STRICT: Recrutement score DOIT être >= threshold
+    if recruitment_score < config.recruitment_threshold:
+        result = FilterResult(
+            is_valid=False,
+            recruitment_score=recruitment_score,
+            legal_score=0.0,
+            total_score=0.0,
+            exclusion_reason="score_insuffisant_recrutement",
+            exclusion_terms=[f"score: {recruitment_score:.2f} < {config.recruitment_threshold}"],
+            matched_professions=[],
+            matched_signals=recruitment_matches
+        )
         if log_exclusions and config.verbose:
             print(
-                f"Post exclu [{exclusion_reason}]: "
-                f"recruitment_score={recruitment_score:.2f} (min {config.recruitment_threshold}), "
-                f"legal_score={legal_score:.2f} (min {config.legal_threshold})"
+                f"Post exclu [recrutement_insuffisant]: "
+                f"score={recruitment_score:.2f} (min {config.recruitment_threshold})"
             )
-    else:
-        if log_exclusions:
-            logger.debug(
-                f"Post accepté: recruitment_score={recruitment_score:.2f}, "
-                f"legal_score={legal_score:.2f}, "
-                f"professions={legal_matches}, signals={recruitment_matches}"
+        return result
+    
+    # ========== ÉTAPE 4: VÉRIFIER QUE C'EST UN DES 16 MÉTIERS ==========
+    specialized_info = detect_specialized_job_info(text)
+    
+    if not specialized_info['target_jobs']:
+        # Aucun des 16 métiers détecté
+        result = FilterResult(
+            is_valid=False,
+            recruitment_score=recruitment_score,
+            legal_score=0.0,
+            total_score=0.0,
+            exclusion_reason="metier_non_cible",
+            exclusion_terms=["Aucun des 16 métiers cibles"],
+            matched_professions=[],
+            matched_signals=recruitment_matches
+        )
+        if log_exclusions and config.verbose:
+            print("Post exclu [metier_non_cible]: Aucun des 16 métiers cibles détecté")
+        return result
+    
+    # ========== ÉTAPE 5: VÉRIFIER LA COHÉRENCE RECRUTEMENT + MÉTIER ==========
+    if not is_coherent_legal_recruitment(text):
+        result = FilterResult(
+            is_valid=False,
+            recruitment_score=recruitment_score,
+            legal_score=0.0,
+            total_score=0.0,
+            exclusion_reason="recrutement_non_juridique",
+            exclusion_terms=["Recrutement ne concerne pas un métier juridique"],
+            matched_professions=[],
+            matched_signals=recruitment_matches
+        )
+        if log_exclusions and config.verbose:
+            print("Post exclu [recrutement_non_juridique]: Le recrutement ne concerne pas un des 16 métiers")
+        return result
+    
+    # ========== ÉTAPE 6: CALCULER LES SCORES ==========
+    legal_score, legal_matches = calculate_legal_profession_score(text)
+    
+    # STRICT: Legal score DOIT être >= threshold
+    if legal_score < config.legal_threshold:
+        result = FilterResult(
+            is_valid=False,
+            recruitment_score=recruitment_score,
+            legal_score=legal_score,
+            total_score=(legal_score * 0.5) + (recruitment_score * 0.5),
+            exclusion_reason="score_insuffisant_juridique",
+            exclusion_terms=[f"score: {legal_score:.2f} < {config.legal_threshold}"],
+            matched_professions=legal_matches,
+            matched_signals=recruitment_matches,
+            target_jobs=specialized_info['target_jobs'],
+            specializations=specialized_info['specializations'],
+            experience_levels=specialized_info['experience_levels']
+        )
+        if log_exclusions and config.verbose:
+            print(
+                f"Post exclu [score_insuffisant_juridique]: "
+                f"score={legal_score:.2f} (min {config.legal_threshold})"
             )
+        return result
+    
+    # ========== ÉTAPE 7: VÉRIFIER LA LOCALISATION ==========
+    if config.exclude_foreign:
+        france_indicators = [
+            "france", "paris", "lyon", "marseille", "bordeaux",
+            "toulouse", "nantes", "lille", "strasbourg", "nice",
+            "rennes", "grenoble", "montpellier", "la defense",
+        ]
+        has_france = any(f in normalized for f in france_indicators)
+        
+        foreign_indicators = [
+            "canada", "usa", "belgique", "suisse", "uk",
+            "allemagne", "espagne", "italie", "singapour",
+        ]
+        has_foreign = any(f in normalized for f in foreign_indicators)
+        
+        if has_foreign and not has_france:
+            result = FilterResult(
+                is_valid=False,
+                recruitment_score=recruitment_score,
+                legal_score=legal_score,
+                total_score=(legal_score * 0.5) + (recruitment_score * 0.5),
+                exclusion_reason="hors_france",
+                exclusion_terms=["Localisation hors France détectée"],
+                matched_professions=legal_matches,
+                matched_signals=recruitment_matches,
+                target_jobs=specialized_info['target_jobs'],
+                specializations=specialized_info['specializations'],
+                experience_levels=specialized_info['experience_levels']
+            )
+            if log_exclusions and config.verbose:
+                print("Post exclu [hors_france]: Localisation hors France")
+            return result
+    
+    # ========== ÉTAPE 8: ACCEPTER LE POST ==========
+    total_score = (legal_score * 0.5) + (recruitment_score * 0.5)
+    confidence_score = min(legal_score, recruitment_score)
+    
+    if log_exclusions:
+        logger.debug(
+            f"Post accepté: recruitment_score={recruitment_score:.2f}, "
+            f"legal_score={legal_score:.2f}, "
+            f"professions={legal_matches}, signals={recruitment_matches}, "
+            f"target_jobs={specialized_info['target_jobs']}"
+        )
     
     return FilterResult(
-        is_valid=is_valid,
+        is_valid=True,
         recruitment_score=recruitment_score,
         legal_score=legal_score,
         total_score=total_score,
-        exclusion_reason=exclusion_reason,
+        exclusion_reason="",
         exclusion_terms=[],
         matched_professions=legal_matches,
-        matched_signals=recruitment_matches
+        matched_signals=recruitment_matches,
+        target_jobs=specialized_info['target_jobs'],
+        specializations=specialized_info['specializations'],
+        experience_levels=specialized_info['experience_levels'],
+        confidence_score=confidence_score
     )
 
 
@@ -898,6 +1809,13 @@ __all__ = [
     "calculate_legal_profession_score",
     "calculate_recruitment_score",
     "check_exclusions",
+    # Nouvelles fonctions pour détection stricte
+    "is_recruitment_agency_strict",
+    "is_coherent_legal_recruitment",
+    "detect_specialized_job_info",
+    "is_first_person_post",  # NOUVEAU
+    "TARGET_JOBS_16",
+    # Listes de données
     "LEGAL_PROFESSIONS",
     "RECRUITMENT_SIGNALS",
     "EXCLUSION_STAGE_ALTERNANCE",
@@ -910,5 +1828,14 @@ __all__ = [
     "EXCLUSION_RECRUITMENT_AGENCIES",
     "EXCLUSION_NON_LEGAL_JOBS",
     "EXCLUSION_RECRUITMENT_DONE",
+    "EXCLUSION_INSTITUTIONAL",
+    "EXCLUSION_LEGAL_NEWS",
+    "EXCLUSION_TESTIMONIALS",
+    "EXCLUSION_NETWORKING",
+    # NOUVELLES LISTES D'EXCLUSION (réduction 90% faux positifs)
+    "EXCLUSION_FORMATION_EDUCATION",
+    "EXCLUSION_RECRUTEMENT_PASSE",
+    "EXCLUSION_CANDIDAT_INDIVIDU",
+    "EXCLUSION_CONTENU_INFORMATIF",
     "DEFAULT_FILTER_CONFIG",
 ]

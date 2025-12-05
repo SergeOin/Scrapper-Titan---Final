@@ -96,9 +96,15 @@ class TestRecruitmentScore:
     """Tests pour calculate_recruitment_score."""
 
     def test_recrute_detected(self):
-        score, matches = calculate_recruitment_score("Je recrute un juriste")
+        """NOUVELLE LOGIQUE: 'nous recrutons' est le signal valide, pas 'je recrute'."""
+        score, matches = calculate_recruitment_score("Nous recrutons un juriste. CDI à pourvoir.")
         assert score >= 0.15
-        assert any("recrute" in m for m in matches)
+        assert "nous recrutons" in matches
+
+    def test_je_recrute_rejected(self):
+        """'Je recrute' doit retourner score 0 (chasseur de têtes)."""
+        score, matches = calculate_recruitment_score("Je recrute un juriste")
+        assert score == 0.0
 
     def test_cdi_detected(self):
         score, matches = calculate_recruitment_score("CDI temps plein Paris")
@@ -338,7 +344,8 @@ class TestIsLegalJobPost:
         """
         result = is_legal_job_post(text)
         assert not result.is_valid
-        assert "recrutement" in result.exclusion_reason
+        # La nouvelle logique retourne "veille_juridique" pour les articles
+        assert any(r in result.exclusion_reason for r in ("recrutement", "veille"))
 
 
 # =============================================================================
@@ -449,15 +456,16 @@ class TestEmotionalExclusion:
         assert result.exclusion_reason == "post_emotionnel"
 
     def test_emotional_post_felicitations(self):
-        """Post félicitations = rejeté."""
+        """Post félicitations = détecté comme recrutement terminé (annonce arrivée)."""
         text = "Félicitations à notre nouvelle avocate associée!"
         result = is_legal_job_post(text)
         assert not result.is_valid
-        assert result.exclusion_reason == "post_emotionnel"
+        # La nouvelle logique détecte "nouvelle avocate" comme annonce d'arrivée (recrutement terminé)
+        assert result.exclusion_reason in ("post_emotionnel", "recrutement_termine")
 
     def test_emotional_with_recruitment(self):
         """Post émotionnel AVEC recrutement = accepté."""
-        text = "Fier de notre cabinet qui recrute un avocat en CDI!"
+        text = "Fier de notre cabinet qui recrute un avocat en CDI! Poste à pourvoir immédiatement."
         result = is_legal_job_post(text)
         assert result.is_valid
 

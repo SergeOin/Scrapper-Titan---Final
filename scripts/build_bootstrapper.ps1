@@ -41,8 +41,12 @@ $bundleWxs = @'
 <Wix xmlns='http://schemas.microsoft.com/wix/2006/wi' xmlns:bal='http://schemas.microsoft.com/wix/BalExtension'>
   <Bundle Name='Titan Scraper Bootstrapper' Version='1.0.0.0' Manufacturer='Titan Partners' UpgradeCode='{7A1B21F7-0789-4EE8-84A7-698E20E72FA9}'
           Compressed='yes' IconSourceFile='$(var.IconFile)'>
+    
+    <!-- Variable pour le chemin d'installation -->
+    <Variable Name='LaunchTargetPath' Type='string' Value='[ProgramFilesFolder]TitanScraper\TitanScraper.exe' />
+    
     <BootstrapperApplicationRef Id='WixStandardBootstrapperApplication.HyperlinkLicense'>
-      <bal:WixStandardBootstrapperApplication LicenseUrl='https://example.com/license' LogoFile='$(var.IconFile)' SuppressOptionsUI='yes' />
+      <bal:WixStandardBootstrapperApplication LicenseUrl='https://example.com/license' LogoFile='$(var.IconFile)' SuppressOptionsUI='yes' LaunchTarget='[LaunchTargetPath]' />
     </BootstrapperApplicationRef>
     <Chain>
       <PackageGroupRef Id='Prerequisites' />

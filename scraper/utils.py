@@ -256,14 +256,16 @@ def is_post_too_old(published_at: str | datetime | None, max_age_days: int = MAX
     
     Returns:
         True if post is too old and should be filtered out.
-        False if post is recent enough.
+        False if post is recent enough OR if date cannot be determined.
     
-    CRITIQUE: Cette fonction est STRICTE - un post sans date valide est REJETÉ
-    pour garantir la fraîcheur des données collectées.
+    NOTE: Si la date n'est pas disponible ou ne peut pas être parsée, on laisse
+    passer le post (return False) plutôt que de le rejeter. Les autres filtres
+    (legal filter, etc.) s'occuperont de filtrer le contenu non pertinent.
+    Ceci évite de perdre des posts valides quand LinkedIn change son markup.
     """
     if not published_at:
-        # CRITIQUE: Rejeter les posts sans date pour garantir la fraîcheur
-        return True
+        # Pas de date = on laisse passer, les autres filtres décideront
+        return False
     
     now = datetime.now(timezone.utc)
     max_age = timedelta(days=max_age_days)
@@ -287,8 +289,8 @@ def is_post_too_old(published_at: str | datetime | None, max_age_days: int = MAX
                 pub_date = parse_possible_date(clean_str, now)
         
         if pub_date is None:
-            # CRITIQUE: Rejeter si on ne peut pas déterminer la date
-            return True
+            # Date non parsable = on laisse passer, les autres filtres décideront
+            return False
         
         # Ensure timezone aware
         if pub_date.tzinfo is None:
@@ -301,8 +303,8 @@ def is_post_too_old(published_at: str | datetime | None, max_age_days: int = MAX
         
         return age > max_age
     except Exception:
-        # CRITIQUE: Rejeter en cas d'erreur de parsing (sécurité)
-        return True
+        # Erreur de parsing = on laisse passer, les autres filtres décideront
+        return False
 
 # Pattern simple pour compatibilité arrière (déprécié, utiliser _RELATIVE_PATTERN_EXTENDED)
 _RELATIVE_PATTERN = re.compile(r"(\d+)\s*(s|min|h|j)")

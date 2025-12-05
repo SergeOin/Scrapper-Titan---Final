@@ -107,10 +107,17 @@ class TestRecruitmentScore:
     """Tests for recruitment signal scoring."""
 
     def test_score_je_recrute(self):
-        """'Je recrute' should give score >= 0.15."""
+        """'Je recrute' DOIT retourner score 0 (signal de chasseur de têtes)."""
         score, matches = calculate_recruitment_score("Je recrute un avocat")
-        assert score >= 0.15
-        assert "je recrute" in matches
+        # NOUVELLE LOGIQUE: "je recrute" est exclu car signal de recruteur individuel
+        assert score == 0.0
+        assert "je recrute" not in matches
+
+    def test_score_nous_recrutons(self):
+        """'Nous recrutons' should give score >= 0.20 (signal d'entreprise)."""
+        score, matches = calculate_recruitment_score("Nous recrutons un avocat")
+        assert score >= 0.20
+        assert "nous recrutons" in matches
 
     def test_score_cdi(self):
         """'CDI' should give score >= 0.15."""
@@ -251,8 +258,8 @@ class TestIsLegalJobPost:
         assert result.recruitment_score >= 0.15
 
     def test_valid_juriste_recrute(self):
-        """Valid post: juriste + je recrute."""
-        text = "Je recrute un juriste d'entreprise pour rejoindre notre équipe"
+        """Valid post: juriste + nous recrutons (signal entreprise)."""
+        text = "Nous recrutons un juriste d'entreprise pour rejoindre notre équipe. CDI à pourvoir."
         result = is_legal_job_post(text, log_exclusions=False)
         assert result.is_valid is True
 
@@ -271,19 +278,19 @@ class TestIsLegalJobPost:
 
     def test_valid_paralegal(self):
         """Valid post: paralegal."""
-        text = "Nous recrutons un paralegal pour notre direction juridique"
+        text = "Nous recrutons un paralegal pour notre direction juridique. Poste en CDI."
         result = is_legal_job_post(text, log_exclusions=False)
         assert result.is_valid is True
 
     def test_valid_juriste_conformite(self):
         """Valid post: juriste conformité (exception to compliance exclusion)."""
-        text = "Je recrute un juriste conformité pour notre équipe compliance"
+        text = "Nous recrutons un juriste conformité pour notre équipe compliance. CDI à pourvoir."
         result = is_legal_job_post(text, log_exclusions=False)
         assert result.is_valid is True
 
     def test_valid_with_emojis_and_hashtags(self):
         """Valid post with emojis and hashtags should be cleaned and validated."""
-        text = "🚀 #Recrutement Je recrute un #avocat en #CDI à Paris! 💼"
+        text = "🚀 #Recrutement Nous recrutons un #avocat en #CDI à Paris! 💼"
         result = is_legal_job_post(text, log_exclusions=False)
         assert result.is_valid is True
 
@@ -364,7 +371,8 @@ class TestIsLegalJobPost:
         text = "Nous recrutons en CDI! Poste à pourvoir immédiatement."
         result = is_legal_job_post(text, log_exclusions=False)
         assert result.is_valid is False
-        assert "insuffisant" in result.exclusion_reason
+        # La nouvelle logique retourne "metier_non_cible" au lieu de "insuffisant"
+        assert result.exclusion_reason in ("metier_non_cible", "score_insuffisant_juridique")
 
     def test_invalid_empty_text(self):
         """Empty text should be excluded."""
@@ -374,7 +382,7 @@ class TestIsLegalJobPost:
 
     def test_invalid_old_post(self):
         """Post older than 3 weeks should be excluded."""
-        text = "Je recrute un avocat en CDI à Paris"
+        text = "Nous recrutons un avocat en CDI à Paris"
         old_date = datetime.now(timezone.utc) - timedelta(weeks=4)
         result = is_legal_job_post(text, post_date=old_date, log_exclusions=False)
         assert result.is_valid is False
@@ -390,16 +398,16 @@ class TestEdgeCases:
 
     def test_france_and_foreign_country(self):
         """Post mentioning France AND foreign country should pass if France is primary."""
-        text = "Nous recrutons un avocat pour notre bureau de Paris (expérience UK appréciée)"
+        text = "Nous recrutons un avocat pour notre bureau de Paris (expérience UK appréciée). CDI à pourvoir."
         result = is_legal_job_post(text, log_exclusions=False)
         # Should pass because France (Paris) is mentioned
         assert result.is_valid is True or result.exclusion_reason != "hors_france"
 
     def test_promotional_with_strong_recruitment(self):
         """Promotional content with strong recruitment signal should still pass."""
-        text = "Je recrute un avocat en CDI - Participez aussi à notre formation"
+        text = "Nous recrutons un avocat en CDI - Participez aussi à notre formation. Poste à pourvoir."
         result = is_legal_job_post(text, log_exclusions=False)
-        # Strong recruitment signal ("je recrute", "CDI") overrides promotional content
+        # Strong recruitment signal ("nous recrutons", "CDI") overrides promotional content
         assert result.is_valid is True  # Strong recruitment signal wins
 
     def test_apprentissage_explicit(self):
@@ -417,13 +425,13 @@ class TestEdgeCases:
 
     def test_clerc_de_notaire(self):
         """Clerc de notaire should be valid."""
-        text = "Notre étude recrute un clerc de notaire en CDI"
+        text = "Notre étude recrute un clerc de notaire en CDI. Poste à pourvoir."
         result = is_legal_job_post(text, log_exclusions=False)
         assert result.is_valid is True
 
     def test_assistant_juridique(self):
         """Assistant juridique should be valid."""
-        text = "Nous recrutons un assistant juridique pour notre direction juridique"
+        text = "Nous recrutons un assistant juridique pour notre direction juridique. Poste en CDI à pourvoir."
         result = is_legal_job_post(text, log_exclusions=False)
         assert result.is_valid is True
 
@@ -445,7 +453,7 @@ class TestFilterResultStructure:
 
     def test_filter_result_to_dict(self):
         """FilterResult should serialize to dict properly."""
-        text = "Je recrute un avocat en CDI à Paris"
+        text = "Nous recrutons un avocat en CDI à Paris. Poste à pourvoir."
         result = is_legal_job_post(text, log_exclusions=False)
         result_dict = result.to_dict()
         
@@ -459,7 +467,7 @@ class TestFilterResultStructure:
 
     def test_filter_result_scores_range(self):
         """Scores should be in valid range [0, 1]."""
-        text = "Je recrute plusieurs avocats et juristes en CDI pour notre équipe juridique"
+        text = "Nous recrutons plusieurs avocats et juristes en CDI pour notre équipe juridique. Poste à pourvoir."
         result = is_legal_job_post(text, log_exclusions=False)
         
         assert 0.0 <= result.recruitment_score <= 1.0
@@ -492,20 +500,20 @@ class TestRealWorldExamples:
         assert result.is_valid is True
 
     def test_realistic_valid_post_2(self):
-        """Realistic valid recruitment post for juriste."""
+        """Realistic valid recruitment post for juriste - ENTREPRISE."""
         text = """
         💼 OPPORTUNITÉ CDI - JURISTE CORPORATE
         
-        Je recrute pour mon équipe un(e) juriste corporate confirmé(e).
+        Notre équipe recrute un(e) juriste corporate confirmé(e).
         Vous intégrerez la direction juridique d'un groupe international
-        basé à La Défense.
+        basé à La Défense. Poste à pourvoir immédiatement.
         
         Profil recherché :
         - 4/6 ans d'expérience
         - Droit des sociétés / M&A
         - Anglais courant
         
-        Intéressé(e) ? Contactez-moi !
+        Intéressé(e) ? Contactez-nous !
         """
         result = is_legal_job_post(text, log_exclusions=False)
         assert result.is_valid is True

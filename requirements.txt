@@ -12,7 +12,7 @@ pydantic-settings~=2.3.0    # Settings management (BaseSettings moved here in Py
 # =============================
 # Scraping & Automation
 # =============================
-playwright~=1.46.0          # Browser automation (Chromium)
+playwright~=1.55.0          # Browser automation (Chromium)
 # After install run: playwright install chromium
 browser-cookie3~=0.19.1     # Import cookies from local browsers (Chrome/Edge/Firefox)
 

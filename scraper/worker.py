@@ -734,12 +734,20 @@ TEXT_SELECTOR = (
     "span.break-words, "
     "div[dir='ltr']"
 )
-# DATE_SELECTOR: LinkedIn n'utilise plus <time>, la date relative est dans sub-description
-# Ex: "1 sem. •" ou "3 j •" dans span.update-components-actor__sub-description
+# DATE_SELECTOR: LinkedIn change souvent son markup. On essaie plusieurs sélecteurs.
+# La date relative est généralement dans sub-description: "1 sem. •" ou "3 j •"
+# Ou parfois dans un élément <time> avec attribut datetime
 DATE_SELECTOR = (
-    "time, "  # Legacy fallback au cas où
+    "time[datetime], "  # Priorité: élément time avec attribut datetime
+    "time, "  # Legacy time sans attribut
     "span.update-components-actor__sub-description, "
-    "span.feed-shared-actor__sub-description"
+    "span.feed-shared-actor__sub-description, "
+    # Nouveaux sélecteurs LinkedIn 2024-2025
+    "span.update-components-actor__sub-description-link, "
+    "a.update-components-actor__sub-description-link, "
+    "span[class*='sub-description'], "
+    "span[class*='timestamp'], "
+    "span.visually-hidden:not([aria-hidden])"  # Parfois la date est en hidden pour accessibilité
 )
 MEDIA_INDICATOR_SELECTOR = "img, video"
 PERMALINK_LINK_SELECTORS = [
@@ -1083,25 +1091,69 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                         # Avoid author duplication
                         if not author or comp.lower() != author.lower():
                             company_val = comp
-                published_raw = (await date_el.get_attribute("datetime")) if date_el else None
+                
+                # =====================================================================
+                # EXTRACTION DE DATE - Stratégie multi-fallback
+                # LinkedIn change souvent son markup, on essaie plusieurs approches
+                # =====================================================================
+                published_raw = None
                 published_iso = None
+                txt_for_date = ""
+                
+                # Stratégie 1: Attribut datetime sur l'élément date
+                if date_el:
+                    try:
+                        published_raw = await date_el.get_attribute("datetime")
+                    except Exception:
+                        pass
+                
                 if published_raw:
                     published_iso = published_raw
                 else:
-                    txt_for_date = ""
+                    # Stratégie 2: Texte de l'élément date trouvé
                     if date_el:
                         try:
                             txt_for_date = await date_el.inner_text()
                         except Exception:
                             txt_for_date = ""
+                    
+                    # Stratégie 3: Chercher dans plusieurs sélecteurs de date alternatifs
+                    if not txt_for_date:
+                        date_fallback_selectors = [
+                            "span.update-components-actor__sub-description",
+                            "span.feed-shared-actor__sub-description",
+                            "a.update-components-actor__sub-description-link",
+                            "span[class*='sub-description']",
+                            # Parfois la date est dans le texte de l'acteur
+                            "div.update-components-actor__meta span",
+                            "div.feed-shared-actor__meta span",
+                        ]
+                        for sel in date_fallback_selectors:
+                            try:
+                                fallback_el = await el.query_selector(sel)
+                                if fallback_el:
+                                    txt_for_date = await fallback_el.inner_text()
+                                    if txt_for_date and any(u in txt_for_date.lower() for u in ["j", "h", "min", "sem", "mois", "an", "day", "hour", "week", "month", "ago"]):
+                                        break
+                            except Exception:
+                                pass
+                    
+                    # Stratégie 4: Chercher un pattern de date dans TOUT le texte de l'en-tête du post
                     if not txt_for_date:
                         try:
-                            subdesc = await el.query_selector("span.update-components-actor__sub-description")
-                            if subdesc:
-                                txt_for_date = await subdesc.inner_text()
+                            header_el = await el.query_selector("div.update-components-actor, div.feed-shared-actor")
+                            if header_el:
+                                header_text = await header_el.inner_text()
+                                # Chercher des patterns de date relative dans le header
+                                import re
+                                date_pattern = re.compile(r'\b(\d+\s*(j|h|min|sem|mois|an|jour|heure|semaine|day|hour|week|month|year)s?\.?\s*[•·]?)\b', re.IGNORECASE)
+                                match = date_pattern.search(header_text or "")
+                                if match:
+                                    txt_for_date = match.group(1)
                         except Exception:
                             pass
-                    # AMÉLIORATION: Nettoyer le texte de date avant parsing
+                    
+                    # Nettoyer le texte de date avant parsing
                     # LinkedIn format: "6 j •", "1 sem. •", "3 sem. • Modifié •"
                     if txt_for_date:
                         # Retirer les séparateurs et mentions parasites
@@ -1112,6 +1164,9 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                     dt = utils.parse_possible_date(txt_for_date)
                     if dt:
                         published_iso = dt.isoformat()
+                    else:
+                        # Log pour diagnostic - date non parsée
+                        logger.debug("date_parse_failed", raw_date=txt_for_date[:50] if txt_for_date else "empty", author=author[:30] if author else "unknown")
 
                 language = utils.detect_language(text_norm, ctx.settings.default_lang)
                 # Provisional id; may be overridden by permalink-based id later
@@ -1647,6 +1702,27 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
             # Metrics reflect persisted accepted posts
             LEGAL_POSTS_TOTAL.inc(inserted)
             all_new = classified
+            
+            # Send individual post events for progressive display
+            if broadcast and EventType and classified:
+                for p in classified:
+                    try:
+                        await broadcast({
+                            "type": EventType.NEW_POST,
+                            "post": {
+                                "_id": p.id,
+                                "keyword": p.keyword,
+                                "author": p.author,
+                                "company": getattr(p, "company", None),
+                                "permalink": getattr(p, "permalink", None),
+                                "text": p.text[:500] if p.text else "",  # Truncate for SSE
+                                "published_at": p.published_at.isoformat() if p.published_at else None,
+                                "collected_at": p.collected_at.isoformat() if p.collected_at else None,
+                                "metier": getattr(p, "keywords_matched", [None])[0] if getattr(p, "keywords_matched", None) else None,
+                            }
+                        })
+                    except Exception:
+                        pass
             # Count unknown authors
             for p in all_new:
                 if p.author == "Unknown":
