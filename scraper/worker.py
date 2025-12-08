@@ -24,6 +24,9 @@ import contextlib
 import json
 import os
 import sqlite3
+import subprocess
+import sys
+import tempfile
 import re as _re  # local lightweight regex (avoid repeated imports)
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -73,6 +76,142 @@ except Exception:  # pragma: no cover
     async_playwright = None  # type: ignore
     Page = Any  # type: ignore
     Browser = Any  # type: ignore
+
+# ------------------------------------------------------------
+# Subprocess-based scraping (avoids event loop conflicts)
+# ------------------------------------------------------------
+async def _run_scraping_subprocess(keywords: list[str], ctx: AppContext, logger: structlog.BoundLogger) -> list[dict]:
+    """Run scraping in a separate process to avoid Playwright/asyncio conflicts.
+    
+    This is used in packaged desktop builds where running Playwright directly
+    in the uvicorn event loop causes 'Target closed' errors.
+    
+    Uses file-based communication for Windows GUI exe (console=False).
+    Keywords are processed in batches to avoid long-running subprocesses.
+    """
+    all_posts: list[dict] = []
+    batch_size = 5  # Process 5 keywords per subprocess call
+    
+    for batch_start in range(0, len(keywords), batch_size):
+        batch_keywords = keywords[batch_start:batch_start + batch_size]
+        logger.info("subprocess_batch_start", batch_num=batch_start // batch_size + 1, 
+                   keywords_count=len(batch_keywords), total_keywords=len(keywords))
+        
+        batch_posts = await _run_scraping_subprocess_batch(batch_keywords, ctx, logger)
+        all_posts.extend(batch_posts)
+        
+        # Brief pause between batches to avoid rate limiting
+        if batch_start + batch_size < len(keywords):
+            await asyncio.sleep(2)
+    
+    logger.info("subprocess_all_batches_complete", total_posts=len(all_posts))
+    return all_posts
+
+
+async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, logger: structlog.BoundLogger) -> list[dict]:
+    """Run a single batch of keywords in subprocess."""
+    # Prepare input data
+    input_data = {
+        "keywords": keywords,
+        "storage_state": ctx.settings.storage_state,
+        "max_per_keyword": ctx.settings.max_posts_per_keyword,
+        "headless": ctx.settings.playwright_headless_scrape,
+        "browsers_path": os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""),
+    }
+    
+    # Create temp files for communication (needed for console=False PyInstaller exe)
+    input_file = tempfile.NamedTemporaryFile(mode='w', suffix='_scraper_input.json', delete=False, encoding='utf-8')
+    output_file_path = input_file.name.replace('_scraper_input.json', '_scraper_output.json')
+    
+    try:
+        # Write input to temp file
+        json.dump(input_data, input_file)
+        input_file.close()
+        
+        # Determine how to invoke the subprocess
+        if getattr(sys, "frozen", False):
+            # Frozen app: call the same exe with --scraper-subprocess flag and file args
+            cmd = [
+                sys.executable, 
+                "--scraper-subprocess",
+                "--input-file", input_file.name,
+                "--output-file", output_file_path
+            ]
+            cwd = None
+        else:
+            # Dev mode: run the scrape_subprocess.py script directly
+            script_path = Path(__file__).parent / "scrape_subprocess.py"
+            cmd = [
+                sys.executable, 
+                str(script_path),
+                "--input-file", input_file.name,
+                "--output-file", output_file_path
+            ]
+            cwd = str(Path(__file__).parent.parent)
+        
+        logger.info("subprocess_scraping_start", keywords_count=len(keywords), frozen=getattr(sys, "frozen", False))
+        
+        # Run subprocess with timeout (3 minutes per batch should be plenty)
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=cwd,
+        )
+        
+        # Wait for completion with timeout
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=180)  # 3 minute timeout per batch
+        except asyncio.TimeoutError:
+            proc.kill()
+            logger.error("subprocess_scraping_timeout", keywords=keywords[:3])
+            return []
+        
+        if proc.returncode != 0:
+            logger.error("subprocess_scraping_failed", returncode=proc.returncode)
+            return []
+        
+        # Read output from file
+        if not os.path.exists(output_file_path):
+            logger.error("subprocess_no_output_file")
+            return []
+        
+        with open(output_file_path, 'r', encoding='utf-8') as f:
+            result = json.load(f)
+        
+        if not result.get("success", False):
+            logger.warning("subprocess_scraping_errors", errors=result.get("errors", []))
+        
+        posts = result.get("posts", [])
+        logger.info("subprocess_scraping_complete", posts_count=len(posts), keywords_processed=result.get("keywords_processed", 0))
+        
+        return posts
+    
+    except Exception as exc:
+        logger.error("subprocess_scraping_error", error=str(exc))
+        return []
+    
+    finally:
+        # Cleanup temp files
+        try:
+            os.unlink(input_file.name)
+        except Exception:
+            pass
+        try:
+            os.unlink(output_file_path)
+        except Exception:
+            pass
+
+def _should_use_subprocess(ctx: AppContext) -> bool:
+    """Determine if we should use subprocess for scraping.
+    
+    Returns True if:
+    - Running in frozen (packaged) mode
+    - Or explicitly enabled via env var
+    """
+    if os.environ.get("SCRAPING_SUBPROCESS", "").lower() in ("1", "true", "yes"):
+        return True
+    if getattr(sys, "frozen", False):
+        return True
+    return False
 
 # ------------------------------------------------------------
 # Authentication helpers (single session use)
@@ -220,9 +359,50 @@ async def _recover_browser(pw, ctx: AppContext, logger: structlog.BoundLogger): 
         return None
 
 async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> list[Post]:
+    """Process keywords with Playwright, using subprocess in packaged mode."""
+    logger = ctx.logger.bind(component="batched_session")
+    
+    # Debug logging to file
+    def _debug_log(msg: str):
+        try:
+            debug_file = Path(os.environ.get("LOCALAPPDATA", ".")) / "TitanScraper" / "worker_debug.txt"
+            with open(debug_file, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now().isoformat()} {msg}\n")
+        except Exception:
+            pass
+    
+    # In packaged (frozen) mode, use subprocess to avoid event loop conflicts
+    if _should_use_subprocess(ctx):
+        logger.info("using_subprocess_mode", frozen=getattr(sys, "frozen", False))
+        _debug_log(f"using_subprocess_mode, keywords={len(all_keywords)}")
+        raw_posts = await _run_scraping_subprocess(all_keywords, ctx, logger)
+        _debug_log(f"subprocess returned {len(raw_posts)} raw posts")
+        # Convert raw dicts to Post objects
+        results: list[Post] = []
+        for p in raw_posts:
+            try:
+                post = Post(
+                    id=p.get("id", ""),
+                    keyword=p.get("keyword", ""),
+                    author=p.get("author", "Unknown"),
+                    author_profile=p.get("author_profile"),
+                    text=p.get("text", ""),
+                    language=p.get("language", "fr"),
+                    published_at=p.get("published_at"),
+                    collected_at=p.get("collected_at", datetime.now(timezone.utc).isoformat()),
+                    company=p.get("company"),
+                    permalink=p.get("permalink"),
+                    raw=p.get("raw"),
+                )
+                results.append(post)
+            except Exception as exc:
+                logger.warning("post_conversion_failed", error=str(exc))
+        _debug_log(f"converted to {len(results)} Post objects")
+        return results
+    
+    # Standard in-process Playwright mode (dev or when subprocess disabled)
     if async_playwright is None:
         raise RuntimeError("Playwright not installed.")
-    logger = ctx.logger.bind(component="batched_session")
     batch_size = max(1, ctx.settings.keywords_session_batch_size)
     results: list[Post] = []
     # Split keywords into batches
@@ -1166,7 +1346,7 @@ async def extract_posts(page: Any, keyword: str, max_items: int, ctx: AppContext
                         published_iso = dt.isoformat()
                     else:
                         # Log pour diagnostic - date non parsée
-                        logger.debug("date_parse_failed", raw_date=txt_for_date[:50] if txt_for_date else "empty", author=author[:30] if author else "unknown")
+                        ctx.logger.debug("date_parse_failed", raw_date=txt_for_date[:50] if txt_for_date else "empty", author=author[:30] if author else "unknown")
 
                 language = utils.detect_language(text_norm, ctx.settings.default_lang)
                 # Provisional id; may be overridden by permalink-based id later
@@ -1611,6 +1791,18 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
             else:
                 real_posts = await process_keywords_batched(iterable_keywords, ctx)
                 all_new.extend(real_posts)
+            
+            # Debug logging function
+            def _debug_log(msg: str):
+                try:
+                    debug_file = Path(os.environ.get("LOCALAPPDATA", ".")) / "TitanScraper" / "worker_debug.txt"
+                    with open(debug_file, "a", encoding="utf-8") as f:
+                        f.write(f"{datetime.now().isoformat()} {msg}\n")
+                except Exception:
+                    pass
+            
+            _debug_log(f"all_new after batched: {len(all_new)} posts")
+            
             # Restore original settings after lightweight first cycle
             if fast_cycle_applied:
                 try:
@@ -1636,9 +1828,14 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                 if key not in seen_keys:
                     seen_keys.add(key)
                     deduped.append(p)
+            
+            _debug_log(f"after dedup: {len(deduped)} unique posts from {len(all_new)} raw")
+            
             # Apply legal classification & quota policy
             classified: list[Post] = []
             accepted_in_batch = 0
+            discarded_intent = 0
+            discarded_location = 0
             # Build dynamic legal keywords list (override/extend if provided)
             provided = []
             try:
@@ -1655,16 +1852,19 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
             daily_count = getattr(ctx, 'legal_daily_count', 0)
             cap = ctx.settings.legal_daily_post_cap
             relaxed = bool(getattr(ctx, "_relaxed_filters", False))
+            _debug_log(f"classification: relaxed={relaxed}, cap={cap}, daily_count={daily_count}")
             for p in deduped:
                 # Enforce daily cap based on persisted-accepted so far plus this batch's accepted
                 if (daily_count + accepted_in_batch) >= cap:
                     LEGAL_DAILY_CAP_REACHED.inc()
+                    _debug_log(f"daily cap reached at {accepted_in_batch} accepted")
                     break
                 # Classification and gating
                 lc = classify_legal_post(p.text, language=p.language, intent_threshold=ctx.settings.legal_intent_threshold)
                 LEGAL_INTENT_CLASSIFICATIONS_TOTAL.labels(lc.intent).inc()
                 if not relaxed:
                     if lc.intent != 'recherche_profil':
+                        discarded_intent += 1
                         LEGAL_POSTS_DISCARDED_TOTAL.labels('intent').inc()
                         try:
                             ctx.legal_daily_discard_intent = getattr(ctx, 'legal_daily_discard_intent', 0) + 1  # type: ignore[attr-defined]
@@ -1695,8 +1895,12 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                 setattr(p, 'location_ok', lc.location_ok)
                 classified.append(p)
                 accepted_in_batch += 1
+            
+            _debug_log(f"classification done: {len(classified)} accepted, {discarded_intent} discarded_intent, {discarded_location} discarded_location")
+            
             # Persist posts and count actual insertions (dedup aware)
             inserted = await store_posts(ctx, classified)
+            _debug_log(f"store_posts returned: {inserted} inserted")
             daily_count += inserted
             setattr(ctx, 'legal_daily_count', daily_count)
             # Metrics reflect persisted accepted posts

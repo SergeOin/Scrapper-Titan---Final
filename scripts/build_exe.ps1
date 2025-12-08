@@ -82,7 +82,7 @@ if($Mode -eq 'desktop'){
 }
 
 # Build EXE (GUI app by default; pass -Console switch to keep terminal visible)
-$cmd = @('pyinstaller','--noconfirm','--clean','--name', $Slug,'--onefile','--icon','build/icon.ico','--paths','.')
+$cmd = @('pyinstaller','--noconfirm','--clean','--name', $Slug,'--onefile','--icon','Titan Scraper logo.png','--paths','.')
 if(-not $Console){ $cmd += '--windowed' }
 
 # Desktop mode may require ensuring playwright browsers path exists locally (optional optimization)

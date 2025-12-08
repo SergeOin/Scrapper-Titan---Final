@@ -405,21 +405,36 @@ def _derive_company(author: str, author_profile: Optional[str], text: Optional[s
                 if 2 <= len(top) <= 80 and top.lower() != norm_author:
                     return top
 
-    # Fallback: look into text for markers
+    # Fallback: look into text for @Company marker ONLY (not generic text extraction)
     blob = (text or "")
-    for marker in ["@ ", "chez ", " chez ", " at ", " chez l'", " chez le ", " chez la ", " chez les "]:
-        if marker in blob:
-            tail = blob.split(marker, 1)[1].strip()
-            for stop in [" |", " -", ",", " •", " ·", "  "]:
+    # Content markers that indicate this is post text, not a company name
+    content_indicators = ['#', '🚀', '📢', '📍', '🔍', '📌', '💼', '!', '?', '\n', 
+                          'recrute', 'recherche', 'Cher', 'Bonjour', 'CDI', 'CDD']
+    
+    # Only extract from @Company pattern
+    at_match = re.search(r'@\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9\s&\-\.\']{2,50})', blob)
+    if at_match:
+        company = at_match.group(1).strip()
+        # Validate it's not post content
+        if not any(indicator in company for indicator in content_indicators):
+            if 2 <= len(company) <= 50 and company.lower() != norm_author:
+                return company
+    
+    # Try "chez Company" pattern with strict validation
+    for marker in [" chez ", " at "]:
+        if marker in blob.lower():
+            idx = blob.lower().index(marker)
+            tail = blob[idx + len(marker):].strip()
+            # Stop at first separator or end of line
+            for stop in [" |", " -", ",", " •", " ·", "  ", "\n", "!", "?"]:
                 if stop in tail:
                     tail = tail.split(stop, 1)[0].strip()
-            if 2 <= len(tail) <= 80 and tail.lower() != norm_author:
-                return tail
-    # Try parentheses like "(Company)"
-    for m in re.finditer(r"\(([^)]+)\)", blob):
-        cand = m.group(1).strip()
-        if 2 <= len(cand) <= 80 and cand.lower() != norm_author:
-            return cand
+            # Strict validation
+            if 2 <= len(tail) <= 50 and tail.lower() != norm_author:
+                if not any(indicator in tail for indicator in content_indicators):
+                    return tail
+    
+    # Skip parentheses extraction - too risky for post content
     # Last resort: inspect author string itself for patterns "Nom Prénom • Entreprise" or "Nom chez Entreprise"
     author_clean = (author or "").strip()
     if author_clean:
@@ -808,77 +823,111 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
     sort_field, sort_direction = _normalize_sort(sort_by, sort_dir)
     rows: list[dict[str, Any]] = []
     def _derive_company(author: str, current_company: Optional[str], author_profile: Optional[str], text: Optional[str]) -> Optional[str]:
-        """Attempt to derive a company name when the stored company is missing or duplicates the author.
-
-        Heuristics (lightweight, defensive):
-         - If author_profile looks like JSON, parse and look for keys (company, organization, headline, subtitle, occupation)
-         - Extract portion after French 'chez ' or English ' at ' / '@' tokens
-         - Split on common separators (" | ", " · ", " - ", ",") and choose a segment that does not repeat the author name and has letters
+        """Derive company name following strict rules:
+        
+        1. If author is a company (no /in/ in profile URL, or name in all caps), return None (empty)
+        2. If author is a person, try to extract company from text using @company, chez, at patterns
+        3. Never return post content, websites, or uncertain data
+        4. If company cannot be determined with certainty, return None
         """
-        try:
-            if current_company and current_company.strip() and current_company.strip().lower() != author.strip().lower():
-                return current_company  # Already distinct
-            profile_obj = None
-            if author_profile and author_profile.strip().startswith('{'):
-                import json as _json_mod
-                try:
-                    profile_obj = _json_mod.loads(author_profile)
-                except Exception:
-                    profile_obj = None
-            candidates: list[str] = []
-            if profile_obj:
-                for k in ("company", "organization", "org", "headline", "subtitle", "occupation", "title"):
-                    v = profile_obj.get(k)
-                    if isinstance(v, str):
-                        candidates.append(v)
-            if text and isinstance(text, str):
-                # Sometimes post text contains signature lines with company
-                candidates.append(text[:240])  # limit for speed
-            def _clean(seg: str) -> str:
-                return seg.strip().strip('-–|·•').strip()
-            extracted: list[str] = []
-            for raw in candidates:
-                if not raw:
-                    continue
-                lower = raw.lower()
-                marker_pos = -1
-                marker = None
-                for m in ["chez ", " at ", " @"]:
-                    mp = lower.find(m)
-                    if mp != -1:
-                        marker_pos = mp + len(m)
-                        marker = m
-                        break
-                segs: list[str] = []
-                if marker_pos != -1:
-                    tail = raw[marker_pos:]
-                    segs.append(tail)
-                # Also split full raw on separators to find plausible company tokens
-                for sep in [" | ", " · ", " - ", ",", " • "]:
-                    if sep in raw:
-                        segs.extend(raw.split(sep))
-                if not segs:
-                    segs = [raw]
-                for seg in segs:
-                    segc = _clean(seg)
-                    if not segc:
-                        continue
-                    if len(segc) < 2 or segc.lower() == author.lower():
-                        continue
-                    # Avoid picking obvious role words alone
-                    if segc.lower() in {"freelance", "independant", "indépendant", "consultant", "recruteur"}:
-                        continue
-                    # Must contain at least one letter
-                    if not any(c.isalpha() for c in segc):
-                        continue
-                    extracted.append(segc)
-            # Rank choices: prefer ones with capital letters and without '@'
-            for cand in extracted:
-                if author.lower() not in cand.lower():
-                    return cand[:120]
-        except Exception:
-            return current_company
-        return current_company
+        import re
+        
+        if not author:
+            return None
+        
+        author_clean = author.strip()
+        
+        # === RULE 1: Check if author IS a company (not a person) ===
+        # If author_profile exists and has /in/, it's a person
+        # If no /in/ or no profile, check name patterns
+        
+        is_company_author = False
+        
+        # No profile URL or profile is not /in/ = likely a company page
+        if not author_profile or not isinstance(author_profile, str):
+            is_company_author = True
+        elif '/in/' not in author_profile:
+            is_company_author = True
+        
+        # Name patterns that suggest company
+        company_name_markers = [
+            'notaires', 'notaire ', 'cabinet', 'étude', 'office', 'groupe', 'group',
+            'sas', 'sarl', 'sasu', 'eurl', 'sa ', 's.a.', 'inc', 'ltd', 'llc',
+            'associés', 'partners', 'avocats', 'conseil', 'consulting',
+        ]
+        author_lower = author_clean.lower()
+        if any(marker in author_lower for marker in company_name_markers):
+            is_company_author = True
+        
+        # ALL CAPS name = likely company
+        if len(author_clean) > 3 and author_clean.isupper():
+            is_company_author = True
+        
+        # More than 50% uppercase letters in a name > 5 chars = likely company
+        if len(author_clean) > 5:
+            upper_count = sum(1 for c in author_clean if c.isupper())
+            alpha_count = sum(1 for c in author_clean if c.isalpha())
+            if alpha_count > 0 and (upper_count / alpha_count) > 0.6:
+                is_company_author = True
+        
+        # If author is a company, leave enterprise column empty
+        if is_company_author:
+            return None
+        
+        # === RULE 2: Author is a person - try to find their company ===
+        
+        # First check if we already have a valid company stored
+        if current_company and current_company.strip():
+            cc = current_company.strip()
+            # Validate it's not post content
+            if len(cc) <= 50 and cc.lower() != author_lower:
+                content_markers = ['#', '🚀', '📢', '📍', '🔍', '!', '?', '\n', 
+                                  'recrute', 'recherche', 'http', 'www', '.com', '.fr']
+                if not any(m in cc for m in content_markers):
+                    return cc
+        
+        # === Try to extract company from text using patterns ===
+        if not text or not isinstance(text, str):
+            return None
+        
+        # Pattern 1: "Company recrute" or "Company Paris recrute" 
+        # This is the most common pattern in French job posts
+        recrute_match = re.search(r'([A-ZÀ-Ÿ][A-Za-zÀ-ÿ0-9\s&\'\-]{2,50}?)\s+(?:Paris\s+)?recrute', text)
+        if recrute_match:
+            company = recrute_match.group(1).strip()
+            # Remove leading emojis and common words
+            company = re.sub(r'^[🚀📢📣🔍📌💼✨👉‼️\s]+', '', company)
+            # Remove trailing "Paris" if present
+            company = re.sub(r'\s+Paris$', '', company, flags=re.IGNORECASE)
+            if company and 2 <= len(company) <= 50 and company.lower() != author_lower:
+                # Skip if it's a pronoun or common word
+                skip_words = ['je', 'nous', 'on', 'notre', 'mon', 'l\'étude', 'l\'entreprise', 'le', 'la', 'les']
+                if company.lower() not in skip_words and not company.lower().startswith('l\''):
+                    return company
+        
+        # Pattern 2: @CompanyName (but not URLs like @goodwinlaw.com)
+        at_match = re.search(r'@([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9\s&\'\-]{1,40})(?:\s|$|[,\.\!\?])', text)
+        if at_match:
+            company = at_match.group(1).strip()
+            # Skip if it looks like a URL/domain
+            if not re.match(r'^[a-z]+law$', company.lower()) and '.' not in company:
+                # Clean trailing words
+                company = re.sub(r'\s+(recrute|recherche|hiring|looking).*$', '', company, flags=re.IGNORECASE)
+                if company and 2 <= len(company) <= 50 and company.lower() != author_lower:
+                    return company
+        
+        # Pattern 3: "chez Company" or "at Company"
+        chez_match = re.search(r'\b(?:chez|at)\s+([A-Z][A-Za-zÀ-ÿ0-9\s&\'\-]{1,40}?)(?:\s*[,\.\!\?\-–|]|$)', text, re.IGNORECASE)
+        if chez_match:
+            company = chez_match.group(1).strip()
+            if company and 2 <= len(company) <= 50 and company.lower() != author_lower:
+                # Make sure it's not a job title
+                job_titles = ['notaire', 'avocat', 'juriste', 'consultant', 'manager', 'directeur']
+                if not any(company.lower().startswith(t) for t in job_titles):
+                    return company
+        
+        # === RULE 4: Cannot determine with certainty ===
+        return None
     # Mongo path
     if ctx.mongo_client:
         try:
@@ -1515,13 +1564,12 @@ async def export_excel(
             "Entreprise": post.get("company") or "",
             "Statut": post.get("status") or "",
             "Métier": post.get("metier") or "",
-            "Opportunité": "Oui" if post.get("opportunity") else "",
             "Texte": post.get("text") or "",
             "Publié le": _format_iso_for_export(post.get("published_at")),
             "Collecté le": _format_iso_for_export(post.get("collected_at")),
             "Lien": post.get("permalink") or "",
         })
-    columns = ["Keyword", "Auteur", "Entreprise", "Statut", "Métier", "Opportunité", "Texte", "Publié le", "Collecté le", "Lien"]
+    columns = ["Keyword", "Auteur", "Entreprise", "Statut", "Métier", "Texte", "Publié le", "Collecté le", "Lien"]
     df = pd.DataFrame(rows, columns=columns)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:

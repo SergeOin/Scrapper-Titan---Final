@@ -1542,5 +1542,98 @@ def main():
             pass
 
 
+def _run_scraper_subprocess_mode():
+    """Run in subprocess mode for isolated Playwright scraping.
+    
+    Called when the exe is invoked with --scraper-subprocess flag.
+    Uses file-based I/O (--input-file and --output-file args).
+    """
+    import json as _json
+    import traceback as _tb
+    
+    # Debug: Write to a known location to confirm we got here
+    debug_log_path = Path(os.environ.get("LOCALAPPDATA", ".")) / "TitanScraper" / "subprocess_debug.txt"
+    try:
+        with open(debug_log_path, 'a', encoding='utf-8') as df:
+            df.write(f"subprocess_mode_entered args={sys.argv}\n")
+    except Exception:
+        pass
+    
+    # Find output file from args so we can write errors there
+    output_file = None
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg == "--output-file" and i < len(sys.argv) - 1:
+            output_file = sys.argv[i + 1]
+            break
+    
+    def write_error(msg: str, tb: str = ""):
+        """Write error to output file if available."""
+        error_data = {"success": False, "error": msg, "posts": [], "traceback": tb}
+        if output_file:
+            try:
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    _json.dump(error_data, f)
+            except Exception:
+                pass
+        # Also write to debug log
+        try:
+            with open(debug_log_path, 'a', encoding='utf-8') as df:
+                df.write(f"write_error: {msg}\n{tb}\n")
+        except Exception:
+            pass
+    
+    try:
+        try:
+            with open(debug_log_path, 'a', encoding='utf-8') as df:
+                df.write("attempting_import_scraper_main\n")
+        except Exception:
+            pass
+        from scraper.scrape_subprocess import main as scraper_main
+        try:
+            with open(debug_log_path, 'a', encoding='utf-8') as df:
+                df.write(f"import_success, about_to_call_scraper_main, type={type(scraper_main)}\n")
+        except Exception:
+            pass
+        scraper_main()
+        try:
+            with open(debug_log_path, 'a', encoding='utf-8') as df:
+                df.write("scraper_main_returned_normally\n")
+        except Exception:
+            pass
+    except SystemExit as se:
+        # Capture sys.exit() calls from scraper_main
+        try:
+            with open(debug_log_path, 'a', encoding='utf-8') as df:
+                df.write(f"scraper_main_called_sys_exit code={se.code}\n")
+        except Exception:
+            pass
+        raise  # Re-raise to exit properly
+    except Exception as e:
+        write_error(str(e), _tb.format_exc())
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    # Very early debug logging
+    import os as _early_os
+    from pathlib import Path as _early_Path
+    _early_debug = _early_Path(_early_os.environ.get("LOCALAPPDATA", ".")) / "TitanScraper" / "startup_debug.txt"
+    try:
+        with open(_early_debug, 'a', encoding='utf-8') as _df:
+            _df.write(f"main_block_entered argv={sys.argv}\n")
+    except Exception:
+        pass
+    
+    # Check for subprocess mode (can be first arg or after other args)
+    is_subprocess_mode = "--scraper-subprocess" in sys.argv
+    
+    try:
+        with open(_early_debug, 'a', encoding='utf-8') as _df:
+            _df.write(f"is_subprocess_mode={is_subprocess_mode}\n")
+    except Exception:
+        pass
+    
+    if is_subprocess_mode:
+        _run_scraper_subprocess_mode()
+    else:
+        main()

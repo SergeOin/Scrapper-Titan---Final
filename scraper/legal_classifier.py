@@ -56,7 +56,7 @@ RECRUITMENT_PHRASES = [
     "je recrute un(e) avocat", "je recrute un juriste", "je recrute un avocat",
     "hiring", "on recherche un juriste", "nous cherchons", "join the team",
     # === PHRASES DE RECRUTEMENT FORTES ===
-    "nous recrutons", "on recrute", "je recrute", 
+    "nous recrutons", "on recrute", "je recrute", "recrute",
     "recherche un(e)", "recherche son/sa", "recherche notre futur",
     "poste à pourvoir", "poste a pourvoir", "offre d'emploi",
     "rejoindre notre équipe", "join our team", "we are hiring",
