@@ -1,23 +1,15 @@
 #!/usr/bin/env python3
 """
 TitanScraper Bootstrapper
-Downloads and installs TitanScraper.exe and required browser to %LOCALAPPDATA%\TitanScraper
+Installs TitanScraper.exe and required browser to %LOCALAPPDATA%\TitanScraper
+The TitanScraper.exe is bundled with this bootstrapper.
 """
 
 import os
 import sys
-import json
 import shutil
 import subprocess
-import tempfile
-import urllib.request
-import zipfile
 from pathlib import Path
-
-# GitHub release URL
-GITHUB_REPO = "SergeOin/Scrapper-Titan---Final"
-RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-FALLBACK_DOWNLOAD_URL = "https://github.com/SergeOin/Scrapper-Titan---Final/releases/latest/download/TitanScraper.exe"
 
 # Installation paths
 INSTALL_DIR = Path(os.environ.get("LOCALAPPDATA", "")) / "TitanScraper"
@@ -25,11 +17,33 @@ EXE_NAME = "TitanScraper.exe"
 BROWSERS_DIR = INSTALL_DIR / "pw-browsers"
 
 
+def get_bundled_exe_path() -> Path:
+    """Get the path to the bundled TitanScraper.exe."""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled exe - look for bundled file
+        base_path = Path(sys._MEIPASS)
+        bundled = base_path / EXE_NAME
+        if bundled.exists():
+            return bundled
+        # Also check next to the bootstrapper
+        bootstrapper_dir = Path(sys.executable).parent
+        nearby = bootstrapper_dir / EXE_NAME
+        if nearby.exists():
+            return nearby
+    else:
+        # Running as script - look in dist folder
+        script_dir = Path(__file__).parent.parent
+        dist_exe = script_dir / "dist" / EXE_NAME
+        if dist_exe.exists():
+            return dist_exe
+    return None
+
+
 def show_message(title: str, message: str, error: bool = False):
     """Show a Windows message box."""
     try:
         import ctypes
-        icon = 0x10 if error else 0x40  # MB_ICONERROR or MB_ICONINFORMATION
+        icon = 0x10 if error else 0x40
         ctypes.windll.user32.MessageBoxW(0, message, title, icon)
     except Exception:
         print(f"{title}: {message}")
@@ -43,20 +57,28 @@ def show_progress_window():
         
         root = tk.Tk()
         root.title("TitanScraper - Installation")
-        root.geometry("400x150")
+        root.geometry("420x180")
         root.resizable(False, False)
+        root.configure(bg='#f0f4f8')
         
         # Center window
         root.eval('tk::PlaceWindow . center')
         
-        label = tk.Label(root, text="Installation de TitanScraper en cours...", font=("Segoe UI", 11))
-        label.pack(pady=20)
+        # Logo/Title
+        title_label = tk.Label(root, text="🔍 TitanScraper", font=("Segoe UI", 14, "bold"), 
+                               bg='#f0f4f8', fg='#1e3a5f')
+        title_label.pack(pady=(20, 5))
         
-        progress = ttk.Progressbar(root, mode='indeterminate', length=300)
-        progress.pack(pady=10)
+        label = tk.Label(root, text="Installation en cours...", font=("Segoe UI", 10),
+                        bg='#f0f4f8', fg='#334155')
+        label.pack(pady=5)
+        
+        progress = ttk.Progressbar(root, mode='indeterminate', length=320)
+        progress.pack(pady=15)
         progress.start(10)
         
-        status_label = tk.Label(root, text="Préparation...", font=("Segoe UI", 9), fg="gray")
+        status_label = tk.Label(root, text="Préparation...", font=("Segoe UI", 9), 
+                               bg='#f0f4f8', fg='#64748b')
         status_label.pack(pady=5)
         
         return root, status_label, progress
@@ -73,87 +95,6 @@ def update_status(status_label, text: str):
         except Exception:
             pass
     print(text)
-
-
-def download_file(url: str, dest: Path, status_label=None) -> bool:
-    """Download a file from URL to destination."""
-    try:
-        update_status(status_label, f"Téléchargement: {dest.name}")
-        
-        # Create a request with headers to avoid 403
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'TitanScraper-Bootstrapper/1.0'
-        })
-        
-        with urllib.request.urlopen(req, timeout=120) as response:
-            with open(dest, 'wb') as f:
-                shutil.copyfileobj(response, f)
-        return True
-    except Exception as e:
-        print(f"Download error: {e}")
-        return False
-
-
-def get_latest_release_url() -> str:
-    """Get the download URL for the latest release."""
-    try:
-        req = urllib.request.Request(RELEASE_API_URL, headers={
-            'User-Agent': 'TitanScraper-Bootstrapper/1.0',
-            'Accept': 'application/vnd.github.v3+json'
-        })
-        with urllib.request.urlopen(req, timeout=30) as response:
-            data = json.loads(response.read().decode())
-            
-        # Find the TitanScraper.exe asset
-        for asset in data.get("assets", []):
-            if asset.get("name") == "TitanScraper.exe":
-                return asset.get("browser_download_url")
-        
-        # Fallback to tag-based URL
-        tag = data.get("tag_name", "latest")
-        return f"https://github.com/{GITHUB_REPO}/releases/download/{tag}/TitanScraper.exe"
-    except Exception as e:
-        print(f"Failed to get release info: {e}")
-        return FALLBACK_DOWNLOAD_URL
-
-
-def install_browsers(status_label=None) -> bool:
-    """Install Playwright Chromium browser."""
-    update_status(status_label, "Installation du navigateur Chromium...")
-    
-    try:
-        # Set environment variable for browser path
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(BROWSERS_DIR)
-        
-        # Run playwright install chromium
-        result = subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            capture_output=True,
-            text=True,
-            timeout=300,
-            env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": str(BROWSERS_DIR)}
-        )
-        
-        if result.returncode == 0:
-            return True
-        else:
-            print(f"Browser install failed: {result.stderr}")
-            # Try with the exe directly
-            exe_path = INSTALL_DIR / EXE_NAME
-            if exe_path.exists():
-                result = subprocess.run(
-                    [str(exe_path), "--install-browsers"],
-                    capture_output=True,
-                    timeout=300
-                )
-                return result.returncode == 0
-            return False
-    except subprocess.TimeoutExpired:
-        print("Browser installation timed out")
-        return False
-    except Exception as e:
-        print(f"Browser install error: {e}")
-        return False
 
 
 def create_shortcut(status_label=None):
@@ -177,7 +118,7 @@ $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut("{shortcut_path}")
 $Shortcut.TargetPath = "{target}"
 $Shortcut.WorkingDirectory = "{INSTALL_DIR}"
-$Shortcut.Description = "TitanScraper - LinkedIn Scraper"
+$Shortcut.Description = "TitanScraper - LinkedIn Scraper pour Titan Partners"
 $Shortcut.Save()
 '''
         subprocess.run(["powershell", "-Command", ps_script], capture_output=True)
@@ -197,56 +138,35 @@ def main():
         INSTALL_DIR.mkdir(parents=True, exist_ok=True)
         BROWSERS_DIR.mkdir(parents=True, exist_ok=True)
         
-        # Check if already installed
+        # Find the bundled exe
+        update_status(status_label, "Recherche de TitanScraper.exe...")
+        bundled_exe = get_bundled_exe_path()
+        
         exe_path = INSTALL_DIR / EXE_NAME
-        if exe_path.exists():
-            update_status(status_label, "Mise à jour de TitanScraper...")
-        else:
+        
+        if bundled_exe and bundled_exe.exists():
             update_status(status_label, "Installation de TitanScraper...")
-        
-        # Download the exe
-        update_status(status_label, "Récupération de la dernière version...")
-        download_url = get_latest_release_url()
-        
-        # Download to temp first
-        temp_exe = INSTALL_DIR / "TitanScraper_new.exe"
-        if download_file(download_url, temp_exe, status_label):
-            # Replace old exe
-            if exe_path.exists():
-                try:
-                    exe_path.unlink()
-                except Exception:
-                    pass
-            temp_exe.rename(exe_path)
-            update_status(status_label, "TitanScraper téléchargé ✓")
+            shutil.copy2(bundled_exe, exe_path)
+            update_status(status_label, "TitanScraper installé ✓")
         else:
-            # Try to copy from local dist folder (for local testing)
-            local_exe = Path(__file__).parent.parent / "dist" / "TitanScraper.exe"
-            if local_exe.exists():
-                shutil.copy2(local_exe, exe_path)
-                update_status(status_label, "TitanScraper copié depuis local ✓")
-            else:
-                raise Exception("Impossible de télécharger TitanScraper.exe")
-        
-        # Check if browsers are installed
-        if not any(BROWSERS_DIR.glob("chromium-*")):
-            if not install_browsers(status_label):
-                update_status(status_label, "⚠️ Navigateur sera installé au premier lancement")
-        else:
-            update_status(status_label, "Navigateur Chromium déjà installé ✓")
+            raise Exception("TitanScraper.exe non trouvé dans le package")
         
         # Create desktop shortcut
         create_shortcut(status_label)
+        update_status(status_label, "Raccourci créé ✓")
         
         # Launch TitanScraper
         update_status(status_label, "Lancement de TitanScraper...")
         if progress:
             progress.stop()
         
+        # Start the app
         subprocess.Popen([str(exe_path)], cwd=str(INSTALL_DIR))
         
+        update_status(status_label, "Installation terminée ! ✓")
+        
         if root:
-            root.after(1500, root.destroy)
+            root.after(2000, root.destroy)
             root.mainloop()
         
     except Exception as e:
