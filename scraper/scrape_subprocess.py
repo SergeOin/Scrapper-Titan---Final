@@ -23,6 +23,32 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Global debug logging function
+_DEBUG_LOG_PATH = None
+
+def _init_debug_log():
+    global _DEBUG_LOG_PATH
+    localappdata = os.environ.get("LOCALAPPDATA", "")
+    if localappdata:
+        _DEBUG_LOG_PATH = Path(localappdata) / "TitanScraper" / "scrape_subprocess_debug.txt"
+    else:
+        _DEBUG_LOG_PATH = Path(".") / "scrape_subprocess_debug.txt"
+    _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+def _debug_log(msg: str):
+    """Log message to debug file."""
+    global _DEBUG_LOG_PATH
+    if _DEBUG_LOG_PATH is None:
+        _init_debug_log()
+    try:
+        with open(_DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(f"{msg}\n")
+    except Exception:
+        pass
+
+# Initialize on import
+_init_debug_log()
+
 
 @dataclass
 class ScrapedPost:
@@ -686,19 +712,33 @@ def filter_post_titan_partners(post: dict) -> tuple[bool, str]:
     if not has_legal_keywords(text):
         return False, "NO_LEGAL_KEYWORDS"
     
-    # Rule 7: Must have recruitment signals
+    # Rule 7: Recruitment signals - RELAXED
+    # If post has legal keywords AND job-related terms, accept it even without explicit "recrute"
     has_recruitment_signal = has_internal_recruitment_signal(text)
-    if not has_recruitment_signal:
-        return False, "NO_RECRUITMENT_SIGNAL: pas de signal de recrutement"
+    text_lower = text.lower()
     
-    # Rule 8: Exclude non-recruitment content ONLY if no strong recruitment signal
-    # (If we got here, we have recruitment signals, so only exclude if it looks 
-    #  like an event/article AND doesn't say "recrute", "on recrute", etc.)
+    # Additional job-related signals that indicate a job posting
+    job_related_signals = [
+        "cdi", "cdd", "temps plein", "temps partiel", "full time", "part time",
+        "salaire", "rémunération", "package", "compensation",
+        "expérience", "experience", "profil recherché", "mission",
+        "candidature", "postuler", "candidat", "candidate",
+        "contrat", "poste", "opportunité", "opportunity",
+        "cabinet", "étude", "department", "équipe juridique", "legal team",
+        "basé à", "based in", "localisation", "location",
+        "rattaché", "reporting to", "sous la responsabilité",
+    ]
+    has_job_signal = any(signal in text_lower for signal in job_related_signals)
+    
+    # Accept if: has recruitment signal OR has job-related signals
+    if not has_recruitment_signal and not has_job_signal:
+        return False, "NO_RECRUITMENT_SIGNAL: pas de signal de recrutement ou poste"
+    
+    # Rule 8: Exclude non-recruitment content ONLY if no strong signals
     if is_non_recruitment_content(text):
-        # Allow if text explicitly contains "recrute", "hiring", "poste à pourvoir"
-        text_lower = text.lower()
         strong_signals = ["recrute", "nous recherchons", "on recherche", "hiring", 
-                         "poste à pourvoir", "postes à pouvoir", "rejoignez-nous"]
+                         "poste à pourvoir", "postes à pouvoir", "rejoignez-nous",
+                         "cdi", "cdd", "opportunité", "mission", "contrat"]
         if not any(signal in text_lower for signal in strong_signals):
             return False, "NON_RECRUITMENT: contenu non-recrutement"
     
@@ -1320,41 +1360,59 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
     try:
         async with async_playwright() as pw:
             # Launch browser
+            _debug_log(f"launching browser, headless={headless}")
             browser = await pw.chromium.launch(headless=headless)
+            _debug_log("browser launched")
             
             # Create context with storage state
             context_opts = {}
             if storage_state and os.path.exists(storage_state):
                 context_opts["storage_state"] = storage_state
+                _debug_log(f"using storage_state from {storage_state}")
+            else:
+                _debug_log(f"WARNING: storage_state missing or not found: {storage_state}")
             
             context = await browser.new_context(**context_opts)
             page = await context.new_page()
+            _debug_log("page created")
             
             # Navigate to feed first to check auth
+            _debug_log("navigating to LinkedIn feed...")
             await page.goto("https://www.linkedin.com/feed/", timeout=30000)
             await page.wait_for_timeout(random_delay(PAGE_LOAD_DELAY_MIN, PAGE_LOAD_DELAY_MAX))
+            _debug_log(f"page title: {await page.title()}")
             
             # Check if authenticated
             cookies = await context.cookies("https://www.linkedin.com")
+            cookie_names = [c.get("name") for c in cookies]
+            _debug_log(f"cookies found: {len(cookies)}, names: {cookie_names[:10]}")
             has_li_at = any(c.get("name") == "li_at" and c.get("value") for c in cookies)
             
             if not has_li_at:
                 results["success"] = False
                 results["errors"].append("Not authenticated - no li_at cookie")
+                _debug_log("ERROR: Not authenticated - no li_at cookie found")
                 await browser.close()
                 return results
             
+            _debug_log("authentication OK, starting keyword scraping")
+            
             # Process each keyword
-            for keyword in keywords:
+            for kw_idx, keyword in enumerate(keywords):
+                _debug_log(f"Processing keyword {kw_idx+1}/{len(keywords)}: {keyword}")
                 try:
                     search_url = f"https://www.linkedin.com/search/results/content/?keywords={keyword}"
+                    _debug_log(f"navigating to search: {search_url[:80]}...")
                     await page.goto(search_url, timeout=30000)
+                    _debug_log("search page loaded, waiting random delay...")
                     # Délai aléatoire entre les mots-clés pour paraître plus humain
                     await page.wait_for_timeout(random_delay(KEYWORD_DELAY_MIN, KEYWORD_DELAY_MAX))
                     
                     # Scrape more posts than needed to account for filtering
                     scrape_count = max_per_keyword * 3 if apply_titan_filter else max_per_keyword
+                    _debug_log(f"calling extract_posts_simple with count={scrape_count}")
                     raw_posts = await extract_posts_simple(page, keyword, scrape_count)
+                    _debug_log(f"extract_posts_simple returned {len(raw_posts)} posts")
                     results["stats"]["total_scraped"] += len(raw_posts)
                     
                     # Apply Titan Partners filtering if enabled
@@ -1481,6 +1539,10 @@ def main():
         _log("about to call asyncio.run(scrape_keywords())")
         result = asyncio.run(scrape_keywords(keywords, storage_state, max_per_keyword, headless))
         _log(f"scrape_keywords returned, success={result.get('success')}, posts_count={len(result.get('posts', []))}")
+        # Log filtering stats for debugging
+        stats = result.get('stats', {})
+        if stats:
+            _log(f"STATS: scraped={stats.get('total_scraped',0)} accepted={stats.get('accepted',0)} dup={stats.get('rejected_duplicate',0)} non_fr={stats.get('rejected_non_french',0)} agency={stats.get('rejected_agency',0)} ext={stats.get('rejected_external',0)} jobseeker={stats.get('rejected_jobseeker',0)} contract={stats.get('rejected_contract_type',0)} no_legal={stats.get('rejected_no_legal',0)} no_signal={stats.get('rejected_no_signal',0)} old={stats.get('rejected_too_old',0)} other={stats.get('rejected_other',0)}")
     except Exception as e:
         import traceback
         _log(f"ERROR in asyncio.run: {e}\n{traceback.format_exc()}")

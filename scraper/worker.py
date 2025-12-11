@@ -80,6 +80,26 @@ except Exception:  # pragma: no cover
 # ------------------------------------------------------------
 # Subprocess-based scraping (avoids event loop conflicts)
 # ------------------------------------------------------------
+
+# Global debug log for subprocess debugging
+_WORKER_DEBUG_LOG_PATH = None
+
+def _debug_log(msg: str):
+    """Log message to worker debug file."""
+    global _WORKER_DEBUG_LOG_PATH
+    if _WORKER_DEBUG_LOG_PATH is None:
+        localappdata = os.environ.get("LOCALAPPDATA", "")
+        if localappdata:
+            _WORKER_DEBUG_LOG_PATH = Path(localappdata) / "TitanScraper" / "worker_debug.txt"
+        else:
+            _WORKER_DEBUG_LOG_PATH = Path(".") / "worker_debug.txt"
+        _WORKER_DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(_WORKER_DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(f"{datetime.now().isoformat()} {msg}\n")
+    except Exception:
+        pass
+
 async def _run_scraping_subprocess(keywords: list[str], ctx: AppContext, logger: structlog.BoundLogger) -> list[dict]:
     """Run scraping in a separate process to avoid Playwright/asyncio conflicts.
     
@@ -110,13 +130,28 @@ async def _run_scraping_subprocess(keywords: list[str], ctx: AppContext, logger:
 
 async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, logger: structlog.BoundLogger) -> list[dict]:
     """Run a single batch of keywords in subprocess."""
+    # Determine browsers path - use env var or default to standard TitanScraper location
+    browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
+    storage_state_path = ctx.settings.storage_state
+    
+    if getattr(sys, "frozen", False):
+        # In frozen mode, default to %LOCALAPPDATA%\TitanScraper paths
+        localappdata = os.environ.get("LOCALAPPDATA", "")
+        if localappdata:
+            titan_dir = os.path.join(localappdata, "TitanScraper")
+            if not browsers_path:
+                browsers_path = os.path.join(titan_dir, "pw-browsers")
+            # If storage_state is relative, make it absolute in TitanScraper dir
+            if storage_state_path and not os.path.isabs(storage_state_path):
+                storage_state_path = os.path.join(titan_dir, storage_state_path)
+    
     # Prepare input data
     input_data = {
         "keywords": keywords,
-        "storage_state": ctx.settings.storage_state,
+        "storage_state": storage_state_path,
         "max_per_keyword": ctx.settings.max_posts_per_keyword,
         "headless": ctx.settings.playwright_headless_scrape,
-        "browsers_path": os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""),
+        "browsers_path": browsers_path,
     }
     
     # Create temp files for communication (needed for console=False PyInstaller exe)
@@ -126,7 +161,15 @@ async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, l
     try:
         # Write input to temp file
         json.dump(input_data, input_file)
+        input_file.flush()
+        os.fsync(input_file.fileno())  # Force write to disk
         input_file.close()
+        
+        # Verify file exists
+        if not os.path.exists(input_file.name):
+            _debug_log(f"ERROR: input file does not exist after write: {input_file.name}")
+            return []
+        _debug_log(f"input file written: {input_file.name}, size={os.path.getsize(input_file.name)}")
         
         # Determine how to invoke the subprocess
         if getattr(sys, "frozen", False):
@@ -156,31 +199,39 @@ async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, l
             *cmd,
             cwd=cwd,
         )
+        _debug_log(f"subprocess started, pid={proc.pid}")
         
         # Wait for completion with timeout
         try:
             await asyncio.wait_for(proc.wait(), timeout=180)  # 3 minute timeout per batch
+            _debug_log(f"subprocess completed, returncode={proc.returncode}")
         except asyncio.TimeoutError:
             proc.kill()
             logger.error("subprocess_scraping_timeout", keywords=keywords[:3])
+            _debug_log(f"subprocess TIMEOUT after 180s, keywords={keywords[:2]}")
             return []
         
         if proc.returncode != 0:
             logger.error("subprocess_scraping_failed", returncode=proc.returncode)
+            _debug_log(f"subprocess FAILED, returncode={proc.returncode}")
             return []
         
         # Read output from file
         if not os.path.exists(output_file_path):
             logger.error("subprocess_no_output_file")
+            _debug_log(f"ERROR: output file does not exist: {output_file_path}")
             return []
         
+        _debug_log(f"reading output file: {output_file_path}, size={os.path.getsize(output_file_path)}")
         with open(output_file_path, 'r', encoding='utf-8') as f:
             result = json.load(f)
         
         if not result.get("success", False):
             logger.warning("subprocess_scraping_errors", errors=result.get("errors", []))
+            _debug_log(f"subprocess returned success=False, errors={result.get('errors', [])}")
         
         posts = result.get("posts", [])
+        _debug_log(f"subprocess returned {len(posts)} posts, stats={result.get('stats', {})}")
         logger.info("subprocess_scraping_complete", posts_count=len(posts), keywords_processed=result.get("keywords_processed", 0))
         
         return posts

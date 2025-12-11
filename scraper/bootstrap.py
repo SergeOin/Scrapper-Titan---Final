@@ -160,8 +160,25 @@ class Settings(BaseSettings):
     disable_mongo: bool = Field(False, alias="DISABLE_MONGO")
     disable_redis: bool = Field(False, alias="DISABLE_REDIS")
 
-    # Fallback storage
-    sqlite_path: str = Field("fallback.sqlite3", alias="SQLITE_PATH")
+    # Fallback storage - use absolute path in LOCALAPPDATA for packaged app
+    @staticmethod
+    def _default_sqlite_path() -> str:
+        """Return absolute path to SQLite database in LOCALAPPDATA."""
+        if sys.platform == "win32":
+            base = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
+            db_dir = os.path.join(base, "TitanScraper")
+            os.makedirs(db_dir, exist_ok=True)
+            return os.path.join(db_dir, "fallback.sqlite3")
+        elif sys.platform == "darwin":
+            base = os.path.expanduser("~/Library/Application Support/TitanScraper")
+            os.makedirs(base, exist_ok=True)
+            return os.path.join(base, "fallback.sqlite3")
+        else:
+            base = os.path.expanduser("~/.local/share/TitanScraper")
+            os.makedirs(base, exist_ok=True)
+            return os.path.join(base, "fallback.sqlite3")
+    
+    sqlite_path: str = Field(default_factory=lambda: Settings._default_sqlite_path(), alias="SQLITE_PATH")
     csv_fallback_file: str = Field("exports/fallback_posts.csv", alias="CSV_FALLBACK_FILE")
 
     # Auth (optional internal)
