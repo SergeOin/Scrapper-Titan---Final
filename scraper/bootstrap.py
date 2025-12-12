@@ -757,6 +757,10 @@ async def init_mongo(settings: Settings, logger: structlog.BoundLogger) -> Optio
         await client.admin.command("ping")
         logger.info("mongo_connected", uri=settings.mongo_uri)
         return client
+    except asyncio.CancelledError:
+        # Don't let CancelledError crash the app - just skip Mongo
+        logger.warning("mongo_connection_cancelled", hint="Connexion annulée, utilisation de SQLite")
+        return None
     except Exception as exc:  # pragma: no cover - depends on environment
         # If pointing to a local default instance (localhost:27017), treat as optional and avoid noisy error logs.
         uri = settings.mongo_uri or ""
@@ -782,6 +786,10 @@ async def init_redis(settings: Settings, logger: structlog.BoundLogger) -> Optio
         await redis_client.ping()
         logger.info("redis_connected", url=settings.redis_url)
         return redis_client
+    except asyncio.CancelledError:
+        # Don't let CancelledError crash the app - just skip Redis
+        logger.warning("redis_connection_cancelled", hint="Connexion annulée, utilisation du mode local")
+        return None
     except Exception as exc:  # pragma: no cover
         # If pointing to a local default instance (localhost:6379), treat as optional and avoid noisy error logs.
         url = settings.redis_url or ""

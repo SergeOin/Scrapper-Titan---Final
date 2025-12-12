@@ -594,15 +594,14 @@
           const dateFmt = formatPublicationDate(p.published_at, p.collected_at);
           const searchFallback = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent((txt||p.author||'').slice(0,80))}`;
           const permalink = p.permalink ? `<a href="${p.permalink}" target="_blank">ouvrir</a>` : `<a href="${searchFallback}" target="_blank" title="Lien direct introuvable - recherche approximative">rechercher</a>`;
-          const metierSub = p.metier ? `<div class="meta-sub" title="Métier détecté">${String(p.metier||'').replace(/</g,'&lt;')}</div>` : '';
+          const keywordSub = p.keyword ? `<div class="meta-sub" title="Mot-clé de recherche">${String(p.keyword||'').replace(/</g,'&lt;')}</div>` : '';
           const starActive = Number(p.is_favorite || 0) === 1;
           const starClass = starActive ? 'icon-btn favorite-toggle active' : 'icon-btn favorite-toggle';
           const starTitle = starActive ? 'Retirer des favoris' : 'Marquer en favori';
           return `<tr data-post-id="${p._id}">
-            <td><code>${p.keyword||''}</code></td>
-            <td>${(p.author||'').replace(/\b(\w+\s+\w+)\s+\1\b/gi,'$1')}${metierSub}</td>
+            <td>${(p.author||'').replace(/\b(\w+\s+\w+)\s+\1\b/gi,'$1')}${keywordSub}</td>
             <td>${(p.company&&p.company.toLowerCase()!==String(p.author||'').toLowerCase())?p.company:'—'}</td>
-            <td class="wrap">${short.replace(/</g,'&lt;')}</td>
+            <td class="content-cell wrap">${short.replace(/</g,'&lt;')}</td>
             <td>${dateFmt}</td>
             <td>${permalink}</td>
             <td class="actions-cell">
