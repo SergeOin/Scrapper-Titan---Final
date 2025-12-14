@@ -152,8 +152,9 @@ EXCLUSION_STAGE_ALTERNANCE = [
     # Termes anglais
     "internship", "intern ", "interns", "trainee", "work-study", "work study",
     "working student", "student job", "graduate program",
-    # V.I.E.
-    "vie ", "v.i.e", "volontariat international",
+    # V.I.E. - Être plus précis pour éviter les faux positifs sur "vie" comme mot courant
+    "v.i.e", "v.i.e.", "volontariat international", "volontariat international en entreprise",
+    "contrat vie", "mission vie", "offre vie", "poste vie",
     # Patterns hashtag
     "#stage", "#alternance", "#stagiaire", "#alternant",
 ]
@@ -185,11 +186,14 @@ EXCLUSION_NON_FRANCE = [
 ]
 
 # Job seekers (#opentowork) - terms indicating the AUTHOR is job seeking, not recruiting
+# IMPORTANT: Éviter les patterns trop génériques qui matchent les recruteurs
+# Ex: "je suis à la recherche d'un juriste" = RECRUTEUR, pas chercheur d'emploi
 EXCLUSION_JOBSEEKER = [
     "opentowork", "open to work", "#opentowork",
     # LinkedIn automatic "Open to Work" post template phrases
-    "je recherche un nouveau poste", "je recherche un nouveau emploi",
-    "bonjour a tous je recherche", "bonjour a tous ! je recherche",
+    "je recherche un nouveau poste", "je recherche un nouvel emploi",
+    "je recherche mon premier poste", "je recherche mon premier emploi",
+    "bonjour a tous je recherche un poste", "bonjour a tous je recherche un emploi",
     "si vous entendez parler d une opportunite", "si vous entendez parler d'une opportunite",
     "j aimerais reprendre contact", "j'aimerais reprendre contact",
     "reconnaissant de m apporter", "reconnaissante de m apporter",
@@ -203,35 +207,32 @@ EXCLUSION_JOBSEEKER = [
     "nouvelle etape professionnelle en vue",
     "je suis prete a entamer", "je suis pret a entamer",
     "a la recherche d une nouvelle opportunite",
-    "si vous recrutez ou si vous connaissez",
-    "si vous recrutez, ou si vous connaissez",
+    "si vous recrutez ou si vous connaissez quelqu",
+    "si vous recrutez, ou si vous connaissez quelqu",
     "chers membres de mon reseau",
     "je recherche des postes de",
     "dear members of my network",
     "i am currently actively seeking",
-    "if you are hiring", "if you know someone",
-    # Clear job-seeking patterns (author looking for work, not recruiting)
-    "recherche emploi", "recherche poste", "recherche un poste",
+    "if you are hiring", "if you know someone who",
+    # Clear job-seeking patterns - SPÉCIFIQUES au candidat
+    "recherche emploi juridique", "recherche poste juriste", "recherche poste avocat",
     "a l ecoute du marche", "a l'ecoute du marche",
     "ouvert aux opportunites", "ouverte aux opportunites",
     "ouvert a de nouvelles opportunites", "ouverte a de nouvelles opportunites",
-    "cherche poste", "cherche emploi", "cherche un poste",
-    "cherche un premier poste", "premier emploi",
-    "en recherche active", "en recherche d emploi",
-    "disponible immediatement", "disponible des maintenant",
-    "actuellement en recherche", "je suis en recherche",
-    "je suis a la recherche", "je suis a l ecoute",
-    "je me permets de", "je vous contacte",
-    "mon profil", "mon parcours", "mon cv",
-    "n hesitez pas a me contacter", "contactez moi",
-    "si vous recrutez", "si vous cherchez",
-    # First person job seeking
-    "je recherche un poste", "je recherche un emploi",
-    "je cherche un poste", "je cherche un emploi",
-    "je suis juriste", "je suis avocat", "je suis avocate",
-    "diplome de", "diplomee de",
-    "jeune diplome", "jeune diplomee",
-    "recherche premiere experience", "recherche 1ere experience",
+    "cherche un premier poste", "premier emploi juridique",
+    "en recherche d emploi", "en recherche d un poste",
+    "disponible immediatement pour", "disponible des maintenant pour",
+    "je suis en recherche d emploi", "je suis en recherche d un poste",
+    "je me permets de vous contacter", "je vous contacte car je recherche",
+    "mon profil linkedin", "mon parcours professionnel", "mon cv joint",
+    "n hesitez pas a me contacter si", "contactez moi si vous",
+    # First person job seeking - SPÉCIFIQUES
+    "je recherche un poste de juriste", "je recherche un poste d avocat",
+    "je cherche un poste de juriste", "je cherche un poste d avocat",
+    "je suis juriste en recherche", "je suis avocat en recherche", "je suis avocate en recherche",
+    "diplome de l universite", "diplomee de l universite",
+    "jeune diplome en droit", "jeune diplomee en droit",
+    "recherche premiere experience juridique", "recherche 1ere experience",
 ]
 
 # Recruitment already completed - NOT active hiring (announcement of past hire)
@@ -464,19 +465,23 @@ EXCLUSION_RECRUTEMENT_PASSE = [
 ]
 
 # EXCLUSION 3: Candidat Individu Cherchant Emploi
+# IMPORTANT: Éviter les patterns génériques qui matchent les recruteurs
+# Ex: "Je suis à la recherche d'un juriste" = RECRUTEUR, pas candidat
 EXCLUSION_CANDIDAT_INDIVIDU = [
-    # Candidat cherchant du travail
-    "je recherche un nouveau poste", "je recherche un emploi",
+    # Candidat cherchant du travail - SPÉCIFIQUE
+    "je recherche un nouveau poste", "je recherche un nouvel emploi",
     "je cherche un emploi", "je cherche un poste",
-    "je suis a la recherche", "je suis en recherche",
+    "je suis a la recherche d un poste", "je suis a la recherche d un emploi",
+    "je suis a la recherche d une opportunite",
+    "je suis en recherche d emploi", "je suis en recherche de poste",
     "opentowork", "open to work", "hashtag opentowork",
     "vous serais reconnaissant", "vous serais reconnaissante",
     "vous serait reconnaissant", "vous serait reconnaissante",
     "merci de m aider", "merci de m'aider",
-    "mon cv", "mon profil", "mon experience",
-    "je suis juriste", "je suis avocat", "je suis notaire",
-    "je suis paralegal", "je suis legal counsel",
-    "mon parcours", "mon experience", "mon background",
+    "mon cv est disponible", "mon profil est disponible", 
+    "je suis juriste disponible", "je suis avocat disponible", "je suis avocate disponible",
+    "je suis notaire disponible", "je suis paralegal disponible",
+    "mon parcours professionnel", "mon experience professionnelle",
 ]
 
 # EXCLUSION 4: Contenu Informatif (Articles, Blogs, Webinaires)
@@ -520,7 +525,9 @@ EXCLUSION_RECRUITMENT_AGENCIES = [
     "chasseur de tetes", "headhunter", "executive search",
     "notre client recherche", "pour notre client", "pour le compte de",
     "client confidentiel", "societe confidentielle",
-    "mandat de recrutement", "nous recrutons pour",
+    "mandat de recrutement",
+    # NOTE: "nous recrutons pour" retiré car trop de faux positifs
+    # Ex: "Nous recrutons pour le poste de Notaire" = légitime
 ]
 
 # Non-legal professions to exclude
@@ -908,17 +915,34 @@ def check_exclusions(
     if config.exclude_opentowork:
         for term in EXCLUSION_JOBSEEKER:
             if term in normalized:
-                # Strong first-person job seeking signals = definitely exclude
-                first_person_seeking = any(fp in normalized for fp in [
-                    "je recherche", "je cherche", "je suis a", "mon cv", "mon profil",
-                    "je suis juriste", "je suis avocat", "disponible immediatement"
+                # AMÉLIORATION: Vérifier si c'est un recruteur qui cherche un candidat
+                # "je recherche un juriste" = recruteur, "je recherche un poste" = candidat
+                recruiter_seeking_candidate = any(rp in normalized for rp in [
+                    "je recherche un juriste", "je recherche une juriste",
+                    "je recherche un avocat", "je recherche une avocate",
+                    "je recherche un paralegal", "je recherche un notaire",
+                    "je suis a la recherche d un juriste", "je suis a la recherche d une juriste",
+                    "je suis a la recherche d un avocat", "je suis a la recherche d une avocate",
+                    "a la recherche d un juriste", "a la recherche d une juriste",
+                    "a la recherche d un avocat", "a la recherche d une avocate",
+                    "nous recrutons", "on recrute", "recrute un", "recrute une",
+                    "poste a pourvoir", "poste de juriste", "poste d avocat",
+                    "cdi a pourvoir", "cdd a pourvoir", "postulez", "candidatez",
                 ])
-                # Only keep if it has VERY strong company recruitment signals
-                has_company_recruitment = any(sig in normalized for sig in [
-                    "nous recrutons", "on recrute", "notre equipe recrute",
-                    "poste a pourvoir", "cdi a pourvoir", "cdd a pourvoir"
+                
+                if recruiter_seeking_candidate:
+                    continue  # C'est un recruteur, ne pas exclure
+                
+                # Vérifier les signaux de chercheur d'emploi
+                candidate_signals = any(fp in normalized for fp in [
+                    "je recherche un poste", "je recherche un emploi",
+                    "je cherche un poste", "je cherche un emploi",
+                    "mon cv", "mon profil est disponible",
+                    "je suis juriste", "je suis avocat", "je suis avocate",
+                    "disponible immediatement", "disponible des maintenant",
                 ])
-                if first_person_seeking or not has_company_recruitment:
+                
+                if candidate_signals:
                     return ExclusionResult(True, "chercheur_emploi", [term])
     
     # 4b. Recruitment already done - Exclude welcome/arrival announcements
@@ -1217,7 +1241,9 @@ def is_recruitment_agency_strict(text: str) -> Tuple[bool, str]:
         "entreprise confidentielle",
         
         # "Mandat de recrutement"
-        "mandat de recrutement", "nous recrutons pour",
+        "mandat de recrutement",
+        # NOTE: "nous recrutons pour" retiré car trop de faux positifs
+        # Ex: "Nous recrutons pour le poste de Notaire" = légitime
         
         # "Au nom de" (attention: pas "pour le compte de notre cabinet")
         "au nom de notre client",
@@ -1336,23 +1362,46 @@ def detect_specialized_job_info(text: str) -> dict:
 
 def is_first_person_post(text: str) -> bool:
     """
-    Détecte si le post est écrit à la première personne (candidat cherchant emploi).
+    Détecte si le post est écrit à la première personne par un CANDIDAT cherchant emploi.
     
     Ces posts sont typiquement des candidats qui cherchent du travail,
     pas des entreprises qui recrutent.
+    
+    AMÉLIORATION: On vérifie si c'est un candidat cherchant du travail,
+    PAS un recruteur qui parle à la première personne.
     """
     normalized = normalize_text(text)
     
-    first_person_patterns = [
-        "je recherche", "je cherche", "je suis a la recherche",
-        "je suis en recherche", "je suis heureuse", "je suis ravi",
-        "j ai le plaisir", "je suis juriste", "je suis avocat",
-        "je suis notaire", "je suis paralegal",
-        "mon cv", "mon profil", "mon experience",
-        "mon parcours", "mon background",
+    # EXCLUSION: Si c'est clairement un recruteur qui parle, NE PAS exclure
+    recruiter_patterns = [
+        "nous recrutons", "on recrute", "je suis a la recherche d un juriste",
+        "je suis a la recherche d une juriste", "je suis a la recherche d un avocat",
+        "je suis a la recherche d une avocate", "je recherche un juriste",
+        "je recherche une juriste", "je recherche un avocat", "je recherche une avocate",
+        "je recherche un paralegal", "je recherche un notaire",
+        "poste a pourvoir", "cdi a pourvoir", "cdd a pourvoir",
+        "postulez", "candidatez", "envoyez votre cv",
+        "rejoindre notre equipe", "rejoindre mon equipe",
+        "recrute un", "recrute une", "pour notre cabinet",
     ]
     
-    return any(pattern in normalized for pattern in first_person_patterns)
+    if any(pattern in normalized for pattern in recruiter_patterns):
+        return False  # C'est un recruteur, pas un candidat
+    
+    # Patterns de candidats cherchant du travail
+    candidate_patterns = [
+        "je recherche un poste", "je recherche un emploi",
+        "je cherche un poste", "je cherche un emploi", 
+        "je suis en recherche active", "je suis en recherche d emploi",
+        "je suis a la recherche d un poste", "je suis a la recherche d un emploi",
+        "opentowork", "open to work",
+        "mon cv", "mon profil est disponible",
+        "je suis juriste disponible", "je suis avocat disponible", 
+        "je suis avocate disponible",
+        "je me permets de vous contacter", "je suis actuellement a l ecoute",
+    ]
+    
+    return any(pattern in normalized for pattern in candidate_patterns)
 
 
 def is_coherent_legal_recruitment(text: str) -> bool:
@@ -1360,9 +1409,40 @@ def is_coherent_legal_recruitment(text: str) -> bool:
     STRICT: Vérifie que le recrutement concerne BIEN un des 16 métiers.
     
     Rejette les posts qui parlent d'un métier juridique SANS recrutement,
-    ou qui recrutent pour un autre métier.
+    ou qui recrutent pour un autre métier (ex: courtier, commercial).
     """
     normalized = normalize_text(text)
+    
+    # ÉTAPE 0: Vérifier si c'est un recrutement pour un métier NON-juridique
+    # Ces métiers ne sont PAS des cibles même s'ils mentionnent "notaire" dans le contexte
+    non_legal_recruitment_patterns = [
+        # Courtiers, agents immobiliers, commerciaux
+        "recrutons de nouveaux courtiers", "recrutons des courtiers",
+        "recrute des courtiers", "recrute un courtier", "recrute une courtiere",
+        "devenir courtier", "devenir agent immobilier",
+        "recrutons des commerciaux", "recrute des commerciaux",
+        "recrute un commercial", "recrute une commerciale",
+        "agent commercial", "agente commerciale", "agents commerciaux",
+        "agent e commercial", "commercial e en immobilier",  # variantes inclusives
+        "conseiller commercial", "conseillere commerciale",
+        "negociateur immobilier", "negociatrice immobiliere",
+        # Contexte immobilier où "notaire" est mentionné mais pas recruté
+        "au notaire", "chez le notaire",  # "piloter le cycle de vente... au notaire"
+        "signature chez le notaire", "acte chez le notaire",
+        "rendez-vous chez le notaire", "rdv chez le notaire",
+        "passage chez le notaire", "frais de notaire", "frais de notaires",
+        "honoraires de notaire", "honoraires du notaire",
+        "office du notaire",
+        # Agents et conseillers (non juridiques)
+        "recrute des conseillers", "recrutons des conseillers",
+        "recrute un conseiller", "recrute une conseillere",
+        "recrute des agents", "recrutons des agents",
+        # Contexte où "notaire" est juste mentionné comme référence
+        "ne m appelez plus", "frais de notaire",  # articles d'opinion
+    ]
+    
+    if any(pattern in normalized for pattern in non_legal_recruitment_patterns):
+        return False
     
     # Vérifier si un des 16 métiers est mentionné
     target_job_found = False

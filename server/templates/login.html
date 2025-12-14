@@ -74,33 +74,49 @@
     async function doLogin(ev) {
       ev.preventDefault();
       const fd = new FormData(ev.target);
-        // Show loader overlay while Playwright opens LinkedIn and waits for auth/MFA
-        const overlay = document.getElementById('overlay');
-        overlay.style.display = 'flex';
-        const btn = ev.target.querySelector('button[type="submit"]');
-        if (btn) { btn.disabled = true; btn.textContent = 'Connexion en cours…'; }
+      // Show loader overlay while Playwright opens LinkedIn and waits for auth/MFA
+      const overlay = document.getElementById('overlay');
+      overlay.style.display = 'flex';
+      const btn = ev.target.querySelector('button[type="submit"]');
+      if (btn) { btn.disabled = true; btn.textContent = 'Connexion en cours…'; }
+
+      try {
         const res = await fetch('/api/session/login', { method:'POST', body: fd });
-      if (res.ok) {
-        // Persist creds locally if user opted in
-        try { await saveCredentials(); } catch { }
-        alert('Connexion réussie.');
-        location.href = '/';
-      } else {
-          let msg = 'Connexion impossible.';
+        if (res.ok) {
+          // Persist creds locally if user opted in
+          try { await saveCredentials(); } catch { }
+          alert('Connexion réussie.');
+          location.href = '/';
+          return;
+        }
+
+        let msg = 'Connexion impossible.';
+        try {
+          const j = await res.json();
+          let d = (j && (j.detail !== undefined ? j.detail : j)) ?? null;
+          if (typeof d === 'object' && d !== null) {
+            msg = d.message || d.error || d.hint || d.detail || JSON.stringify(d);
+          } else if (d !== null) {
+            msg = String(d);
+          }
+        } catch(_) {
           try {
-            const j = await res.json();
-            let d = (j && (j.detail !== undefined ? j.detail : j)) ?? null;
-            if (typeof d === 'object' && d !== null) {
-              msg = d.message || d.error || d.hint || d.detail || JSON.stringify(d);
-            } else if (d !== null) {
-              msg = String(d);
-            }
-          } catch(_) { /* ignore */ }
-          const errBox = document.getElementById('loginError');
-          if (errBox) { errBox.textContent = 'Échec de la connexion. ' + msg; errBox.style.display = 'block'; }
-          else { alert('Échec de la connexion. ' + msg); }
-          overlay.style.display = 'none';
-          if (btn) { btn.disabled = false; btn.textContent = 'Se connecter'; }
+            const t = await res.text();
+            if (t) msg = t;
+          } catch { /* ignore */ }
+        }
+        msg = `HTTP ${res.status} - ${msg}`;
+        const errBox = document.getElementById('loginError');
+        if (errBox) { errBox.textContent = 'Échec de la connexion. ' + msg; errBox.style.display = 'block'; }
+        else { alert('Échec de la connexion. ' + msg); }
+      } catch (e) {
+        const errBox = document.getElementById('loginError');
+        const msg = 'Erreur réseau: ' + e;
+        if (errBox) { errBox.textContent = 'Échec de la connexion. ' + msg; errBox.style.display = 'block'; }
+        else { alert('Échec de la connexion. ' + msg); }
+      } finally {
+        overlay.style.display = 'none';
+        if (btn) { btn.disabled = false; btn.textContent = 'Se connecter'; }
       }
     }
   </script>
@@ -163,29 +179,6 @@
     else if(pwdEl) pwdEl.focus();
   })();
   // Attempt automatic login when the user opted to remember both email and password
-  (function(){
-    try {
-      setTimeout(() => {
-        const form = document.querySelector('form');
-        if(!form || typeof sessionStorage === 'undefined') return;
-        if(sessionStorage.getItem('autoLoginTried')) return;
-        const emailEl = document.getElementById('loginEmail');
-        const pwdEl = document.getElementById('loginPassword');
-        const rememberEmail = document.getElementById('rememberEmail');
-        const rememberPwd = document.getElementById('rememberPwd');
-        if(!emailEl || !pwdEl) return;
-        const email = (emailEl.value || '').trim();
-        const pwd = pwdEl.value || '';
-        if(!email || !pwd) return;
-        if(!(rememberEmail && rememberEmail.checked && rememberPwd && rememberPwd.checked)) return;
-        sessionStorage.setItem('autoLoginTried', '1');
-        if(typeof form.requestSubmit === 'function') {
-          form.requestSubmit();
-        } else {
-          form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
-        }
-      }, 350);
-    } catch { /* ignore */ }
-  })();
+  // NOTE: pas d'auto-login au chargement.
 </script>
 </html>

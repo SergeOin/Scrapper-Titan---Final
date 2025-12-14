@@ -76,39 +76,38 @@ class Settings(BaseSettings):
     rate_limit_refill_per_sec: float = Field(2.0, alias="RATE_LIMIT_REFILL_PER_SEC")  # tokens per second
 
     # Keywords & limits
-    # OPTIMISÉ v3: Keywords orientés volume + qualité
-    # Stratégie: Combiner "signal de recrutement" + "rôle juridique" pour précision
+    # OPTIMISÉ v4: 50+ keywords pour 70-100+ posts/jour
+    # Stratégie: Combiner "signal de recrutement" + "rôle juridique" + "localisation France"
     # IMPORTANT: Plus de keywords = plus de cycles = plus de posts/jour
     scrape_keywords_raw: str = Field(
-        # === RECRUTEMENT DIRECT (précision maximale) ===
+        # === RECRUTEMENT DIRECT (précision maximale) - 12 keywords ===
         "recrute juriste;recrute avocat;recrute notaire;recrute paralegal;"
-        "nous recrutons juriste;nous recrutons avocat;"
-        "on recrute juriste;on recrute avocat;"
+        "nous recrutons juriste;nous recrutons avocat;nous recrutons notaire;"
+        "on recrute juriste;on recrute avocat;on recrute notaire;"
         "je recrute juriste;je recrute avocat;"
-        # === OFFRES D'EMPLOI EXPLICITES ===
-        "poste juriste;poste avocat;poste notaire;"
-        "offre emploi juriste;offre emploi avocat;"
+        # === OFFRES D'EMPLOI EXPLICITES - 10 keywords ===
+        "poste juriste;poste avocat;poste notaire;poste paralegal;"
+        "offre emploi juriste;offre emploi avocat;offre emploi notaire;"
         "cdi juriste;cdi avocat;cdi notaire;"
-        "cdd juriste;cdd avocat;"
-        # === RECHERCHE DE PROFILS ===
-        "recherche juriste;recherche avocat;recherche notaire;"
-        "cherche juriste;cherche avocat;"
-        # === POSTES DIRECTION JURIDIQUE ===
+        # === RECHERCHE DE PROFILS - 8 keywords ===
+        "recherche juriste;recherche avocat;recherche notaire;recherche paralegal;"
+        "cherche juriste;cherche avocat;cherche notaire;cherche paralegal;"
+        # === POSTES DIRECTION JURIDIQUE - 8 keywords ===
         "recrute responsable juridique;recrute directeur juridique;"
         "poste responsable juridique;poste directeur juridique;"
-        "head of legal;general counsel;legal counsel;"
-        # === CONTEXTE FRANCE (pour volume) ===
+        "head of legal;general counsel;legal counsel;chief legal officer;"
+        # === VILLES FRANCE (volume) - 15 keywords ===
         "juriste Paris;avocat Paris;juriste Lyon;avocat Lyon;"
-        "juriste France;avocat France;"
-        "juriste Bordeaux;juriste Marseille;juriste Lille;"
-        # === SPÉCIALISATIONS JURIDIQUES ===
-        "juriste droit social;juriste contrats;juriste corporate;"
-        "avocat droit des affaires;compliance officer;"
-        "juriste conformite;juriste contentieux;"
-        # === CABINET / ENTREPRISE ===
-        "cabinet avocat recrute;cabinet juridique recrute;"
-        "direction juridique recrute;equipe juridique;"
-        "etude notariale recrute",
+        "juriste Bordeaux;avocat Bordeaux;juriste Marseille;avocat Marseille;"
+        "juriste Lille;avocat Lille;juriste Nantes;avocat Nantes;"
+        "juriste Toulouse;juriste Strasbourg;juriste Nice;"
+        # === SPÉCIALISATIONS JURIDIQUES - 12 keywords ===
+        "juriste droit social;juriste contrats;juriste corporate;juriste M&A;"
+        "avocat droit des affaires;avocat corporate;compliance officer;DPO;"
+        "juriste conformite;juriste contentieux;juriste RGPD;juriste propriete intellectuelle;"
+        # === CABINET / ENTREPRISE - 6 keywords ===
+        "cabinet avocat recrute;cabinet juridique recrute;etude notariale recrute;"
+        "direction juridique recrute;equipe juridique recrute;departement juridique recrute",
         alias="SCRAPE_KEYWORDS",
     )
     # Semicolon-separated list of keywords to always ignore (case-insensitive)
@@ -237,35 +236,37 @@ class Settings(BaseSettings):
     # Log verbose des exclusions (utile pour debug)
     legal_filter_verbose: bool = Field(True, alias="LEGAL_FILTER_VERBOSE")
     auto_favorite_opportunities: bool = Field(False, alias="AUTO_FAVORITE_OPPORTUNITIES")
-    # Batch & resilience settings
-    keywords_session_batch_size: int = Field(8, alias="KEYWORDS_SESSION_BATCH_SIZE")
+    # Batch & resilience settings - ANTI-DETECTION: Optimisé pour 100 posts/jour en 7h
+    keywords_session_batch_size: int = Field(5, alias="KEYWORDS_SESSION_BATCH_SIZE")  # 5 keywords/session
     adaptive_pause_every: int = Field(0, alias="ADAPTIVE_PAUSE_EVERY")  # 0 = disabled
     adaptive_pause_seconds: float = Field(8.0, alias="ADAPTIVE_PAUSE_SECONDS")
     navigation_retry_attempts: int = Field(2, alias="NAVIGATION_RETRY_ATTEMPTS")  # extra attempts besides first
     navigation_retry_backoff_ms: int = Field(1200, alias="NAVIGATION_RETRY_BACKOFF_MS")
     # Public dashboard & autonomous worker
     dashboard_public: bool = Field(False, alias="DASHBOARD_PUBLIC")
-    # OPTIMISÉ v3: Mode autonome plus fréquent (900s = 15min entre cycles)
-    # Ceci permet ~56 cycles/jour pendant 14h actives = 100+ posts/jour potentiels
-    autonomous_worker_interval_seconds: int = Field(900, alias="AUTONOMOUS_WORKER_INTERVAL_SECONDS")
+    # ANTI-DETECTION v5: Optimisé pour 100 posts/jour en 7h actives (1200s = 20min)
+    # 7h = 420min ÷ 20min = 21 cycles × 5 posts/cycle = 105 posts/jour
+    autonomous_worker_interval_seconds: int = Field(1200, alias="AUTONOMOUS_WORKER_INTERVAL_SECONDS")
     # Human-like cadence (optional) - Mode recommandé pour éviter détection anti-bot
     human_mode_enabled: bool = Field(True, alias="HUMAN_MODE_ENABLED")  # ACTIVÉ par défaut
-    human_active_hours_start: int = Field(6, alias="HUMAN_ACTIVE_HOURS_START")  # Début très tôt (6h)
-    human_active_hours_end: int = Field(23, alias="HUMAN_ACTIVE_HOURS_END")    # Fin tardive (23h) = 17h actives
-    human_min_cycle_pause_seconds: int = Field(10, alias="HUMAN_MIN_CYCLE_PAUSE_SECONDS")  # Réduit 20→10
-    human_max_cycle_pause_seconds: int = Field(30, alias="HUMAN_MAX_CYCLE_PAUSE_SECONDS")  # Réduit 60→30
-    human_long_break_probability: float = Field(0.03, alias="HUMAN_LONG_BREAK_PROBABILITY")
+    human_active_hours_start: int = Field(8, alias="HUMAN_ACTIVE_HOURS_START")   # Début 8h
+    human_active_hours_end: int = Field(22, alias="HUMAN_ACTIVE_HOURS_END")      # Fin 22h (plage 8h-22h)
+    # Jours actifs: 0=Lundi, 1=Mardi, 2=Mercredi, 3=Jeudi, 4=Vendredi (pas weekend)
+    human_active_weekdays: str = Field("0,1,2,3,4", alias="HUMAN_ACTIVE_WEEKDAYS")  # Lundi-Vendredi
+    human_min_cycle_pause_seconds: int = Field(30, alias="HUMAN_MIN_CYCLE_PAUSE_SECONDS")  # Pause min 30s
+    human_max_cycle_pause_seconds: int = Field(90, alias="HUMAN_MAX_CYCLE_PAUSE_SECONDS")  # Pause max 90s
+    human_long_break_probability: float = Field(0.05, alias="HUMAN_LONG_BREAK_PROBABILITY")  # 5% de chance de pause longue
     human_long_break_min_seconds: int = Field(300, alias="HUMAN_LONG_BREAK_MIN_SECONDS")
     human_long_break_max_seconds: int = Field(600, alias="HUMAN_LONG_BREAK_MAX_SECONDS")
     human_night_mode: bool = Field(True, alias="HUMAN_NIGHT_MODE")
     human_night_pause_min_seconds: int = Field(1800, alias="HUMAN_NIGHT_PAUSE_MIN_SECONDS")
     human_night_pause_max_seconds: int = Field(3600, alias="HUMAN_NIGHT_PAUSE_MAX_SECONDS")
-    human_max_cycles_per_hour: int = Field(10, alias="HUMAN_MAX_CYCLES_PER_HOUR")
-    # Daily quota objective - OPTIMISÉ pour garantir 50+ posts/jour
-    daily_post_target: int = Field(60, alias="DAILY_POST_TARGET")  # Augmenté 50→60
-    daily_post_soft_target: int = Field(45, alias="DAILY_POST_SOFT_TARGET")  # Augmenté 40→45
-    # Legal domain classification & quota
-    legal_daily_post_cap: int = Field(150, alias="LEGAL_DAILY_POST_CAP")  # Augmenté 100→150 pour marge
+    human_max_cycles_per_hour: int = Field(5, alias="HUMAN_MAX_CYCLES_PER_HOUR")  # 5 cycles/h max (augmenté pour volume)
+    # Daily quota objective - 70-100+ posts/jour en 7h actives (PAS DE MAXIMUM)
+    daily_post_target: int = Field(100, alias="DAILY_POST_TARGET")  # Objectif 100 posts/jour
+    daily_post_soft_target: int = Field(70, alias="DAILY_POST_SOFT_TARGET")  # Seuil minimum 70
+    # Legal domain classification & quota - PAS DE LIMITE HAUTE
+    legal_daily_post_cap: int = Field(500, alias="LEGAL_DAILY_POST_CAP")  # Augmenté 150→500 (pas de max effectif)
     # Seuil de recrutement: augmenté pour plus de pertinence (0.25 = exige signal de recrutement clair)
     legal_intent_threshold: float = Field(0.25, alias="LEGAL_INTENT_THRESHOLD")
     legal_keywords_override: str | None = Field(None, alias="LEGAL_KEYWORDS")  # Optional semicolon list to extend/override builtin
@@ -300,8 +301,8 @@ class Settings(BaseSettings):
     )
     # Si True on assouplit certains filtres (recruitment threshold -10%) quand quota pas atteint
     relax_filters_below_target: bool = Field(True, alias="RELAX_FILTERS_BELOW_TARGET")
-    # Ratio d'activation du booster (ex: 0.8 => si < 80% de l'objectif, on active)
-    booster_activate_ratio: float = Field(0.8, alias="BOOSTER_ACTIVATE_RATIO")
+    # Ratio d'activation du booster (ex: 0.7 => si < 70% de l'objectif, on active)
+    booster_activate_ratio: float = Field(0.7, alias="BOOSTER_ACTIVATE_RATIO")
     # Rotation automatique des booster keywords
     booster_rotation_enabled: bool = Field(True, alias="BOOSTER_ROTATION_ENABLED")
     # Taille du sous-ensemble rotatif utilisé par cycle (0 = tous)
@@ -412,12 +413,52 @@ def configure_logging(level: str = "INFO", settings: Settings | None = None) -> 
             event_dict["request_id"] = rid
         return event_dict
 
+    def redact_sensitive(logger, method_name, event_dict):  # noqa: D401
+        """Best-effort redaction of secrets/PII in logs.
+
+        This is intentionally conservative and shallow: it avoids logging tokens/cookies
+        and obvious credentials if they accidentally get added to log context.
+        """
+        sensitive_keys = {
+            "password",
+            "pass",
+            "pwd",
+            "email",
+            "authorization",
+            "cookie",
+            "cookies",
+            "li_at",
+            "token",
+            "trigger_token",
+            "shutdown_token",
+            "x-trigger-token",
+            "x-shutdown-token",
+            "x-desktop-trigger",
+        }
+
+        def _scrub(value):
+            if isinstance(value, dict):
+                out = {}
+                for k, v in value.items():
+                    ks = str(k).lower()
+                    if ks in sensitive_keys or any(sk in ks for sk in ("token", "password", "cookie", "authorization")):
+                        out[k] = "[REDACTED]"
+                    else:
+                        out[k] = _scrub(v)
+                return out
+            if isinstance(value, (list, tuple)):
+                return [_scrub(v) for v in value]
+            return value
+
+        return _scrub(event_dict)
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
             timestamper,
             add_request_id,
             structlog.processors.add_log_level,
+            redact_sensitive,
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.JSONRenderer(),

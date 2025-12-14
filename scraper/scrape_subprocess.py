@@ -225,28 +225,266 @@ MAX_POST_AGE_DAYS = 21  # 3 semaines
 # ============================================================
 # RATE LIMITING - Délais de sécurité pour éviter le blocage LinkedIn
 # ============================================================
-# Ces valeurs sont augmentées pour réduire les risques de détection
+# VALEURS ANTI-DÉTECTION: Délais augmentés et randomisés pour simuler
+# un comportement humain naturel. LinkedIn détecte les patterns trop réguliers.
 import random
+import math
 
-# Délai après chargement de page (ms)
-PAGE_LOAD_DELAY_MIN = 3000  # 3 secondes minimum
-PAGE_LOAD_DELAY_MAX = 5000  # 5 secondes maximum
+# Délai après chargement de page (ms) - AUGMENTÉ pour comportement humain
+PAGE_LOAD_DELAY_MIN = 5000   # 5 secondes minimum (était 3s)
+PAGE_LOAD_DELAY_MAX = 12000  # 12 secondes maximum (était 5s)
 
-# Délai entre chaque scroll (ms)
-SCROLL_DELAY_MIN = 1500   # 1.5 secondes minimum
-SCROLL_DELAY_MAX = 3000   # 3 secondes maximum
+# Délai entre chaque scroll (ms) - AUGMENTÉ et plus variable
+SCROLL_DELAY_MIN = 3000    # 3 secondes minimum (était 1.5s)
+SCROLL_DELAY_MAX = 7000    # 7 secondes maximum (était 3s)
 
-# Délai entre chaque mot-clé recherché (ms)
-KEYWORD_DELAY_MIN = 4000  # 4 secondes minimum
-KEYWORD_DELAY_MAX = 8000  # 8 secondes maximum
+# Délai entre chaque mot-clé recherché (ms) - SIGNIFICATIVEMENT AUGMENTÉ
+KEYWORD_DELAY_MIN = 15000   # 15 secondes minimum (était 4s)
+KEYWORD_DELAY_MAX = 45000   # 45 secondes maximum (était 8s)
 
 # Nombre de scrolls par page (réduit pour moins de requêtes)
 MAX_SCROLLS_PER_PAGE = 2
 
-# Fonction utilitaire pour délai aléatoire
+# Délai de "lecture" simulée d'un post (ms) - NOUVEAU
+POST_READ_DELAY_MIN = 1500   # 1.5 secondes
+POST_READ_DELAY_MAX = 4000   # 4 secondes
+
+# Pause longue occasionnelle pour simuler une distraction (ms)
+LONG_PAUSE_MIN = 20000       # 20 secondes
+LONG_PAUSE_MAX = 60000       # 60 secondes
+LONG_PAUSE_PROBABILITY = 0.05  # 5% de chance par keyword
+
+# Pause très courte pour micro-hésitations (ms) - NOUVEAU
+MICRO_PAUSE_MIN = 200
+MICRO_PAUSE_MAX = 800
+
 def random_delay(min_ms: int, max_ms: int) -> int:
-    """Retourne un délai aléatoire entre min et max millisecondes."""
-    return random.randint(min_ms, max_ms)
+    """Retourne un délai aléatoire avec distribution gaussienne centrée.
+    
+    Utilise une distribution normale tronquée pour des délais plus naturels
+    (les humains ont tendance à se grouper autour d'une moyenne).
+    """
+    # Distribution gaussienne centrée sur la moyenne
+    mean = (min_ms + max_ms) / 2
+    std_dev = (max_ms - min_ms) / 4  # 95% des valeurs dans l'intervalle
+    
+    value = random.gauss(mean, std_dev)
+    # Tronquer aux limites + ajouter un peu de bruit
+    noise = random.randint(-200, 200)
+    return max(min_ms, min(max_ms, int(value + noise)))
+
+def human_delay(base_ms: int, variance_percent: float = 0.4) -> int:
+    """Génère un délai humain avec variance naturelle.
+    
+    Args:
+        base_ms: Délai de base en millisecondes
+        variance_percent: Pourcentage de variance (0.4 = ±40%)
+    """
+    variance = base_ms * variance_percent
+    return int(base_ms + random.uniform(-variance, variance))
+
+def should_take_long_pause() -> bool:
+    """Détermine si on doit prendre une longue pause (simulation de distraction)."""
+    return random.random() < LONG_PAUSE_PROBABILITY
+
+def get_long_pause_duration() -> int:
+    """Retourne une durée de pause longue aléatoire."""
+    return random_delay(LONG_PAUSE_MIN, LONG_PAUSE_MAX)
+
+# ============================================================
+# ANTI-DETECTION: Mode Stealth et comportement humain
+# ============================================================
+
+def stealth_enabled() -> bool:
+    import os
+    return os.environ.get("STEALTH_ENABLED", "0").lower() in ("1", "true", "yes")
+
+# Pages de restriction/warning LinkedIn à détecter
+RESTRICTION_INDICATORS = [
+    "temporairement restreint",
+    "temporarily restricted",
+    "compte est restreint",
+    "account is restricted",
+    "unusual activity",
+    "activité inhabituelle",
+    "security verification",
+    "vérification de sécurité",
+    "checkpoint",
+    "nous avons détecté",
+    "we've detected",
+    "logiciels d'automatisation",
+    "automation software",
+    "prove you're not a robot",
+    "prouvez que vous n'êtes pas un robot",
+]
+
+# User agents réalistes (rotation)
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+]
+
+def get_stealth_context_options() -> dict:
+    """Retourne les options de contexte pour le mode stealth."""
+    if not stealth_enabled():
+        return {}
+    return {
+        "viewport": {"width": random.randint(1280, 1920), "height": random.randint(800, 1080)},
+        "user_agent": random.choice(USER_AGENTS),
+        "locale": "fr-FR",
+        "timezone_id": "Europe/Paris",
+        "geolocation": {"latitude": 48.8566, "longitude": 2.3522},  # Paris
+        "permissions": ["geolocation"],
+        "color_scheme": "light",
+        "device_scale_factor": random.choice([1, 1.25, 1.5]),
+        "has_touch": False,
+        "is_mobile": False,
+        "java_script_enabled": True,
+    }
+
+async def apply_stealth_scripts(page) -> None:
+    """Applique des scripts anti-détection au navigateur.
+    
+    Ces scripts masquent les signatures d'automatisation Playwright.
+    """
+    if not stealth_enabled():
+        return
+    # Masquer webdriver
+    await page.add_init_script("""
+        // Masquer la propriété webdriver
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined
+        });
+        
+        // Masquer les plugins Playwright
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [
+                { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                { name: 'Native Client', filename: 'internal-nacl-plugin' },
+            ]
+        });
+        
+        // Masquer les langues
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['fr-FR', 'fr', 'en-US', 'en']
+        });
+        
+        // Chrome runtime
+        window.chrome = {
+            runtime: {},
+            loadTimes: function() {},
+            csi: function() {},
+            app: {}
+        };
+        
+        // Permissions API
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications' ?
+                Promise.resolve({ state: Notification.permission }) :
+                originalQuery(parameters)
+        );
+        
+        // Console.debug leak prevention
+        window.console.debug = () => {};
+    """)
+
+async def detect_restriction_page(page) -> tuple[bool, str]:
+    """Détecte si la page actuelle est une page de restriction LinkedIn.
+    
+    Returns:
+        (is_restricted, reason)
+    """
+    try:
+        page_content = await page.content()
+        page_content_lower = page_content.lower()
+        page_url = page.url.lower()
+        page_title = (await page.title()).lower()
+        
+        for indicator in RESTRICTION_INDICATORS:
+            if indicator.lower() in page_content_lower or indicator.lower() in page_title:
+                return True, f"Detected: {indicator}"
+        
+        # URL-based detection
+        if "checkpoint" in page_url or "challenge" in page_url:
+            return True, f"Checkpoint URL: {page_url}"
+        
+        if "restricted" in page_url or "suspended" in page_url:
+            return True, f"Restricted URL: {page_url}"
+            
+    except Exception as e:
+        _debug_log(f"Error detecting restriction: {e}")
+    
+    return False, ""
+
+async def simulate_human_mouse_movement(page, target_x: int = None, target_y: int = None) -> None:
+    """Simule un mouvement de souris humain avec courbe de Bézier."""
+    try:
+        viewport = page.viewport_size
+        if not viewport:
+            return
+            
+        # Position cible ou aléatoire
+        end_x = target_x if target_x else random.randint(100, viewport['width'] - 100)
+        end_y = target_y if target_y else random.randint(100, viewport['height'] - 100)
+        
+        # Position de départ aléatoire
+        start_x = random.randint(50, viewport['width'] - 50)
+        start_y = random.randint(50, viewport['height'] - 50)
+        
+        # Nombre de pas
+        steps = random.randint(5, 15)
+        
+        for i in range(steps):
+            # Interpolation avec un peu de bruit
+            progress = i / steps
+            # Courbe non-linéaire (ease-in-out)
+            progress = progress * progress * (3 - 2 * progress)
+            
+            x = int(start_x + (end_x - start_x) * progress + random.randint(-5, 5))
+            y = int(start_y + (end_y - start_y) * progress + random.randint(-5, 5))
+            
+            await page.mouse.move(x, y)
+            await page.wait_for_timeout(random.randint(10, 50))
+            
+    except Exception:
+        pass  # Ignorer les erreurs de mouvement souris
+
+async def simulate_human_scroll(page, direction: str = "down", amount: int = None) -> None:
+    """Simule un scroll humain avec vitesse variable."""
+    try:
+        if amount is None:
+            amount = random.randint(200, 500)
+        
+        if direction == "up":
+            amount = -amount
+        
+        # Scroll en plusieurs étapes avec vitesse variable
+        steps = random.randint(3, 7)
+        per_step = amount // steps
+        
+        for _ in range(steps):
+            await page.mouse.wheel(0, per_step + random.randint(-20, 20))
+            await page.wait_for_timeout(random.randint(50, 150))
+            
+    except Exception:
+        # Fallback au scroll JavaScript
+        try:
+            await page.evaluate(f"window.scrollBy(0, {amount})")
+        except Exception:
+            pass
+
+async def simulate_reading_pause(page) -> None:
+    """Simule une pause de lecture naturelle."""
+    await page.wait_for_timeout(random_delay(POST_READ_DELAY_MIN, POST_READ_DELAY_MAX))
+    
+    # Parfois, simuler un petit mouvement de souris pendant la lecture
+    if random.random() < 0.3:
+        await simulate_human_mouse_movement(page)
 # ============================================================
 
 # Selectors (duplicated from worker.py to keep subprocess self-contained)
@@ -1359,13 +1597,31 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
     
     try:
         async with async_playwright() as pw:
-            # Launch browser
-            _debug_log(f"launching browser, headless={headless}")
-            browser = await pw.chromium.launch(headless=headless)
-            _debug_log("browser launched")
+            # Launch browser with anti-detection args
+            _debug_log(f"launching browser headless={headless} stealth={stealth_enabled()}")
+            args = [
+                "--disable-dev-shm-usage",
+                "--disable-web-security",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-infobars",
+                "--window-position=0,0",
+                "--ignore-certificate-errors",
+                "--ignore-certificate-errors-spki-list",
+                "--disable-features=IsolateOrigins,site-per-process",
+            ]
+            if stealth_enabled():
+                args.insert(0, "--disable-blink-features=AutomationControlled")
+            browser = await pw.chromium.launch(
+                headless=headless,
+                args=args,
+            )
+            if stealth_enabled():
+                _debug_log("browser launched with stealth args")
             
-            # Create context with storage state
-            context_opts = {}
+            # Create context with storage state AND stealth options
+            stealth_opts = get_stealth_context_options()
+            context_opts = {**stealth_opts}
             if storage_state and os.path.exists(storage_state):
                 context_opts["storage_state"] = storage_state
                 _debug_log(f"using storage_state from {storage_state}")
@@ -1374,24 +1630,76 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
             
             context = await browser.new_context(**context_opts)
             page = await context.new_page()
-            _debug_log("page created")
+            
+            # Apply anti-detection scripts
+            await apply_stealth_scripts(page)
+            if stealth_enabled():
+                _debug_log("page created with stealth scripts applied")
+            
+            # Initial human-like behavior: random mouse movement
+            await simulate_human_mouse_movement(page)
             
             # Navigate to feed first to check auth
             _debug_log("navigating to LinkedIn feed...")
             await page.goto("https://www.linkedin.com/feed/", timeout=30000)
             await page.wait_for_timeout(random_delay(PAGE_LOAD_DELAY_MIN, PAGE_LOAD_DELAY_MAX))
-            _debug_log(f"page title: {await page.title()}")
             
-            # Check if authenticated
-            cookies = await context.cookies("https://www.linkedin.com")
+            # Simulate reading the page
+            await simulate_human_mouse_movement(page)
+            
+            page_title = await page.title()
+            current_url = page.url
+            _debug_log(f"page title: {page_title}, url: {current_url}")
+            
+            # ========== DETECTION DE RESTRICTION ==========
+            is_restricted, restriction_reason = await detect_restriction_page(page)
+            if is_restricted:
+                _debug_log(f"RESTRICTION DETECTED: {restriction_reason}")
+                results["success"] = False
+                results["account_restricted"] = True
+                results["restriction_reason"] = restriction_reason
+                results["errors"].append(f"Account restricted by LinkedIn: {restriction_reason}")
+                await browser.close()
+                return results
+            
+            # Check if authenticated - get cookies from both domains
+            cookies = await context.cookies(["https://www.linkedin.com", "https://linkedin.com"])
             cookie_names = [c.get("name") for c in cookies]
-            _debug_log(f"cookies found: {len(cookies)}, names: {cookie_names[:10]}")
+            _debug_log(f"cookies found: {len(cookies)}, names: {cookie_names[:15]}")
             has_li_at = any(c.get("name") == "li_at" and c.get("value") for c in cookies)
+            
+            # Detect if we're on the login page (session revoked by LinkedIn)
+            login_page_indicators = [
+                "S'identifier" in page_title,  # French
+                "Sign In" in page_title,  # English
+                "login" in current_url.lower(),
+                "checkpoint" in current_url.lower(),  # Security checkpoint
+                "authwall" in current_url.lower(),
+            ]
+            is_on_login_page = any(login_page_indicators)
             
             if not has_li_at:
                 results["success"] = False
-                results["errors"].append("Not authenticated - no li_at cookie")
-                _debug_log("ERROR: Not authenticated - no li_at cookie found")
+                # Determine if this is a revocation (had storage_state but cookie rejected)
+                # vs never authenticated (no storage_state file)
+                had_storage_state = storage_state and os.path.exists(storage_state)
+                if had_storage_state and is_on_login_page:
+                    results["session_revoked"] = True
+                    results["errors"].append("Session revoked - LinkedIn rejected the authentication cookie")
+                    _debug_log("ERROR: Session REVOKED by LinkedIn - cookie rejected, redirected to login page")
+                else:
+                    results["session_revoked"] = False
+                    results["errors"].append("Not authenticated - no li_at cookie")
+                    _debug_log("ERROR: Not authenticated - no li_at cookie found")
+                # Log more details for debugging
+                results["auth_debug"] = {
+                    "page_title": page_title,
+                    "current_url": current_url[:100],
+                    "is_on_login_page": is_on_login_page,
+                    "had_storage_state": had_storage_state,
+                    "cookies_count": len(cookies),
+                }
+                _debug_log(f"Auth debug: {results['auth_debug']}")
                 await browser.close()
                 return results
             
@@ -1403,10 +1711,31 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
                 try:
                     search_url = f"https://www.linkedin.com/search/results/content/?keywords={keyword}"
                     _debug_log(f"navigating to search: {search_url[:80]}...")
+                    
+                    # Simuler mouvement souris avant navigation
+                    await simulate_human_mouse_movement(page)
+                    
                     await page.goto(search_url, timeout=30000)
                     _debug_log("search page loaded, waiting random delay...")
-                    # Délai aléatoire entre les mots-clés pour paraître plus humain
-                    await page.wait_for_timeout(random_delay(KEYWORD_DELAY_MIN, KEYWORD_DELAY_MAX))
+                    
+                    # ========== VÉRIFIER RESTRICTION APRÈS CHAQUE NAVIGATION ==========
+                    is_restricted, restriction_reason = await detect_restriction_page(page)
+                    if is_restricted:
+                        _debug_log(f"RESTRICTION DETECTED during scraping: {restriction_reason}")
+                        results["success"] = False
+                        results["account_restricted"] = True
+                        results["restriction_reason"] = restriction_reason
+                        results["errors"].append(f"Account restricted during scraping: {restriction_reason}")
+                        await browser.close()
+                        return results
+                    
+                    # Délai humain avec scroll simulé
+                    await simulate_human_scroll(page, "down", random.randint(100, 300))
+                    await page.wait_for_timeout(random_delay(PAGE_LOAD_DELAY_MIN, PAGE_LOAD_DELAY_MAX))
+                    
+                    # Simuler lecture de la page de résultats
+                    await simulate_reading_pause(page)
+                    await simulate_human_mouse_movement(page)
                     
                     # Scrape more posts than needed to account for filtering
                     scrape_count = max_per_keyword * 3 if apply_titan_filter else max_per_keyword
@@ -1417,6 +1746,10 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
                     
                     # Apply Titan Partners filtering if enabled
                     for post in raw_posts:
+                        # Simuler lecture du post occasionnellement
+                        if random.random() < 0.2:
+                            await simulate_reading_pause(page)
+                        
                         # Check for duplicates first
                         post_hash = get_post_hash(post)
                         if post_hash in seen_posts:
@@ -1460,6 +1793,18 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
                             results["stats"]["accepted"] += 1
                     
                     results["keywords_processed"] += 1
+                    
+                    # ========== PAUSE LONGUE OCCASIONNELLE ==========
+                    # Simule une distraction humaine (regarder autre chose, pause café, etc.)
+                    if should_take_long_pause() and kw_idx < len(keywords) - 1:
+                        pause_duration = get_long_pause_duration()
+                        _debug_log(f"Taking LONG PAUSE of {pause_duration/1000:.1f}s (simulating human distraction)")
+                        await page.wait_for_timeout(pause_duration)
+                    else:
+                        # Délai normal entre keywords (AUGMENTÉ)
+                        delay = random_delay(KEYWORD_DELAY_MIN, KEYWORD_DELAY_MAX)
+                        _debug_log(f"Waiting {delay/1000:.1f}s before next keyword")
+                        await page.wait_for_timeout(delay)
                     
                 except Exception as e:
                     results["errors"].append(f"Keyword '{keyword}': {str(e)}")

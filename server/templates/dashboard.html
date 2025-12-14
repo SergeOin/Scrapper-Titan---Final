@@ -156,6 +156,118 @@
       setTimeout(()=>{div.style.opacity='0';div.style.transform='translateY(-6px)'; setTimeout(()=>div.remove(),300);}, 3400);
     }
 
+    // ========== SESSION RECONNECT MODALS ==========
+    function showReconnectModal(payload) {
+      // Remove existing modal if any
+      const existing = document.getElementById('reconnectModal');
+      if (existing) existing.remove();
+      
+      const modal = document.createElement('div');
+      modal.id = 'reconnectModal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1001;';
+      modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:2rem;max-width:400px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
+          <div style="font-size:3rem;margin-bottom:1rem;">❌</div>
+          <h3 style="color:#b91c1c;margin-bottom:1rem;">Reconnexion échouée</h3>
+          <p style="color:#666;margin-bottom:1.5rem;">${payload.message || 'La reconnexion automatique a échoué. Veuillez vous reconnecter manuellement.'}</p>
+          <div style="display:flex;gap:1rem;justify-content:center;">
+            <a href="/login" style="background:#2563eb;color:#fff;padding:0.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:500;">Se reconnecter</a>
+            <button onclick="document.getElementById('reconnectModal').remove()" style="background:#e5e7eb;padding:0.75rem 1.5rem;border-radius:8px;border:none;cursor:pointer;">Fermer</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+    }
+
+    // Desktop local hardening: per-launch token to prevent drive-by POSTs to localhost
+    const DESKTOP_TRIGGER_KEY = "{{ desktop_trigger_key|default('')|e }}";
+    function desktopHeaders(extra){
+      const h = extra ? { ...extra } : {};
+      if (DESKTOP_TRIGGER_KEY) h['X-Desktop-Trigger'] = DESKTOP_TRIGGER_KEY;
+      return h;
+    }
+    
+    function showHumanValidationModal(payload) {
+      // Remove existing modal if any
+      const existing = document.getElementById('humanValidationModal');
+      if (existing) existing.remove();
+      
+      const modal = document.createElement('div');
+      modal.id = 'humanValidationModal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1001;';
+      modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:2rem;max-width:450px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
+          <div style="font-size:3rem;margin-bottom:1rem;">🔐</div>
+          <h3 style="color:#f59e0b;margin-bottom:1rem;">Validation humaine requise</h3>
+          <p style="color:#666;margin-bottom:0.5rem;">LinkedIn demande une vérification de sécurité :</p>
+          <ul style="text-align:left;color:#666;margin:1rem 0;padding-left:1.5rem;">
+            <li>CAPTCHA (puzzle visuel)</li>
+            <li>Vérification par email/SMS</li>
+            <li>Authentification à deux facteurs (2FA)</li>
+          </ul>
+          <p style="color:#666;margin-bottom:1.5rem;font-size:0.9rem;">Veuillez vous connecter manuellement pour résoudre cette vérification.</p>
+          <div style="display:flex;gap:1rem;justify-content:center;">
+            <a href="/login" style="background:#f59e0b;color:#fff;padding:0.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:500;">Connexion manuelle</a>
+            <button onclick="document.getElementById('humanValidationModal').remove()" style="background:#e5e7eb;padding:0.75rem 1.5rem;border-radius:8px;border:none;cursor:pointer;">Fermer</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+    }
+    
+    async function attemptAutoReconnect() {
+      showToast('🔄 Tentative de reconnexion automatique...', 'info');
+      try {
+        const resp = await fetch('/api/session/auto_reconnect', { method: 'POST', headers: desktopHeaders() });
+        const data = await resp.json();
+        if (data.ok) {
+          showToast('✅ Reconnexion réussie!', 'success');
+          await refreshStatus();
+          // Close any open modals
+          const modal = document.getElementById('reconnectModal');
+          if (modal) modal.remove();
+        } else if (data.needs_human_validation) {
+          showHumanValidationModal(data);
+        } else {
+          showToast('❌ ' + (data.error || 'Échec'), 'error');
+        }
+      } catch (e) {
+        showToast('❌ Erreur: ' + e, 'error');
+      }
+    }
+    
+    function showAccountRestrictedModal(payload) {
+      // Remove existing modal if any
+      const existing = document.getElementById('accountRestrictedModal');
+      if (existing) existing.remove();
+      
+      const modal = document.createElement('div');
+      modal.id = 'accountRestrictedModal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1001;';
+      modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:2rem;max-width:500px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
+          <div style="font-size:4rem;margin-bottom:1rem;">🚫</div>
+          <h3 style="color:#b91c1c;margin-bottom:1rem;">Compte LinkedIn Temporairement Restreint</h3>
+          <p style="color:#666;margin-bottom:1rem;">LinkedIn a détecté une activité d'automatisation et a temporairement restreint votre compte.</p>
+          <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:1rem;margin-bottom:1.5rem;text-align:left;">
+            <p style="color:#b91c1c;font-weight:500;margin-bottom:0.5rem;">⚠️ Actions recommandées :</p>
+            <ul style="color:#666;margin:0;padding-left:1.5rem;font-size:0.9rem;">
+              <li>Ne relancez PAS le scraper pendant 24-48h</li>
+              <li>Connectez-vous manuellement sur LinkedIn pour vérifier</li>
+              <li>La restriction est généralement levée après quelques heures</li>
+              <li>Le scraping a été automatiquement désactivé</li>
+            </ul>
+          </div>
+          <p style="color:#999;font-size:0.85rem;margin-bottom:1.5rem;">${payload.reason || ''}</p>
+          <div style="display:flex;gap:1rem;justify-content:center;">
+            <a href="https://www.linkedin.com" target="_blank" style="background:#0a66c2;color:#fff;padding:0.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:500;">Vérifier sur LinkedIn</a>
+            <button onclick="document.getElementById('accountRestrictedModal').remove()" style="background:#e5e7eb;padding:0.75rem 1.5rem;border-radius:8px;border:none;cursor:pointer;">Fermer</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+    }
+
     // Periodic status ticker (keeps ETA/countdowns fresh without reload)
     let _statusTicker = null;
     function startStatusTicker(){
@@ -279,7 +391,7 @@
 
     async function refreshBlockedCount(){
       try{
-        const r = await fetch('/blocked-accounts/count', { credentials:'include' });
+        const r = await fetch('/blocked-accounts/count', { credentials:'include', headers: desktopHeaders() });
         if(!r.ok) return;
         const data = await r.json();
         updateBlockedBadge(data.count ?? 0);
@@ -300,7 +412,7 @@
         const r = await fetch(`/api/posts/${postId}/favorite`, {
           method: 'POST',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
+          headers: desktopHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ favorite: !!makeFav })
         });
         if(r.status === 401){ showToast('Authentification requise - rechargement…','error'); location.reload(); return; }
@@ -319,7 +431,7 @@
       try {
         const r = await fetch(`/api/posts/${postId}/delete`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: desktopHeaders({ 'Content-Type': 'application/json' }),
           credentials: 'include',
           body: JSON.stringify({ delete: true })
         });
@@ -394,7 +506,7 @@
           if(data.scraping_enabled && age >= 150){
             try {
               const fd = new FormData();
-              await fetch('/trigger', { method:'POST', body: fd, headers: { 'X-Trigger-From': 'dashboard' } });
+              await fetch('/trigger', { method:'POST', body: fd, headers: desktopHeaders({ 'X-Trigger-From': 'dashboard' }) });
             } catch(_) {}
           }
         } catch(_) { /* ignore */ }
@@ -446,7 +558,7 @@
               _autoTriggeredFirstRun = true;
               try {
                 const fd = new FormData();
-                const tr = await fetch('/trigger', { method:'POST', body: fd, headers: { 'X-Trigger-From': 'dashboard' } });
+                const tr = await fetch('/trigger', { method:'POST', body: fd, headers: desktopHeaders({ 'X-Trigger-From': 'dashboard' }) });
                 if (tr.ok) { showToast('Cycle lancé','info'); }
               } catch(_) { /* ignore */ }
             }
@@ -482,7 +594,7 @@
       const btn = document.getElementById('toggleBtn');
       if (btn) { btn.disabled = true; btn.textContent = 'Veuillez patienter…'; }
       try {
-        const r = await fetch('/toggle', { method:'POST', credentials: 'include' });
+        const r = await fetch('/toggle', { method:'POST', credentials: 'include', headers: desktopHeaders() });
         if(r.status === 401){ showToast('Authentification requise - rechargement…','error'); location.reload(); return; }
         if(!r.ok) throw new Error('HTTP '+r.status);
         await refreshStatus();
@@ -818,6 +930,32 @@
             } else if (payload.type === 'toggle') {
               await refreshStatus();
               showToast(payload.scraping_enabled ? 'Scraper repris' : 'Scraper en pause', payload.scraping_enabled ? 'success' : 'info');
+            } else if (payload.type === 'session_revoked') {
+              // Session révoquée par LinkedIn
+              showToast('⚠️ Session LinkedIn révoquée - Tentative de reconnexion...', 'error');
+              setHint('Session LinkedIn révoquée. Reconnexion en cours...', 'status-hint-error');
+              setHintVisible(true);
+            } else if (payload.type === 'session_reconnecting') {
+              showToast('🔄 Reconnexion en cours avec vos identifiants sauvegardés...', 'info');
+            } else if (payload.type === 'session_reconnect_success') {
+              showToast('✅ Reconnexion réussie! Le scraping reprend.', 'success');
+              setHint('Reconnexion réussie - Scraping en cours', 'status-hint-ok');
+              await refreshStatus();
+            } else if (payload.type === 'session_reconnect_failed') {
+              showToast('❌ Échec de la reconnexion: ' + (payload.message || 'erreur inconnue'), 'error');
+              setHint('Reconnexion échouée - Veuillez vous reconnecter manuellement', 'status-hint-error');
+              setHintVisible(true);
+              showReconnectModal(payload);
+            } else if (payload.type === 'human_validation_required') {
+              showToast('🔐 Validation humaine requise (CAPTCHA/2FA)', 'error');
+              setHint('Validation humaine requise - Cliquez pour vous reconnecter manuellement', 'status-hint-error');
+              setHintVisible(true);
+              showHumanValidationModal(payload);
+            } else if (payload.type === 'account_restricted') {
+              showToast('🚫 COMPTE RESTREINT par LinkedIn!', 'error');
+              setHint('⚠️ Compte LinkedIn temporairement restreint - Scraping arrêté automatiquement', 'status-hint-error');
+              setHintVisible(true);
+              showAccountRestrictedModal(payload);
             }
           } catch(e){ /* ignore JSON parse */ }
           if(payload && payload.type === 'purge'){
@@ -951,7 +1089,7 @@
         logoutBtn.disabled = true;
         logoutBtn.textContent = 'Déconnexion…';
         try {
-          await fetch('/api/session/logout', { method:'POST' });
+          await fetch('/api/session/logout', { method:'POST', headers: desktopHeaders() });
         } catch(_) { /* ignore */ }
         window.location.href = '/login';
       });

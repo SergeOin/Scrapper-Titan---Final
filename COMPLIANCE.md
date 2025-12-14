@@ -7,7 +7,8 @@ Ce document récapitule les garde‑fous implémentés et les actions attendues 
 - Objectif limité : identification d'offres / signaux de recrutement de profils juridiques en France (~50 posts/jour max).
 
 ## 2. Collecte & Accès
-- Priorité à l'usage d'API officielles si/et quand disponibles. Le module Playwright ne doit pas contourner de protections; aucune technique de furtivité (stealth, UA exotiques, proxies rotatifs) n'est intégrée.
+- Priorité à l'usage d'API officielles si/et quand disponibles. Le module Playwright ne doit pas contourner de protections.
+- Le projet contient du code de "stealth/anti-detection" (ex: scripts d'empreinte navigateur) **désactivé par défaut** et uniquement activable explicitement (opt-in). Son usage est un point de conformité sensible (risque CGU/plateforme) et doit être évité sans validation.
 - Session authentifiée fournie explicitement par un compte autorisé (pas de contournement d'authentification).
 - Pas d'extraction massive: pacing + token bucket + limites quotidiennes.
 

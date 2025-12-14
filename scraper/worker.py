@@ -100,6 +100,210 @@ def _debug_log(msg: str):
     except Exception:
         pass
 
+
+# ------------------------------------------------------------
+# Session revocation handling and auto-reconnect
+# ------------------------------------------------------------
+
+async def _handle_session_revoked(ctx: AppContext, logger: structlog.BoundLogger) -> bool:
+    """Handle session revocation by attempting auto-reconnect with saved credentials.
+    
+    Broadcasts events to notify the UI about the reconnection status.
+    Returns True if reconnect succeeded, False otherwise.
+    """
+    _debug_log("Handling session revocation - starting auto-reconnect process")
+    
+    # 1. Broadcast session revoked event
+    if broadcast and EventType:
+        try:
+            await broadcast({
+                "type": EventType.SESSION_REVOKED,
+                "message": "LinkedIn a révoqué la session. Tentative de reconnexion automatique...",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as exc:
+            logger.warning("broadcast_session_revoked_failed", error=str(exc))
+    
+    # 2. Try to load saved credentials
+    credentials = _load_saved_credentials_for_reconnect(ctx)
+    
+    if not credentials:
+        logger.warning("no_saved_credentials_for_reconnect")
+        _debug_log("No saved credentials found - cannot auto-reconnect")
+        if broadcast and EventType:
+            try:
+                await broadcast({
+                    "type": EventType.SESSION_RECONNECT_FAILED,
+                    "message": "Reconnexion impossible - aucun identifiant sauvegardé. Veuillez vous reconnecter manuellement.",
+                    "reason": "no_credentials",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+            except Exception:
+                pass
+        return False
+    
+    # 3. Broadcast reconnecting event
+    if broadcast and EventType:
+        try:
+            await broadcast({
+                "type": EventType.SESSION_RECONNECTING,
+                "message": f"Reconnexion en cours avec {credentials['email']}...",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception:
+            pass
+    
+    # 4. Attempt login via Playwright
+    logger.info("attempting_auto_reconnect", email=credentials["email"])
+    _debug_log(f"Attempting auto-reconnect with email: {credentials['email']}")
+    
+    try:
+        from .session import login_via_playwright
+        ok, diag = await login_via_playwright(
+            ctx, 
+            email=credentials["email"], 
+            password=credentials["password"],
+            mfa_code=None
+        )
+        
+        if ok:
+            logger.info("auto_reconnect_success", email=credentials["email"])
+            _debug_log("Auto-reconnect SUCCESS!")
+            if broadcast and EventType:
+                try:
+                    await broadcast({
+                        "type": EventType.SESSION_RECONNECT_SUCCESS,
+                        "message": "Reconnexion réussie! Le scraping va reprendre.",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                except Exception:
+                    pass
+            return True
+        else:
+            # Check if human validation is required
+            error = diag.get("error", "")
+            needs_human = any(kw in error.lower() for kw in [
+                "captcha", "challenge", "verification", "checkpoint",
+                "mfa", "two-factor", "2fa", "security code"
+            ])
+            
+            if needs_human:
+                logger.warning("human_validation_required", diag=diag)
+                _debug_log(f"Human validation required: {error}")
+                if broadcast and EventType:
+                    try:
+                        await broadcast({
+                            "type": EventType.HUMAN_VALIDATION_REQUIRED,
+                            "message": "Validation humaine requise (CAPTCHA/2FA). Veuillez vous connecter manuellement.",
+                            "details": diag,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        })
+                    except Exception:
+                        pass
+            else:
+                logger.warning("auto_reconnect_failed", diag=diag)
+                _debug_log(f"Auto-reconnect FAILED: {diag}")
+                if broadcast and EventType:
+                    try:
+                        await broadcast({
+                            "type": EventType.SESSION_RECONNECT_FAILED,
+                            "message": f"Échec de la reconnexion: {error or 'erreur inconnue'}",
+                            "details": diag,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        })
+                    except Exception:
+                        pass
+            return False
+            
+    except Exception as exc:
+        logger.error("auto_reconnect_exception", error=str(exc))
+        _debug_log(f"Auto-reconnect exception: {exc}")
+        if broadcast and EventType:
+            try:
+                await broadcast({
+                    "type": EventType.SESSION_RECONNECT_FAILED,
+                    "message": f"Erreur lors de la reconnexion: {str(exc)}",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+            except Exception:
+                pass
+        return False
+
+
+def _load_saved_credentials_for_reconnect(ctx: AppContext) -> dict | None:
+    """Load saved credentials from the TitanScraper credentials file.
+    
+    Returns {"email": str, "password": str} if found and decryptable, else None.
+    """
+    import base64
+    
+    # Determine the user data directory
+    localappdata = os.environ.get("LOCALAPPDATA", "")
+    if localappdata:
+        creds_path = Path(localappdata) / "TitanScraper" / "credentials.json"
+    else:
+        # Fallback for non-Windows or development
+        creds_path = Path(".") / "credentials.json"
+    
+    if not creds_path.exists():
+        _debug_log(f"Credentials file not found: {creds_path}")
+        return None
+    
+    try:
+        data = json.loads(creds_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        
+        # Check if auto_login is enabled
+        if not data.get("auto_login"):
+            _debug_log("auto_login is disabled in credentials")
+            return None
+        
+        email = data.get("email")
+        pw_prot = data.get("password_protected")
+        
+        if not email or not pw_prot:
+            _debug_log("Missing email or password_protected in credentials")
+            return None
+        
+        # Decode and decrypt password (Windows DPAPI)
+        try:
+            raw = base64.b64decode(pw_prot)
+            # Try DPAPI decryption on Windows
+            pwd = _dpapi_unprotect_password(raw)
+            if pwd:
+                _debug_log(f"Credentials loaded successfully for {email}")
+                return {"email": email, "password": pwd}
+        except Exception as e:
+            _debug_log(f"Failed to decrypt password: {e}")
+        
+        return None
+        
+    except Exception as e:
+        _debug_log(f"Failed to load credentials: {e}")
+        return None
+
+
+def _dpapi_unprotect_password(encrypted_data: bytes) -> str | None:
+    """Decrypt password using Windows DPAPI.
+    
+    Returns decrypted password string, or None if decryption fails.
+    """
+    if sys.platform != "win32":
+        return None
+    
+    try:
+        import win32crypt
+        decrypted = win32crypt.CryptUnprotectData(encrypted_data, None, None, None, 0)
+        return decrypted[1].decode("utf-8", errors="ignore")
+    except ImportError:
+        _debug_log("win32crypt not available for DPAPI decryption")
+        return None
+    except Exception as e:
+        _debug_log(f"DPAPI decryption failed: {e}")
+        return None
+
+
 async def _run_scraping_subprocess(keywords: list[str], ctx: AppContext, logger: structlog.BoundLogger) -> list[dict]:
     """Run scraping in a separate process to avoid Playwright/asyncio conflicts.
     
@@ -108,9 +312,11 @@ async def _run_scraping_subprocess(keywords: list[str], ctx: AppContext, logger:
     
     Uses file-based communication for Windows GUI exe (console=False).
     Keywords are processed in batches to avoid long-running subprocesses.
+    
+    ANTI-DETECTION: Batch size optimisé pour 100 posts/jour en 7h.
     """
     all_posts: list[dict] = []
-    batch_size = 5  # Process 5 keywords per subprocess call
+    batch_size = 3  # 3 keywords par subprocess - équilibre productivité/discrétion
     
     for batch_start in range(0, len(keywords), batch_size):
         batch_keywords = keywords[batch_start:batch_start + batch_size]
@@ -118,11 +324,23 @@ async def _run_scraping_subprocess(keywords: list[str], ctx: AppContext, logger:
                    keywords_count=len(batch_keywords), total_keywords=len(keywords))
         
         batch_posts = await _run_scraping_subprocess_batch(batch_keywords, ctx, logger)
-        all_posts.extend(batch_posts)
         
-        # Brief pause between batches to avoid rate limiting
+        # Check for restriction marker
+        if isinstance(batch_posts, dict) and batch_posts.get("_restricted"):
+            logger.critical("stopping_scraping_due_to_restriction")
+            _debug_log("STOPPING ALL SCRAPING - Account restricted by LinkedIn")
+            # Disable scraping to prevent further issues
+            ctx.settings.scraping_enabled = False
+            break
+        
+        all_posts.extend(batch_posts if isinstance(batch_posts, list) else [])
+        
+        # ANTI-DETECTION: Pause entre batches (30-60 secondes) - optimisé pour 100 posts/jour
         if batch_start + batch_size < len(keywords):
-            await asyncio.sleep(2)
+            import random
+            pause = random.randint(30, 60)
+            logger.info("anti_detection_pause", seconds=pause)
+            await asyncio.sleep(pause)
     
     logger.info("subprocess_all_batches_complete", total_posts=len(all_posts))
     return all_posts
@@ -229,6 +447,33 @@ async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, l
         if not result.get("success", False):
             logger.warning("subprocess_scraping_errors", errors=result.get("errors", []))
             _debug_log(f"subprocess returned success=False, errors={result.get('errors', [])}")
+            
+            # Check if account is restricted by LinkedIn (anti-bot detection)
+            if result.get("account_restricted"):
+                logger.critical("account_restricted_detected", reason=result.get("restriction_reason", "unknown"))
+                _debug_log(f"ACCOUNT RESTRICTED: {result.get('restriction_reason')}")
+                # Broadcast restriction event
+                if broadcast and EventType:
+                    try:
+                        await broadcast({
+                            "type": EventType.ACCOUNT_RESTRICTED,
+                            "message": "⚠️ Compte LinkedIn temporairement restreint! Arrêt automatique du scraping.",
+                            "reason": result.get("restriction_reason", "Détection d'automatisation"),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        })
+                    except Exception:
+                        pass
+                # Stop scraping completely - return special marker
+                return {"_restricted": True}
+            
+            # Check if session was revoked by LinkedIn
+            if result.get("session_revoked"):
+                logger.error("session_revoked_detected", auth_debug=result.get("auth_debug", {}))
+                _debug_log("Session revoked by LinkedIn - attempting auto-reconnect")
+                # Broadcast session revoked event and attempt auto-reconnect
+                await _handle_session_revoked(ctx, logger)
+                # Return empty to stop this batch - the reconnect will retry
+                return []
         
         posts = result.get("posts", [])
         _debug_log(f"subprocess returned {len(posts)} posts, stats={result.get('stats', {})}")
@@ -2127,7 +2372,10 @@ async def worker_loop() -> None:
         # Human-like continuous mode
         if ctx.settings.human_mode_enabled:
             import random, datetime
-            logger.info("human_mode_enabled", start=ctx.settings.human_active_hours_start, end=ctx.settings.human_active_hours_end)
+            logger.info("human_mode_enabled", 
+                       hours=f"{ctx.settings.human_active_hours_start}h-{ctx.settings.human_active_hours_end}h",
+                       weekdays=ctx.settings.human_active_weekdays,
+                       info="Lundi-Vendredi 8h-22h")
             import collections, time as _time
             window = collections.deque()  # timestamps of cycle completions
             while True:
@@ -2135,8 +2383,17 @@ async def worker_loop() -> None:
                     logger.info("scraping_disabled_wait")
                     await asyncio.sleep(5)
                     continue
-                local_hour = datetime.datetime.now().hour
-                in_active = ctx.settings.human_active_hours_start <= local_hour < ctx.settings.human_active_hours_end
+                now_dt = datetime.datetime.now()
+                local_hour = now_dt.hour
+                weekday = now_dt.weekday()  # 0=Lundi, 6=Dimanche
+                # Parse active weekdays from settings
+                try:
+                    active_weekdays = [int(d.strip()) for d in ctx.settings.human_active_weekdays.split(',')]
+                except Exception:
+                    active_weekdays = [0, 1, 2, 3, 4]  # Défaut: Lundi-Vendredi
+                in_active_day = weekday in active_weekdays
+                in_active_hours = ctx.settings.human_active_hours_start <= local_hour < ctx.settings.human_active_hours_end
+                in_active = in_active_day and in_active_hours
                 # Soft reset daily quota at day boundary
                 try:
                     today = datetime.date.today().isoformat()
@@ -2202,10 +2459,16 @@ async def worker_loop() -> None:
                         pause = random.randint(max(45, ctx.settings.human_min_cycle_pause_seconds), max(180, ctx.settings.human_max_cycle_pause_seconds))
                         await asyncio.sleep(pause)
                 else:
-                    # outside active hours: long cool-downs
-                    if ctx.settings.human_night_mode:
+                    # outside active hours or weekend: long cool-downs
+                    if not in_active_day:
+                        # Weekend: pause très longue (1h-2h)
+                        pause = random.randint(3600, 7200)
+                        day_names = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+                        logger.info("human_weekend_pause", day=day_names[weekday], seconds=pause, next_check_minutes=pause//60)
+                        await asyncio.sleep(pause)
+                    elif ctx.settings.human_night_mode:
                         pause = random.randint(ctx.settings.human_night_pause_min_seconds, ctx.settings.human_night_pause_max_seconds)
-                        logger.debug("human_night_pause", seconds=pause)
+                        logger.debug("human_night_pause", seconds=pause, hour=local_hour)
                         await asyncio.sleep(pause)
                     else:
                         await asyncio.sleep(300)

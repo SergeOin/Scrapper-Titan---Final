@@ -99,6 +99,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
         if interval > 0:
             # Lock to prevent concurrent process_job executions (avoids Playwright connection issues)
             scrape_lock = asyncio.Lock()
+            try:
+                setattr(ctx, "_scrape_lock", scrape_lock)
+            except Exception:
+                pass
             
             async def _periodic():
                 logger = ctx.logger.bind(component="inprocess_worker")
@@ -414,6 +418,7 @@ except Exception:
 async def blocked_accounts_page():
     try:
         from pathlib import Path as _Path
+        import json as _json
         dist_dir = _find_blocked_dist_dir()
         if dist_dir:
             index_html = _Path(dist_dir) / 'index.html'
@@ -421,6 +426,36 @@ async def blocked_accounts_page():
                 html = index_html.read_text(encoding='utf-8')
                 if '<base ' not in html:
                     html = html.replace('<head>', '<head>\n  <base href="/static/blocked/">')
+
+                # Desktop local hardening: inject per-launch header token for blocked-accounts UI.
+                if os.environ.get("DESKTOP_APP", "0").lower() in ("1", "true", "yes"):
+                    key = os.environ.get("DESKTOP_TRIGGER_KEY")
+                    if key:
+                        injected = (
+                            "\n  <script>"
+                            f"window.__DESKTOP_TRIGGER_KEY = {_json.dumps(key)};"
+                            "(function(){\n"
+                            "  try {\n"
+                            "    const k = window.__DESKTOP_TRIGGER_KEY;\n"
+                            "    const orig = window.fetch;\n"
+                            "    window.fetch = function(input, init){\n"
+                            "      try {\n"
+                            "        const url = (typeof input === 'string') ? input : (input && input.url);\n"
+                            "        if (url && url.startsWith('/blocked-accounts')) {\n"
+                            "          init = init || {};\n"
+                            "          const h = init.headers || {};\n"
+                            "          if (h instanceof Headers) { h.set('X-Desktop-Trigger', k); init.headers = h; }\n"
+                            "          else { init.headers = Object.assign({}, h, {'X-Desktop-Trigger': k}); }\n"
+                            "        }\n"
+                            "      } catch(e) {}\n"
+                            "      return orig(input, init);\n"
+                            "    };\n"
+                            "  } catch(e) {}\n"
+                            "})();"
+                            "</script>\n"
+                        )
+                        if '<head>' in html:
+                            html = html.replace('<head>', '<head>' + injected, 1)
                 return HTMLResponse(html)
     except Exception:
         # Fall back to message below

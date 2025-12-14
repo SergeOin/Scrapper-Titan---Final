@@ -23,6 +23,12 @@ class EventType(str, Enum):
     QUOTA = "quota"  # daily quota milestone events
     RISK_COOLDOWN = "risk_cooldown"  # anti-ban cooldown triggered
     NEW_POST = "new_post"  # individual post scraped and saved
+    SESSION_REVOKED = "session_revoked"  # LinkedIn cookie revoked, needs re-login
+    SESSION_RECONNECTING = "session_reconnecting"  # Auto-reconnect in progress
+    SESSION_RECONNECT_SUCCESS = "session_reconnect_success"  # Auto-reconnect succeeded
+    SESSION_RECONNECT_FAILED = "session_reconnect_failed"  # Auto-reconnect failed
+    HUMAN_VALIDATION_REQUIRED = "human_validation_required"  # CAPTCHA/2FA/manual verification needed
+    ACCOUNT_RESTRICTED = "account_restricted"  # LinkedIn account temporarily restricted (anti-bot)
 
 _listeners: List[asyncio.Queue[Dict[str, Any]]] = []
 _lock = asyncio.Lock()

@@ -19,6 +19,7 @@ from pathlib import Path
 import sqlite3
 import json as _json
 from datetime import datetime, timezone
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Form, Query, Body
 from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse
@@ -40,6 +41,29 @@ from .events import sse_event_iter, broadcast, EventType  # type: ignore
 from fastapi.responses import RedirectResponse
 
 router = APIRouter()
+
+
+def _require_desktop_trigger(request: Request) -> None:
+    """Protection 'desktop local' contre les POST/DELETE cross-site vers localhost.
+
+    En desktop, l'app bind sur 127.0.0.1 mais un site web malveillant peut quand même
+    déclencher des requêtes avec effets de bord vers localhost (CSRF/drive-by POST).
+    On exige donc un header secret (injecté dans le dashboard) + loopback.
+    """
+    if os.environ.get("DESKTOP_APP", "0").lower() not in ("1", "true", "yes"):
+        return
+
+    client_host = getattr(getattr(request, "client", None), "host", None)
+    if client_host not in ("127.0.0.1", "::1"):
+        raise HTTPException(status_code=403, detail="Endpoint desktop accessible uniquement depuis loopback")
+
+    expected = os.environ.get("DESKTOP_TRIGGER_KEY")
+    if not expected:
+        raise HTTPException(status_code=500, detail="DESKTOP_TRIGGER_KEY manquant")
+
+    supplied = request.headers.get("X-Desktop-Trigger")
+    if supplied != expected:
+        raise HTTPException(status_code=403, detail="Header desktop manquant/invalide")
 
 # Attempt optional desktop IPC import (safe if not present)
 try:  # pragma: no cover - dynamic environment
@@ -1467,6 +1491,7 @@ async def dashboard(
             "sort_dir": (sort_dir or "desc"),
             "mock_mode": ctx.settings.playwright_mock_mode,
             "trash_count": trash_count,
+            "desktop_trigger_key": os.environ.get("DESKTOP_TRIGGER_KEY", ""),
         },
     )
 
@@ -1515,6 +1540,7 @@ async def dashboard_demo(
             "sort_dir": (sort_dir or "desc"),
             "mock_mode": ctx.settings.playwright_mock_mode,
             "trash_count": trash_count,
+            "desktop_trigger_key": os.environ.get("DESKTOP_TRIGGER_KEY", ""),
         },
     )
 
@@ -1597,7 +1623,12 @@ async def _local_worker(ctx):  # pragma: no cover (runtime behavior)
         kws = await _local_queue.get()
         try:
             from scraper.worker import process_job  # local import
-            await process_job(kws, ctx)
+            lock = getattr(ctx, "_scrape_lock", None)
+            if lock is not None:
+                async with lock:
+                    await process_job(kws, ctx)
+            else:
+                await process_job(kws, ctx)
             logger.info("local_job_complete", keywords=kws)
         except Exception as exc:
             logger.error("local_job_failed", error=str(exc))
@@ -1629,6 +1660,7 @@ async def trigger_scrape(
     relaxed: Optional[int] = Query(None, description="Relâcher les filtres pour un run de test si =1"),
     ctx=Depends(get_auth_context),
 ):
+    _require_desktop_trigger(request)
     # Optional trigger token enforcement (permit dashboard-originated calls)
     if ctx.settings.trigger_token:
         supplied = request.headers.get("X-Trigger-Token")
@@ -1666,7 +1698,12 @@ async def trigger_scrape(
             if relaxed_mode:
                 setattr(ctx, "_relaxed_filters", True)
             try:
-                new = await process_job(kws, ctx)
+                lock = getattr(ctx, "_scrape_lock", None)
+                if lock is not None:
+                    async with lock:
+                        new = await process_job(kws, ctx)
+                else:
+                    new = await process_job(kws, ctx)
             finally:
                 if relaxed_mode and hasattr(ctx, "_relaxed_filters"):
                     try:
@@ -1708,6 +1745,7 @@ async def api_toggle_favorite(
     request: Request,
     ctx=Depends(get_auth_context),
 ):
+    _require_desktop_trigger(request)
     # Parse optional JSON body manually to avoid 422 on empty/invalid bodies
     payload: Optional[dict[str, Any]] = None
     try:
@@ -1734,6 +1772,7 @@ async def api_delete_post(
     request: Request,
     ctx=Depends(get_auth_context),
 ):
+    _require_desktop_trigger(request)
     payload: Optional[dict[str, Any]] = None
     try:
         if request.headers.get("content-type", "").lower().startswith("application/json"):
@@ -2278,22 +2317,105 @@ async def api_session_status(ctx=Depends(get_auth_context)):
     return {"valid": st.valid, **st.details}
 
 
+def _save_credentials_for_auto_reconnect(email: str, password: str) -> bool:
+    """Sauvegarde les identifiants chiffrés par DPAPI pour la reconnexion automatique.
+    
+    Returns True si sauvegardé avec succès, False sinon.
+    Windows uniquement.
+    """
+    import base64 as _base64
+    import ctypes
+    import os as _os
+    from ctypes import wintypes
+    
+    class _DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+    
+    try:
+        crypt32 = ctypes.windll.crypt32
+        kernel32 = ctypes.windll.kernel32
+        
+        # Encrypt password with DPAPI
+        plaintext = password.encode("utf-8")
+        in_blob = _DATA_BLOB(len(plaintext), (ctypes.c_byte * len(plaintext)).from_buffer_copy(plaintext))
+        out_blob = _DATA_BLOB()
+        
+        if not crypt32.CryptProtectData(ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)):
+            return False
+        
+        try:
+            protected = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+        finally:
+            if out_blob.pbData:
+                kernel32.LocalFree(out_blob.pbData)
+        
+        # Build credentials structure
+        creds = {
+            "email": email,
+            "password_protected": _base64.b64encode(protected).decode("ascii"),
+            "auto_login": True,
+            "version": 1,
+        }
+        
+        # Save to file
+        localappdata = _os.environ.get("LOCALAPPDATA", "")
+        if localappdata:
+            creds_path = Path(localappdata) / "TitanScraper" / "credentials.json"
+        else:
+            creds_path = Path(".") / "credentials.json"
+        
+        creds_path.parent.mkdir(parents=True, exist_ok=True)
+        creds_path.write_text(_json.dumps(creds, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("credentials_saved_for_auto_reconnect", path=str(creds_path))
+        return True
+        
+    except Exception as e:
+        logger.warning("failed_to_save_credentials_dpapi", error=str(e))
+        return False
 
 
 @router.post("/api/session/login")
-async def api_session_login(email: str = Form(...), password: str = Form(...), mfa_code: str | None = Form(None), ctx=Depends(get_auth_context)):
-    ok, diag = await login_via_playwright(ctx, email=email, password=password, mfa_code=mfa_code)
+async def api_session_login(
+    email: str = Form(...), 
+    password: str = Form(...), 
+    mfa_code: str | None = Form(None),
+    save_credentials: bool = Form(False),  # Sécurité/UX desktop: opt-in uniquement
+    ctx=Depends(get_auth_context)
+):
+    import sys as _sys
+
+    try:
+        ok, diag = await login_via_playwright(ctx, email=email, password=password, mfa_code=mfa_code)
+    except Exception as e:
+        # Garantit une réponse JSON exploitable côté UI
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "login_exception",
+                "message": str(e) or e.__class__.__name__,
+            },
+        )
     if not ok:
         # Ensure error text is meaningful
         if isinstance(diag, dict) and (not diag.get("error")):
             diag["error"] = diag.get("message") or diag.get("hint") or "login_failed"
         raise HTTPException(status_code=400, detail=diag)
-    return {"ok": True, **diag}
+    
+    # Sauvegarder les credentials pour la reconnexion automatique (Windows uniquement)
+    creds_saved = False
+    if save_credentials and _sys.platform == "win32":
+        try:
+            creds_saved = _save_credentials_for_auto_reconnect(email, password)
+        except Exception as e:
+            logger.warning("failed_to_save_credentials", error=str(e))
+    
+    return {"ok": True, "credentials_saved": creds_saved, **diag}
 
 
 @router.post("/api/session/logout")
-async def api_session_logout(ctx=Depends(get_auth_context)):
+async def api_session_logout(request: Request, ctx=Depends(get_auth_context), forget_credentials: int = Query(0)):
     """Supprime l'état de session Playwright local pour forcer la reconnexion."""
+    _require_desktop_trigger(request)
     removed: list[str] = []
     for p in (ctx.settings.storage_state, ctx.settings.session_store_path):
         try:
@@ -2303,27 +2425,158 @@ async def api_session_logout(ctx=Depends(get_auth_context)):
                 removed.append(str(path))
         except Exception:
             pass
+    # Optionnel: supprimer aussi les identifiants (désactive auto-reconnect)
+    if forget_credentials:
+        try:
+            localappdata = os.environ.get("LOCALAPPDATA", "")
+            creds_path = (Path(localappdata) / "TitanScraper" / "credentials.json") if localappdata else (Path(".") / "credentials.json")
+            if creds_path.exists():
+                creds_path.unlink()
+                removed.append(str(creds_path))
+        except Exception:
+            pass
     return {"ok": True, "removed": removed}
 
 
+@router.post("/api/session/auto_reconnect")
+async def api_session_auto_reconnect(request: Request, ctx=Depends(get_auth_context)):
+    """Tente une reconnexion automatique avec les identifiants sauvegardés.
+    
+    Cette endpoint est utilisée quand LinkedIn révoque la session.
+    Retourne:
+      - ok: True si la reconnexion a réussi
+      - needs_human_validation: True si CAPTCHA/2FA requis
+      - error: Message d'erreur si échec
+    """
+    import base64
+    import os as _os
+    import sys as _sys
+
+    _require_desktop_trigger(request)
+    
+    # 1. Check for saved credentials
+    localappdata = _os.environ.get("LOCALAPPDATA", "")
+    if localappdata:
+        creds_path = Path(localappdata) / "TitanScraper" / "credentials.json"
+    else:
+        creds_path = Path(".") / "credentials.json"
+    
+    if not creds_path.exists():
+        return JSONResponse({
+            "ok": False,
+            "error": "Aucun identifiant sauvegardé. Veuillez vous connecter manuellement.",
+            "no_credentials": True,
+        }, status_code=400)
+    
+    try:
+        creds_data = _json.loads(creds_path.read_text(encoding="utf-8"))
+        if not creds_data.get("auto_login"):
+            return JSONResponse({
+                "ok": False,
+                "error": "La connexion automatique n'est pas activée.",
+                "auto_login_disabled": True,
+            }, status_code=400)
+        
+        email = creds_data.get("email")
+        pw_prot = creds_data.get("password_protected")
+        
+        if not email or not pw_prot:
+            return JSONResponse({
+                "ok": False,
+                "error": "Identifiants incomplets.",
+            }, status_code=400)
+        
+        # Decrypt password with DPAPI (Windows only)
+        if _sys.platform == "win32":
+            try:
+                import win32crypt
+                raw = base64.b64decode(pw_prot)
+                decrypted = win32crypt.CryptUnprotectData(raw, None, None, None, 0)
+                password = decrypted[1].decode("utf-8", errors="ignore")
+            except Exception as e:
+                return JSONResponse({
+                    "ok": False,
+                    "error": f"Impossible de décrypter le mot de passe: {e}",
+                }, status_code=500)
+        else:
+            return JSONResponse({
+                "ok": False,
+                "error": "La reconnexion automatique n'est disponible que sur Windows.",
+            }, status_code=400)
+        
+        # 2. Attempt login
+        ok, diag = await login_via_playwright(ctx, email=email, password=password, mfa_code=None)
+        
+        if ok:
+            # Broadcast success event
+            try:
+                await broadcast({"type": EventType.SESSION_RECONNECT_SUCCESS, "email": email})
+            except Exception:
+                pass
+            return {"ok": True, "message": "Reconnexion réussie!", "email": email}
+        
+        # 3. Check if human validation is required
+        error_msg = diag.get("error", "") if isinstance(diag, dict) else str(diag)
+        human_keywords = ["captcha", "challenge", "verification", "checkpoint", "mfa", "two-factor", "2fa", "security"]
+        needs_human = any(kw in error_msg.lower() for kw in human_keywords)
+        
+        if needs_human:
+            # Broadcast human validation event
+            try:
+                await broadcast({
+                    "type": EventType.HUMAN_VALIDATION_REQUIRED,
+                    "message": "Validation humaine requise (CAPTCHA/2FA)",
+                })
+            except Exception:
+                pass
+            return JSONResponse({
+                "ok": False,
+                "needs_human_validation": True,
+                "error": "Validation humaine requise (CAPTCHA, vérification 2FA, etc.). Veuillez vous connecter manuellement.",
+                "details": diag,
+            }, status_code=403)
+        
+        # Broadcast failure event
+        try:
+            await broadcast({
+                "type": EventType.SESSION_RECONNECT_FAILED,
+                "error": error_msg,
+            })
+        except Exception:
+            pass
+        
+        return JSONResponse({
+            "ok": False,
+            "error": error_msg or "Échec de la reconnexion",
+            "details": diag,
+        }, status_code=400)
+        
+    except Exception as exc:
+        return JSONResponse({
+            "ok": False,
+            "error": f"Erreur inattendue: {exc}",
+        }, status_code=500)
+
+
 @router.get("/logout")
-async def logout_redirect(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+async def logout_redirect(request: Request, ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
     """Convenience route to logout Playwright session then redirect to login page.
 
     Does not require an active LinkedIn session (obviously) but enforces internal auth if enabled.
     """
     with contextlib.suppress(Exception):
-        await api_session_logout(ctx)  # type: ignore[arg-type]
+        await api_session_logout(request, ctx)  # type: ignore[arg-type]
     return RedirectResponse(url="/login", status_code=302)
 
 
 @router.post("/toggle")
-async def toggle_scraping(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+async def toggle_scraping(request: Request, ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
     """Inverse l'état `scraping_enabled` en mémoire et persiste dans Mongo si disponible.
 
     Retourne le nouvel état. Note: Ce réglage n'est pas encore persisté dans un fichier de config;
     il sera réinitialisé au redémarrage sur la valeur d'origine des settings d'environnement.
     """
+    _require_desktop_trigger(request)
     # Flip in-memory flag
     new_state = not ctx.settings.scraping_enabled
     ctx.settings.scraping_enabled = new_state  # type: ignore[attr-defined]
@@ -2349,11 +2602,12 @@ async def toggle_scraping(ctx=Depends(get_auth_context), _auth=Depends(require_a
 
 
 @router.post("/api/session/import_cookies")
-async def api_session_import_cookies(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+async def api_session_import_cookies(request: Request, ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
     """Importe les cookies LinkedIn depuis les navigateurs locaux (Edge/Chrome/Firefox).
 
     Écrit un storage_state.json compatible Playwright si un cookie li_at est trouvé.
     """
+    _require_desktop_trigger(request)
     try:
         from scraper.session import browser_sync
         ok, diag = browser_sync(ctx)
@@ -2570,10 +2824,12 @@ async def list_blocked_accounts(ctx=Depends(get_auth_context), _auth=Depends(req
 
 @router.post("/blocked-accounts")
 async def add_blocked_account(
+    request: Request,
     payload: dict[str, Any] = Body(..., description="{ url: string }"),
     ctx=Depends(get_auth_context),
     _auth=Depends(require_auth),
 ):
+    _require_desktop_trigger(request)
     url_raw = (payload.get('url') or '').strip()
     url = _normalize_linkedin_url(url_raw)
     if not url:
@@ -2583,7 +2839,8 @@ async def add_blocked_account(
 
 
 @router.delete("/blocked-accounts/{item_id}")
-async def delete_blocked_account(item_id: str, ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+async def delete_blocked_account(item_id: str, request: Request, ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    _require_desktop_trigger(request)
     await _blocked_delete(ctx, item_id)
     return {"ok": True, "id": item_id}
 
@@ -2598,12 +2855,13 @@ async def count_blocked_accounts(ctx=Depends(get_auth_context), _auth=Depends(re
 # Admin: purge all posts (Mongo + SQLite + CSV fallback)
 # ------------------------------------------------------------
 @router.post("/api/admin/purge_posts")
-async def api_admin_purge_posts(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+async def api_admin_purge_posts(request: Request, ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
     """Erase all stored posts and related flags, returning counts removed.
 
     This mirrors scripts/purge_data.py but exposes a protected HTTP endpoint for
     convenience from the dashboard. Authentication (basic) is required if enabled.
     """
+    _require_desktop_trigger(request)
     removed_sqlite = 0
     removed_mongo = 0
     # Mongo purge

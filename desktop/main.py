@@ -28,6 +28,7 @@ import threading as _threading
 import asyncio
 from typing import Any
 import base64
+import secrets
 
 # =============================================================================
 # CRITICAL: Set PLAYWRIGHT_BROWSERS_PATH BEFORE any playwright import happens.
@@ -1156,6 +1157,11 @@ def main():
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(browsers_dir))
 
     # Desktop defaults (can be overridden by env)
+    os.environ.setdefault("DESKTOP_APP", "1")
+    # Per-launch secret used to protect localhost endpoints against CSRF / drive-by POSTs.
+    # Sent by the embedded dashboard (same process) via X-Desktop-Trigger.
+    if not os.environ.get("DESKTOP_TRIGGER_KEY"):
+        os.environ["DESKTOP_TRIGGER_KEY"] = secrets.token_urlsafe(32)
     os.environ.setdefault("APP_HOST", "127.0.0.1")
     # Pick a free port if 8000 busy
     port = _find_free_port(int(os.environ.get("APP_PORT") or os.environ.get("PORT") or 8000))

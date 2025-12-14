@@ -208,6 +208,7 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                         total_wait = 0
                         step = 2000
                         has_li_at = False
+                        blocking_reason = None
                         while total_wait < _captcha_max_wait_ms:
                             try:
                                 cookies = page.context.cookies()
@@ -216,6 +217,24 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                                     break
                                 if page.url.startswith("https://www.linkedin.com/feed"):
                                     break
+                                # Detect human validation requirements
+                                current_url = page.url.lower()
+                                page_content = ""
+                                try:
+                                    page_content = page.content().lower()
+                                except Exception:
+                                    pass
+                                # Check for various challenge types
+                                if "checkpoint" in current_url:
+                                    blocking_reason = "security_checkpoint"
+                                elif "challenge" in current_url:
+                                    blocking_reason = "challenge"
+                                elif "captcha" in current_url or "captcha" in page_content:
+                                    blocking_reason = "captcha"
+                                elif "verification" in current_url or "verify" in current_url:
+                                    blocking_reason = "verification"
+                                elif "two-step" in current_url or "2fa" in current_url:
+                                    blocking_reason = "two_factor_auth"
                             except Exception:
                                 pass
                             page.wait_for_timeout(step)
@@ -230,6 +249,14 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                             browser.close()
                             return True, {"has_li_at": has_li_at}
                         browser.close()
+                        # Provide detailed error about what's blocking login
+                        if blocking_reason:
+                            return False, {
+                                "error": f"human_validation_required: {blocking_reason}",
+                                "blocking_type": blocking_reason,
+                                "needs_human_validation": True,
+                                "hint": "Veuillez vous connecter manuellement et résoudre la vérification de sécurité.",
+                            }
                         return False, {"error": "timeout or captcha/mfa not completed"}
                     except Exception as _e:
                         try:
@@ -263,6 +290,7 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                 total_wait = 0
                 step = 2000
                 has_li_at = False
+                blocking_reason = None
                 while total_wait < ctx.settings.captcha_max_wait_ms:
                     try:
                         # check cookies
@@ -272,6 +300,24 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                             break
                         if page.url.startswith("https://www.linkedin.com/feed"):
                             break
+                        # Detect human validation requirements
+                        current_url = page.url.lower()
+                        page_content = ""
+                        try:
+                            page_content = (await page.content()).lower()
+                        except Exception:
+                            pass
+                        # Check for various challenge types
+                        if "checkpoint" in current_url:
+                            blocking_reason = "security_checkpoint"
+                        elif "challenge" in current_url:
+                            blocking_reason = "challenge"
+                        elif "captcha" in current_url or "captcha" in page_content:
+                            blocking_reason = "captcha"
+                        elif "verification" in current_url or "verify" in current_url:
+                            blocking_reason = "verification"
+                        elif "two-step" in current_url or "2fa" in current_url:
+                            blocking_reason = "two_factor_auth"
                     except Exception:
                         pass
                     await page.wait_for_timeout(step)
@@ -289,6 +335,14 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                     await browser.close()
                     return True, {"on_feed": True}
                 await browser.close()
+                # Provide detailed error about what's blocking login
+                if blocking_reason:
+                    return False, {
+                        "error": f"human_validation_required: {blocking_reason}",
+                        "blocking_type": blocking_reason,
+                        "needs_human_validation": True,
+                        "hint": "Veuillez vous connecter manuellement et résoudre la vérification de sécurité.",
+                    }
                 return False, {"error": "timeout or captcha/mfa not completed"}
             except Exception as e:
                 with contextlib.suppress(Exception):  # type: ignore
@@ -324,6 +378,7 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                         total_wait = 0
                         step = 2000
                         has_li_at = False
+                        blocking_reason = None
                         while total_wait < ctx.settings.captcha_max_wait_ms:
                             try:
                                 cookies = page.context.cookies()
@@ -332,6 +387,23 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                                     break
                                 if page.url.startswith("https://www.linkedin.com/feed"):
                                     break
+                                # Detect human validation requirements
+                                current_url = page.url.lower()
+                                page_content = ""
+                                try:
+                                    page_content = page.content().lower()
+                                except Exception:
+                                    pass
+                                if "checkpoint" in current_url:
+                                    blocking_reason = "security_checkpoint"
+                                elif "challenge" in current_url:
+                                    blocking_reason = "challenge"
+                                elif "captcha" in current_url or "captcha" in page_content:
+                                    blocking_reason = "captcha"
+                                elif "verification" in current_url or "verify" in current_url:
+                                    blocking_reason = "verification"
+                                elif "two-step" in current_url or "2fa" in current_url:
+                                    blocking_reason = "two_factor_auth"
                             except Exception:
                                 pass
                             page.wait_for_timeout(step)
@@ -342,6 +414,13 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                             browser.close()
                             return True, {"has_li_at": has_li_at}
                         browser.close()
+                        if blocking_reason:
+                            return False, {
+                                "error": f"human_validation_required: {blocking_reason}",
+                                "blocking_type": blocking_reason,
+                                "needs_human_validation": True,
+                                "hint": "Veuillez vous connecter manuellement et résoudre la vérification de sécurité.",
+                            }
                         return False, {"error": "timeout or captcha/mfa not completed"}
                     except Exception as _e:
                         try:
