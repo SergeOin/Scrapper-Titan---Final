@@ -168,10 +168,10 @@
       modal.innerHTML = `
         <div style="background:#fff;border-radius:12px;padding:2rem;max-width:400px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
           <div style="font-size:3rem;margin-bottom:1rem;">❌</div>
-          <h3 style="color:#b91c1c;margin-bottom:1rem;">Reconnexion échouée</h3>
+          <h3 style="color:#b91c1c;margin-bottom:1rem;">Session expirée</h3>
           <p style="color:#666;margin-bottom:1.5rem;">${payload.message || 'La reconnexion automatique a échoué. Veuillez vous reconnecter manuellement.'}</p>
           <div style="display:flex;gap:1rem;justify-content:center;">
-            <a href="/login" style="background:#2563eb;color:#fff;padding:0.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:500;">Se reconnecter</a>
+            <a href="/login?reason=session_revoked" style="background:#2563eb;color:#fff;padding:0.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:500;">Se reconnecter</a>
             <button onclick="document.getElementById('reconnectModal').remove()" style="background:#e5e7eb;padding:0.75rem 1.5rem;border-radius:8px;border:none;cursor:pointer;">Fermer</button>
           </div>
         </div>
@@ -247,20 +247,22 @@
       modal.innerHTML = `
         <div style="background:#fff;border-radius:12px;padding:2rem;max-width:500px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
           <div style="font-size:4rem;margin-bottom:1rem;">🚫</div>
-          <h3 style="color:#b91c1c;margin-bottom:1rem;">Compte LinkedIn Temporairement Restreint</h3>
-          <p style="color:#666;margin-bottom:1rem;">LinkedIn a détecté une activité d'automatisation et a temporairement restreint votre compte.</p>
+          <h3 style="color:#b91c1c;margin-bottom:1rem;">Compte LinkedIn Temporairement Bloqué</h3>
+          <p style="color:#666;margin-bottom:1rem;">LinkedIn a détecté une activité d'automatisation et a temporairement bloqué votre compte.</p>
           <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:1rem;margin-bottom:1.5rem;text-align:left;">
             <p style="color:#b91c1c;font-weight:500;margin-bottom:0.5rem;">⚠️ Actions recommandées :</p>
             <ul style="color:#666;margin:0;padding-left:1.5rem;font-size:0.9rem;">
-              <li>Ne relancez PAS le scraper pendant 24-48h</li>
-              <li>Connectez-vous manuellement sur LinkedIn pour vérifier</li>
+              <li><strong>Attendez 24-48h</strong> avant de réutiliser le scraper</li>
+              <li>Connectez-vous manuellement sur LinkedIn.com pour vérifier</li>
               <li>La restriction est généralement levée après quelques heures</li>
               <li>Le scraping a été automatiquement désactivé</li>
+              <li>Vos cookies de session ont été supprimés par sécurité</li>
             </ul>
           </div>
           <p style="color:#999;font-size:0.85rem;margin-bottom:1.5rem;">${payload.reason || ''}</p>
-          <div style="display:flex;gap:1rem;justify-content:center;">
+          <div style="display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;">
             <a href="https://www.linkedin.com" target="_blank" style="background:#0a66c2;color:#fff;padding:0.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:500;">Vérifier sur LinkedIn</a>
+            <a href="/login?reason=account_restricted" style="background:#dc2626;color:#fff;padding:0.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:500;">Aller à la page de connexion</a>
             <button onclick="document.getElementById('accountRestrictedModal').remove()" style="background:#e5e7eb;padding:0.75rem 1.5rem;border-radius:8px;border:none;cursor:pointer;">Fermer</button>
           </div>
         </div>

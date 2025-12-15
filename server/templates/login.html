@@ -85,8 +85,8 @@
         if (res.ok) {
           // Persist creds locally if user opted in
           try { await saveCredentials(); } catch { }
-          alert('Connexion réussie.');
-          location.href = '/';
+          // Redirection automatique vers le dashboard sans alert
+          location.href = '/?from=login';
           return;
         }
 

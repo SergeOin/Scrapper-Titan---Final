@@ -76,49 +76,40 @@ class Settings(BaseSettings):
     rate_limit_refill_per_sec: float = Field(2.0, alias="RATE_LIMIT_REFILL_PER_SEC")  # tokens per second
 
     # Keywords & limits
-    # OPTIMISÉ v4: 50+ keywords pour 70-100+ posts/jour
-    # Stratégie: Combiner "signal de recrutement" + "rôle juridique" + "localisation France"
-    # IMPORTANT: Plus de keywords = plus de cycles = plus de posts/jour
+    # MODE CONSERVATEUR v6: Mots-clés FRANÇAIS uniquement pour éviter rejets langue
+    # Stratégie: Moins de keywords = moins de requêtes = moins de risque de détection
+    # IMPORTANT: Qualité > Quantité pour éviter les restrictions
     scrape_keywords_raw: str = Field(
-        # === RECRUTEMENT DIRECT (précision maximale) - 12 keywords ===
-        "recrute juriste;recrute avocat;recrute notaire;recrute paralegal;"
-        "nous recrutons juriste;nous recrutons avocat;nous recrutons notaire;"
-        "on recrute juriste;on recrute avocat;on recrute notaire;"
-        "je recrute juriste;je recrute avocat;"
-        # === OFFRES D'EMPLOI EXPLICITES - 10 keywords ===
-        "poste juriste;poste avocat;poste notaire;poste paralegal;"
-        "offre emploi juriste;offre emploi avocat;offre emploi notaire;"
+        # === RECRUTEMENT DIRECT (haute précision) - 8 keywords ===
+        "recrute juriste;recrute avocat;recrute notaire;"
+        "nous recrutons juriste;nous recrutons avocat;"
+        "on recrute juriste;je recrute avocat;je recrute juriste;"
+        # === OFFRES D'EMPLOI EXPLICITES - 6 keywords ===
+        "poste juriste;poste avocat;poste notaire;"
         "cdi juriste;cdi avocat;cdi notaire;"
-        # === RECHERCHE DE PROFILS - 8 keywords ===
-        "recherche juriste;recherche avocat;recherche notaire;recherche paralegal;"
-        "cherche juriste;cherche avocat;cherche notaire;cherche paralegal;"
-        # === POSTES DIRECTION JURIDIQUE - 8 keywords ===
-        "recrute responsable juridique;recrute directeur juridique;"
-        "poste responsable juridique;poste directeur juridique;"
-        "head of legal;general counsel;legal counsel;chief legal officer;"
-        # === VILLES FRANCE (volume) - 15 keywords ===
-        "juriste Paris;avocat Paris;juriste Lyon;avocat Lyon;"
-        "juriste Bordeaux;avocat Bordeaux;juriste Marseille;avocat Marseille;"
-        "juriste Lille;avocat Lille;juriste Nantes;avocat Nantes;"
-        "juriste Toulouse;juriste Strasbourg;juriste Nice;"
-        # === SPÉCIALISATIONS JURIDIQUES - 12 keywords ===
-        "juriste droit social;juriste contrats;juriste corporate;juriste M&A;"
-        "avocat droit des affaires;avocat corporate;compliance officer;DPO;"
-        "juriste conformite;juriste contentieux;juriste RGPD;juriste propriete intellectuelle;"
-        # === CABINET / ENTREPRISE - 6 keywords ===
-        "cabinet avocat recrute;cabinet juridique recrute;etude notariale recrute;"
-        "direction juridique recrute;equipe juridique recrute;departement juridique recrute",
+        # === RECHERCHE DE PROFILS - 4 keywords ===
+        "recherche juriste;recherche avocat;"
+        "cherche juriste;cherche avocat;"
+        # === POSTES DIRECTION JURIDIQUE (FRANÇAIS) - 5 keywords ===
+        "recrute directeur juridique;poste responsable juridique;"
+        "directeur juridique recrute;responsable juridique recrute;chef juridique;"
+        # === VILLES FRANCE (top 6) - 6 keywords ===
+        "juriste Paris;avocat Paris;juriste Lyon;"
+        "juriste Bordeaux;juriste Marseille;juriste Lille;"
+        # === SPÉCIALISATIONS CLÉS (FRANÇAIS) - 6 keywords ===
+        "juriste contrats;juriste droit des sociétés;juriste conformité;"
+        "juriste RGPD;juriste contentieux;juriste immobilier",
         alias="SCRAPE_KEYWORDS",
     )
     # Semicolon-separated list of keywords to always ignore (case-insensitive)
     blacklisted_keywords_raw: str = Field("python;ai;formation;webinaire;article", alias="BLACKLISTED_KEYWORDS")
-    # Raise cap per keyword to collect more candidates before classifier filtering
-    max_posts_per_keyword: int = Field(50, alias="MAX_POSTS_PER_KEYWORD")  # Réduit 80→50 pour qualité
+    # MODE CONSERVATEUR: Limites réduites pour éviter la détection
+    max_posts_per_keyword: int = Field(8, alias="MAX_POSTS_PER_KEYWORD")  # Réduit 50→8 pour sécurité
     # Extraction scrolling controls
-    # OPTIMISÉ v3: Scroll plus profond mais timeout raisonnable
-    max_scroll_steps: int = Field(20, alias="MAX_SCROLL_STEPS")  # Max scroll iterations (augmenté 15→20)
-    scroll_wait_ms: int = Field(800, alias="SCROLL_WAIT_MS")  # Wait après scroll (réduit 1000→800 pour rapidité)
-    min_posts_target: int = Field(15, alias="MIN_POSTS_TARGET")  # Target minimum (réduit 30→15 pour éviter timeout)
+    # MODE CONSERVATEUR: Scroll minimal pour réduire les requêtes
+    max_scroll_steps: int = Field(5, alias="MAX_SCROLL_STEPS")  # Réduit 20→5 scrolls max
+    scroll_wait_ms: int = Field(1500, alias="SCROLL_WAIT_MS")  # Augmenté 800→1500 pour paraître humain
+    min_posts_target: int = Field(5, alias="MIN_POSTS_TARGET")  # Réduit 15→5 pour éviter timeout
     # Seuil de signal de recrutement - AUGMENTÉ pour exiger un vrai signal de recrutement
     # 0.15 = nécessite des termes explicites comme "recrute", "poste", "offre d'emploi"
     recruitment_signal_threshold: float = Field(0.15, alias="RECRUITMENT_SIGNAL_THRESHOLD")
@@ -236,37 +227,37 @@ class Settings(BaseSettings):
     # Log verbose des exclusions (utile pour debug)
     legal_filter_verbose: bool = Field(True, alias="LEGAL_FILTER_VERBOSE")
     auto_favorite_opportunities: bool = Field(False, alias="AUTO_FAVORITE_OPPORTUNITIES")
-    # Batch & resilience settings - ANTI-DETECTION: Optimisé pour 100 posts/jour en 7h
-    keywords_session_batch_size: int = Field(5, alias="KEYWORDS_SESSION_BATCH_SIZE")  # 5 keywords/session
+    # MODE CONSERVATEUR: Batch réduit pour moins de requêtes consécutives
+    keywords_session_batch_size: int = Field(3, alias="KEYWORDS_SESSION_BATCH_SIZE")  # Réduit 5→3 keywords/session
     adaptive_pause_every: int = Field(0, alias="ADAPTIVE_PAUSE_EVERY")  # 0 = disabled
     adaptive_pause_seconds: float = Field(8.0, alias="ADAPTIVE_PAUSE_SECONDS")
     navigation_retry_attempts: int = Field(2, alias="NAVIGATION_RETRY_ATTEMPTS")  # extra attempts besides first
     navigation_retry_backoff_ms: int = Field(1200, alias="NAVIGATION_RETRY_BACKOFF_MS")
     # Public dashboard & autonomous worker
     dashboard_public: bool = Field(False, alias="DASHBOARD_PUBLIC")
-    # ANTI-DETECTION v5: Optimisé pour 100 posts/jour en 7h actives (1200s = 20min)
-    # 7h = 420min ÷ 20min = 21 cycles × 5 posts/cycle = 105 posts/jour
-    autonomous_worker_interval_seconds: int = Field(1200, alias="AUTONOMOUS_WORKER_INTERVAL_SECONDS")
+    # MODE CONSERVATEUR v6: Intervalle long pour éviter détection (2400s = 40min)
+    # 7h = 420min ÷ 40min = 10 cycles × 5 posts/cycle = 50 posts/jour (sécurisé)
+    autonomous_worker_interval_seconds: int = Field(2400, alias="AUTONOMOUS_WORKER_INTERVAL_SECONDS")
     # Human-like cadence (optional) - Mode recommandé pour éviter détection anti-bot
     human_mode_enabled: bool = Field(True, alias="HUMAN_MODE_ENABLED")  # ACTIVÉ par défaut
     human_active_hours_start: int = Field(8, alias="HUMAN_ACTIVE_HOURS_START")   # Début 8h
     human_active_hours_end: int = Field(22, alias="HUMAN_ACTIVE_HOURS_END")      # Fin 22h (plage 8h-22h)
     # Jours actifs: 0=Lundi, 1=Mardi, 2=Mercredi, 3=Jeudi, 4=Vendredi (pas weekend)
     human_active_weekdays: str = Field("0,1,2,3,4", alias="HUMAN_ACTIVE_WEEKDAYS")  # Lundi-Vendredi
-    human_min_cycle_pause_seconds: int = Field(30, alias="HUMAN_MIN_CYCLE_PAUSE_SECONDS")  # Pause min 30s
-    human_max_cycle_pause_seconds: int = Field(90, alias="HUMAN_MAX_CYCLE_PAUSE_SECONDS")  # Pause max 90s
-    human_long_break_probability: float = Field(0.05, alias="HUMAN_LONG_BREAK_PROBABILITY")  # 5% de chance de pause longue
+    human_min_cycle_pause_seconds: int = Field(60, alias="HUMAN_MIN_CYCLE_PAUSE_SECONDS")  # Augmenté 30→60s
+    human_max_cycle_pause_seconds: int = Field(180, alias="HUMAN_MAX_CYCLE_PAUSE_SECONDS")  # Augmenté 90→180s
+    human_long_break_probability: float = Field(0.15, alias="HUMAN_LONG_BREAK_PROBABILITY")  # Augmenté 5%→15%
     human_long_break_min_seconds: int = Field(300, alias="HUMAN_LONG_BREAK_MIN_SECONDS")
     human_long_break_max_seconds: int = Field(600, alias="HUMAN_LONG_BREAK_MAX_SECONDS")
     human_night_mode: bool = Field(True, alias="HUMAN_NIGHT_MODE")
     human_night_pause_min_seconds: int = Field(1800, alias="HUMAN_NIGHT_PAUSE_MIN_SECONDS")
     human_night_pause_max_seconds: int = Field(3600, alias="HUMAN_NIGHT_PAUSE_MAX_SECONDS")
-    human_max_cycles_per_hour: int = Field(5, alias="HUMAN_MAX_CYCLES_PER_HOUR")  # 5 cycles/h max (augmenté pour volume)
-    # Daily quota objective - 70-100+ posts/jour en 7h actives (PAS DE MAXIMUM)
-    daily_post_target: int = Field(100, alias="DAILY_POST_TARGET")  # Objectif 100 posts/jour
-    daily_post_soft_target: int = Field(70, alias="DAILY_POST_SOFT_TARGET")  # Seuil minimum 70
-    # Legal domain classification & quota - PAS DE LIMITE HAUTE
-    legal_daily_post_cap: int = Field(500, alias="LEGAL_DAILY_POST_CAP")  # Augmenté 150→500 (pas de max effectif)
+    human_max_cycles_per_hour: int = Field(2, alias="HUMAN_MAX_CYCLES_PER_HOUR")  # Réduit 5→2 cycles/h (sécurité)
+    # MODE CONSERVATEUR: Objectifs réduits pour éviter blocage
+    daily_post_target: int = Field(50, alias="DAILY_POST_TARGET")  # Réduit 100→50 posts/jour
+    daily_post_soft_target: int = Field(30, alias="DAILY_POST_SOFT_TARGET")  # Réduit 70→30 minimum
+    # Limite quotidienne stricte pour sécurité
+    legal_daily_post_cap: int = Field(80, alias="LEGAL_DAILY_POST_CAP")  # Réduit 500→80 (cap strict)
     # Seuil de recrutement: augmenté pour plus de pertinence (0.25 = exige signal de recrutement clair)
     legal_intent_threshold: float = Field(0.25, alias="LEGAL_INTENT_THRESHOLD")
     legal_keywords_override: str | None = Field(None, alias="LEGAL_KEYWORDS")  # Optional semicolon list to extend/override builtin
@@ -375,13 +366,29 @@ class Settings(BaseSettings):
 # ------------------------------------------------------------
 # Runtime state persistence (scraping_enabled toggle) stored in lightweight JSON file.
 # ------------------------------------------------------------
-_RUNTIME_STATE_FILE = Path("runtime_state.json")
+def _get_runtime_state_path() -> Path:
+    """Get the path to runtime_state.json.
+    
+    In frozen mode (packaged exe), use %LOCALAPPDATA%/TitanScraper/runtime_state.json
+    to ensure consistent state across runs regardless of working directory.
+    In dev mode, use the current directory.
+    """
+    if getattr(sys, "frozen", False):
+        localappdata = os.environ.get("LOCALAPPDATA", "")
+        if localappdata:
+            titan_dir = Path(localappdata) / "TitanScraper"
+            titan_dir.mkdir(parents=True, exist_ok=True)
+            return titan_dir / "runtime_state.json"
+    return Path("runtime_state.json")
+
+_RUNTIME_STATE_FILE = _get_runtime_state_path()
 
 def _load_runtime_state() -> dict[str, Any]:
-    if _RUNTIME_STATE_FILE.exists():
+    state_file = _get_runtime_state_path()  # Re-evaluate in case called early
+    if state_file.exists():
         try:
             import json as _json
-            return _json.loads(_RUNTIME_STATE_FILE.read_text(encoding="utf-8"))
+            return _json.loads(state_file.read_text(encoding="utf-8"))
         except Exception:
             return {}
     return {}
@@ -389,7 +396,9 @@ def _load_runtime_state() -> dict[str, Any]:
 def _save_runtime_state(data: dict[str, Any]) -> None:
     try:
         import json as _json
-        _RUNTIME_STATE_FILE.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        state_file = _get_runtime_state_path()
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
 
@@ -860,13 +869,15 @@ async def bootstrap(force: bool = False) -> AppContext:
             return _context_singleton
 
         settings = Settings()  # Loads from env automatically
-        # Merge persisted runtime state (only known keys to avoid pollution)
-        rt = _load_runtime_state()
-        if isinstance(rt, dict) and "scraping_enabled" in rt:
-            try:
-                settings.scraping_enabled = bool(rt["scraping_enabled"])  # type: ignore[attr-defined]
-            except Exception:
-                pass
+        # NOTE: We no longer restore scraping_enabled from runtime state
+        # This ensures fresh installs always start with scraping ENABLED (default True)
+        # Users can still toggle it manually via the UI
+        # rt = _load_runtime_state()
+        # if isinstance(rt, dict) and "scraping_enabled" in rt:
+        #     try:
+        #         settings.scraping_enabled = bool(rt["scraping_enabled"])
+        #     except Exception:
+        #         pass
 
         # Lightweight Basic Auth convenience: if INTERNAL_AUTH_PASS provided (plaintext) and no hash, generate one
         if settings.internal_auth_pass and not settings.internal_auth_pass_hash:

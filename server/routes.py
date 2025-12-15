@@ -1416,17 +1416,19 @@ async def fetch_meta(ctx) -> dict[str, Any]:
             ctx.logger.error("meta_query_failed", error=str(exc))
     else:
         # SQLite meta: prefer explicit meta table when present, then approximate posts_count from posts
+        # NOTE: scraping_enabled is NOT read from SQLite - always use ctx.settings.scraping_enabled
+        # to avoid stale state from previous sessions overriding the default True value
         try:
             if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
                 conn = sqlite3.connect(ctx.settings.sqlite_path)
                 with conn:
                     # Try meta table first (created by worker.update_meta)
                     try:
-                        row = conn.execute("SELECT last_run, COALESCE(posts_count,0), COALESCE(scraping_enabled, 1) FROM meta WHERE id = 'global'").fetchone()
+                        row = conn.execute("SELECT last_run, COALESCE(posts_count,0) FROM meta WHERE id = 'global'").fetchone()
                         if row:
                             meta["last_run"] = row[0]
                             meta["posts_count"] = int(row[1] or 0)
-                            meta["scraping_enabled"] = bool(row[2])
+                            # meta["scraping_enabled"] stays as ctx.settings.scraping_enabled (default True)
                     except Exception:
                         pass
                     # Fallback: compute posts_count from posts if meta table not present
@@ -2236,10 +2238,16 @@ async def login_page(
     ctx=Depends(get_auth_context),
 ):
     st = await session_status(ctx)
-    # Intentionally do not surface any banner/message on the login page
-    # even when redirected with a reason (e.g., session_expired).
-    # This keeps the UI cleaner per request.
+    # Display a message banner based on the redirect reason
     message = None
+    if reason == "account_restricted":
+        message = "⚠️ Votre compte LinkedIn est temporairement restreint. Attendez 24-48h avant de vous reconnecter."
+    elif reason == "session_revoked":
+        message = "🔐 Votre session LinkedIn a expiré. Veuillez vous reconnecter."
+    elif reason == "session_expired":
+        message = "⏰ Votre session a expiré. Veuillez vous reconnecter."
+    elif reason == "cookies_invalid":
+        message = "🍪 Les cookies de session sont invalides. Veuillez vous reconnecter."
     # If the template directory does not contain login.html (packaging issue),
     # provide a minimal inline fallback so the application remains usable and
     # the user gets a clear indication of the missing resource instead of a 500.

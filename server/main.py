@@ -319,7 +319,7 @@ async def security_headers(request: Request, call_next):  # noqa: D401
     path = request.url.path
     def _skip_rate_limit(p: str) -> bool:
         # Allowlist low-cost endpoints (keep '/' subject to rate-limit for tests)
-        if p in ("/metrics", "/health", "/stream", "/api/trash/count", "/corbeille"):
+        if p in ("/", "/metrics", "/health", "/stream", "/api/trash/count", "/corbeille"):
             return True
         # Export & read-heavy posts endpoints are exempt
         if p.startswith("/api/posts"):
@@ -331,6 +331,9 @@ async def security_headers(request: Request, call_next):  # noqa: D401
             return True
         # Blocked-accounts management is lightweight and used by tests/UI
         if p.startswith("/blocked-accounts") or p == "/blocked":
+            return True
+        # Static assets are safe
+        if p.startswith("/static"):
             return True
         return False
     if not _skip_rate_limit(path):

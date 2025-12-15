@@ -223,40 +223,40 @@ LEGAL_KEYWORDS = [
 MAX_POST_AGE_DAYS = 21  # 3 semaines
 
 # ============================================================
-# RATE LIMITING - Délais de sécurité pour éviter le blocage LinkedIn
+# RATE LIMITING - MODE CONSERVATEUR pour éviter le blocage LinkedIn
 # ============================================================
-# VALEURS ANTI-DÉTECTION: Délais augmentés et randomisés pour simuler
-# un comportement humain naturel. LinkedIn détecte les patterns trop réguliers.
+# VALEURS SÉCURISÉES: Délais longs et randomisés pour simuler
+# un comportement humain très naturel. Priorité = éviter la détection.
 import random
 import math
 
-# Délai après chargement de page (ms) - AUGMENTÉ pour comportement humain
-PAGE_LOAD_DELAY_MIN = 5000   # 5 secondes minimum (était 3s)
-PAGE_LOAD_DELAY_MAX = 12000  # 12 secondes maximum (était 5s)
+# Délai après chargement de page (ms) - LONG pour paraître humain
+PAGE_LOAD_DELAY_MIN = 5000   # 5 secondes minimum
+PAGE_LOAD_DELAY_MAX = 12000  # 12 secondes maximum
 
-# Délai entre chaque scroll (ms) - AUGMENTÉ et plus variable
-SCROLL_DELAY_MIN = 3000    # 3 secondes minimum (était 1.5s)
-SCROLL_DELAY_MAX = 7000    # 7 secondes maximum (était 3s)
+# Délai entre chaque scroll (ms) - LONG et variable
+SCROLL_DELAY_MIN = 3000    # 3 secondes minimum
+SCROLL_DELAY_MAX = 7000    # 7 secondes maximum
 
-# Délai entre chaque mot-clé recherché (ms) - SIGNIFICATIVEMENT AUGMENTÉ
-KEYWORD_DELAY_MIN = 15000   # 15 secondes minimum (était 4s)
-KEYWORD_DELAY_MAX = 45000   # 45 secondes maximum (était 8s)
+# Délai entre chaque mot-clé recherché (ms) - TRÈS LONG pour sécurité
+KEYWORD_DELAY_MIN = 30000   # 30 secondes minimum
+KEYWORD_DELAY_MAX = 60000   # 60 secondes maximum
 
-# Nombre de scrolls par page (réduit pour moins de requêtes)
+# Nombre de scrolls par page - RÉDUIT
 MAX_SCROLLS_PER_PAGE = 2
 
-# Délai de "lecture" simulée d'un post (ms) - NOUVEAU
-POST_READ_DELAY_MIN = 1500   # 1.5 secondes
-POST_READ_DELAY_MAX = 4000   # 4 secondes
+# Délai de "lecture" simulée d'un post (ms) - LONG
+POST_READ_DELAY_MIN = 2000   # 2 secondes
+POST_READ_DELAY_MAX = 5000   # 5 secondes
 
 # Pause longue occasionnelle pour simuler une distraction (ms)
-LONG_PAUSE_MIN = 20000       # 20 secondes
-LONG_PAUSE_MAX = 60000       # 60 secondes
-LONG_PAUSE_PROBABILITY = 0.05  # 5% de chance par keyword
+LONG_PAUSE_MIN = 30000       # 30 secondes
+LONG_PAUSE_MAX = 90000       # 90 secondes
+LONG_PAUSE_PROBABILITY = 0.15  # 15% de chance par keyword (augmenté)
 
-# Pause très courte pour micro-hésitations (ms) - NOUVEAU
-MICRO_PAUSE_MIN = 200
-MICRO_PAUSE_MAX = 800
+# Pause très courte pour micro-hésitations (ms)
+MICRO_PAUSE_MIN = 300
+MICRO_PAUSE_MAX = 1000
 
 def random_delay(min_ms: int, max_ms: int) -> int:
     """Retourne un délai aléatoire avec distribution gaussienne centrée.
@@ -296,8 +296,16 @@ def get_long_pause_duration() -> int:
 # ============================================================
 
 def stealth_enabled() -> bool:
+    """Mode stealth ACTIVÉ PAR DÉFAUT pour éviter la détection LinkedIn.
+    
+    Peut être désactivé avec STEALTH_ENABLED=0 si nécessaire pour le debug.
+    """
     import os
-    return os.environ.get("STEALTH_ENABLED", "0").lower() in ("1", "true", "yes")
+    val = os.environ.get("STEALTH_ENABLED", "1")  # Activé par défaut
+    return val.lower() not in ("0", "false", "no", "off")
+
+# Probabilité de pause café (par session de scraping)
+COFFEE_BREAK_PROBABILITY = 0.03  # 3% de chance par keyword
 
 # Pages de restriction/warning LinkedIn à détecter
 RESTRICTION_INDICATORS = [
@@ -485,6 +493,291 @@ async def simulate_reading_pause(page) -> None:
     # Parfois, simuler un petit mouvement de souris pendant la lecture
     if random.random() < 0.3:
         await simulate_human_mouse_movement(page)
+
+
+# ============================================================
+# COMPORTEMENT HUMAIN AVANCÉ - Actions réalistes
+# ============================================================
+
+# Probabilités d'actions humaines (par post)
+LIKE_PROBABILITY = 0.08          # 8% de chance de liker un post
+PROFILE_VISIT_PROBABILITY = 0.05  # 5% de chance de visiter le profil
+EXPAND_POST_PROBABILITY = 0.15   # 15% de chance d'étendre un post "voir plus"
+
+# Délais pour actions humaines (ms)
+LIKE_DELAY_MIN = 500
+LIKE_DELAY_MAX = 1500
+PROFILE_VISIT_DURATION_MIN = 3000
+PROFILE_VISIT_DURATION_MAX = 8000
+
+# Sélecteurs pour les boutons d'action LinkedIn
+LIKE_BUTTON_SELECTORS = [
+    "button.react-button__trigger[aria-label*='J\\'aime']",
+    "button.react-button__trigger[aria-label*='Like']",
+    "button.reactions-react-button[aria-label*='J\\'aime']",
+    "button.reactions-react-button[aria-label*='Like']",
+    "button[aria-label*='Réagir'][aria-pressed='false']",
+    "button[aria-label*='React'][aria-pressed='false']",
+    "span.reactions-react-button button",
+    "button.artdeco-button[aria-label*='aime']",
+]
+
+EXPAND_POST_SELECTORS = [
+    "button.feed-shared-inline-show-more-text__see-more-less-toggle",
+    "button[aria-label*='voir plus']",
+    "button[aria-label*='see more']",
+    "span.feed-shared-inline-show-more-text__see-more-less-toggle",
+]
+
+
+async def simulate_like_post(page, post_element) -> bool:
+    """
+    Simule un like sur un post de manière humaine.
+    
+    Args:
+        page: Page Playwright
+        post_element: Élément DOM du post
+        
+    Returns:
+        True si le like a été effectué, False sinon
+    """
+    try:
+        # Ne pas liker tous les posts - vérifier la probabilité
+        if random.random() > LIKE_PROBABILITY:
+            return False
+        
+        # Chercher le bouton like dans le post
+        like_button = None
+        for selector in LIKE_BUTTON_SELECTORS:
+            try:
+                like_button = await post_element.query_selector(selector)
+                if like_button:
+                    # Vérifier que le bouton n'est pas déjà "liké"
+                    aria_pressed = await like_button.get_attribute("aria-pressed")
+                    if aria_pressed == "true":
+                        return False  # Déjà liké
+                    break
+            except Exception:
+                continue
+        
+        if not like_button:
+            return False
+        
+        # Simuler le comportement humain avant de cliquer
+        # 1. Mouvement de souris vers le bouton
+        try:
+            box = await like_button.bounding_box()
+            if box:
+                target_x = int(box['x'] + box['width'] / 2 + random.randint(-5, 5))
+                target_y = int(box['y'] + box['height'] / 2 + random.randint(-3, 3))
+                await simulate_human_mouse_movement(page, target_x, target_y)
+        except Exception:
+            pass
+        
+        # 2. Petite pause avant le clic (hésitation humaine)
+        await page.wait_for_timeout(random.randint(MICRO_PAUSE_MIN, MICRO_PAUSE_MAX))
+        
+        # 3. Cliquer sur le bouton like
+        await like_button.click()
+        
+        # 4. Pause après le like (satisfaction humaine)
+        await page.wait_for_timeout(random_delay(LIKE_DELAY_MIN, LIKE_DELAY_MAX))
+        
+        _debug_log("ACTION: Liked a post (human behavior simulation)")
+        return True
+        
+    except Exception as e:
+        _debug_log(f"Error simulating like: {e}")
+        return False
+
+
+async def simulate_expand_post(page, post_element) -> bool:
+    """
+    Simule un clic sur "voir plus" pour étendre un post.
+    
+    Args:
+        page: Page Playwright
+        post_element: Élément DOM du post
+        
+    Returns:
+        True si l'expansion a été effectuée, False sinon
+    """
+    try:
+        # Vérifier la probabilité
+        if random.random() > EXPAND_POST_PROBABILITY:
+            return False
+        
+        # Chercher le bouton "voir plus"
+        expand_button = None
+        for selector in EXPAND_POST_SELECTORS:
+            try:
+                expand_button = await post_element.query_selector(selector)
+                if expand_button:
+                    # Vérifier que le bouton est visible
+                    is_visible = await expand_button.is_visible()
+                    if is_visible:
+                        break
+                    expand_button = None
+            except Exception:
+                continue
+        
+        if not expand_button:
+            return False
+        
+        # Mouvement souris naturel
+        try:
+            box = await expand_button.bounding_box()
+            if box:
+                await simulate_human_mouse_movement(
+                    page, 
+                    int(box['x'] + box['width'] / 2),
+                    int(box['y'] + box['height'] / 2)
+                )
+        except Exception:
+            pass
+        
+        # Micro-pause puis clic
+        await page.wait_for_timeout(random.randint(MICRO_PAUSE_MIN, MICRO_PAUSE_MAX))
+        await expand_button.click()
+        
+        # Pause pour "lire" le contenu étendu
+        await page.wait_for_timeout(random_delay(POST_READ_DELAY_MIN * 2, POST_READ_DELAY_MAX * 2))
+        
+        _debug_log("ACTION: Expanded a post (see more)")
+        return True
+        
+    except Exception as e:
+        _debug_log(f"Error expanding post: {e}")
+        return False
+
+
+async def simulate_visit_profile(page, profile_url: str) -> bool:
+    """
+    Simule une visite de profil occasionnelle.
+    
+    Cette action est très humaine - les utilisateurs cliquent souvent
+    sur les profils des personnes qui postent des offres intéressantes.
+    
+    Args:
+        page: Page Playwright
+        profile_url: URL du profil à visiter
+        
+    Returns:
+        True si la visite a été effectuée, False sinon
+    """
+    try:
+        # Vérifier la probabilité
+        if random.random() > PROFILE_VISIT_PROBABILITY:
+            return False
+        
+        if not profile_url or not profile_url.startswith("https://"):
+            return False
+        
+        # Sauvegarder l'URL actuelle pour revenir
+        current_url = page.url
+        
+        # Naviguer vers le profil
+        _debug_log(f"ACTION: Visiting profile {profile_url[:50]}...")
+        await page.goto(profile_url, timeout=15000)
+        
+        # Attendre le chargement
+        await page.wait_for_timeout(random_delay(2000, 4000))
+        
+        # Simuler la lecture du profil
+        await simulate_human_scroll(page, "down", random.randint(200, 400))
+        await page.wait_for_timeout(random_delay(PROFILE_VISIT_DURATION_MIN, PROFILE_VISIT_DURATION_MAX))
+        
+        # Parfois scroller un peu plus
+        if random.random() < 0.4:
+            await simulate_human_scroll(page, "down", random.randint(150, 300))
+            await page.wait_for_timeout(random_delay(1500, 3000))
+        
+        # Revenir à la page précédente
+        await page.goto(current_url, timeout=15000)
+        await page.wait_for_timeout(random_delay(2000, 4000))
+        
+        _debug_log("ACTION: Profile visit completed, returned to search")
+        return True
+        
+    except Exception as e:
+        _debug_log(f"Error visiting profile: {e}")
+        # Essayer de revenir à la page de recherche
+        try:
+            await page.go_back()
+        except Exception:
+            pass
+        return False
+
+
+async def perform_human_actions_on_post(page, post_element, post_data: dict) -> dict:
+    """
+    Effectue des actions humaines aléatoires sur un post.
+    
+    Cette fonction orchestre les différentes actions possibles
+    (like, expand, visit profile) de manière naturelle.
+    
+    Args:
+        page: Page Playwright
+        post_element: Élément DOM du post
+        post_data: Données du post extrait
+        
+    Returns:
+        Dict avec les actions effectuées
+    """
+    actions = {
+        "liked": False,
+        "expanded": False,
+        "profile_visited": False,
+    }
+    
+    try:
+        # 1. Parfois étendre le post d'abord (voir plus)
+        actions["expanded"] = await simulate_expand_post(page, post_element)
+        
+        # 2. Simuler la lecture
+        await simulate_reading_pause(page)
+        
+        # 3. Parfois liker le post
+        actions["liked"] = await simulate_like_post(page, post_element)
+        
+        # 4. Très rarement, visiter le profil de l'auteur
+        # Seulement si on n'a pas fait trop d'actions déjà
+        if not actions["liked"] and not actions["expanded"]:
+            profile_url = post_data.get("author_profile")
+            if profile_url:
+                actions["profile_visited"] = await simulate_visit_profile(page, profile_url)
+        
+    except Exception as e:
+        _debug_log(f"Error in human actions: {e}")
+    
+    return actions
+
+
+async def simulate_coffee_break(page) -> None:
+    """
+    Simule une pause café (longue inactivité naturelle).
+    
+    Cette fonction est appelée occasionnellement pour simuler
+    le comportement d'un utilisateur qui fait une pause.
+    """
+    # Durée de la pause (2-5 minutes)
+    pause_duration = random.randint(120000, 300000)
+    
+    _debug_log(f"ACTION: Taking coffee break ({pause_duration/1000:.0f}s)")
+    
+    # Parfois, revenir au feed pendant la pause
+    if random.random() < 0.3:
+        try:
+            await page.goto("https://www.linkedin.com/feed/", timeout=15000)
+        except Exception:
+            pass
+    
+    # Attendre
+    await page.wait_for_timeout(pause_duration)
+    
+    # Petit mouvement de souris au retour
+    await simulate_human_mouse_movement(page)
+
 # ============================================================
 
 # Selectors (duplicated from worker.py to keep subprocess self-contained)
@@ -1251,6 +1544,11 @@ async def extract_posts_simple(page, keyword: str, max_items: int = 10) -> list[
                 "permalink": permalink,
                 "raw": None,
             })
+            
+            # ========== ACTIONS HUMAINES SUR LE POST ==========
+            # Effectuer des actions aléatoires pour simuler un comportement humain
+            post_data = {"author_profile": author_profile}
+            await perform_human_actions_on_post(page, el, post_data)
         
         except Exception as e:
             # Skip this element on error
@@ -1800,6 +2098,11 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
                         pause_duration = get_long_pause_duration()
                         _debug_log(f"Taking LONG PAUSE of {pause_duration/1000:.1f}s (simulating human distraction)")
                         await page.wait_for_timeout(pause_duration)
+                    # ========== PAUSE CAFÉ TRÈS OCCASIONNELLE ==========
+                    # Simule une vraie pause café (2-5 minutes) - très rare
+                    elif random.random() < COFFEE_BREAK_PROBABILITY and kw_idx < len(keywords) - 1:
+                        _debug_log("Taking COFFEE BREAK (2-5 min) - simulating real human behavior")
+                        await simulate_coffee_break(page)
                     else:
                         # Délai normal entre keywords (AUGMENTÉ)
                         delay = random_delay(KEYWORD_DELAY_MIN, KEYWORD_DELAY_MAX)

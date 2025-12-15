@@ -58,6 +58,9 @@ from .bootstrap import (
     LEGAL_DAILY_CAP_REACHED,
     get_context,
 )
+
+# Global rotation index for keyword batching (survives across worker cycles)
+_keyword_rotation_index: int = 0
 from . import utils
 from .legal_classifier import classify_legal_post, LEGAL_ROLE_KEYWORDS
 from .legal_filter import is_legal_job_post, FilterConfig
@@ -311,39 +314,52 @@ async def _run_scraping_subprocess(keywords: list[str], ctx: AppContext, logger:
     in the uvicorn event loop causes 'Target closed' errors.
     
     Uses file-based communication for Windows GUI exe (console=False).
-    Keywords are processed in batches to avoid long-running subprocesses.
     
-    ANTI-DETECTION: Batch size optimisé pour 100 posts/jour en 7h.
+    ANTI-DETECTION: Traite UN SEUL batch de 3 keywords par exécution worker.
+    Les posts sont immédiatement retournés pour stockage, évitant les pertes.
+    ROTATION: Utilise un index rotatif pour parcourir tous les mots-clés.
     """
-    all_posts: list[dict] = []
+    global _keyword_rotation_index
+    _debug_log(f"_run_scraping_subprocess called with {len(keywords)} keywords")
+    
     batch_size = 3  # 3 keywords par subprocess - équilibre productivité/discrétion
+    total_keywords = len(keywords)
     
-    for batch_start in range(0, len(keywords), batch_size):
-        batch_keywords = keywords[batch_start:batch_start + batch_size]
-        logger.info("subprocess_batch_start", batch_num=batch_start // batch_size + 1, 
-                   keywords_count=len(batch_keywords), total_keywords=len(keywords))
-        
-        batch_posts = await _run_scraping_subprocess_batch(batch_keywords, ctx, logger)
-        
-        # Check for restriction marker
-        if isinstance(batch_posts, dict) and batch_posts.get("_restricted"):
-            logger.critical("stopping_scraping_due_to_restriction")
-            _debug_log("STOPPING ALL SCRAPING - Account restricted by LinkedIn")
-            # Disable scraping to prevent further issues
-            ctx.settings.scraping_enabled = False
-            break
-        
-        all_posts.extend(batch_posts if isinstance(batch_posts, list) else [])
-        
-        # ANTI-DETECTION: Pause entre batches (30-60 secondes) - optimisé pour 100 posts/jour
-        if batch_start + batch_size < len(keywords):
-            import random
-            pause = random.randint(30, 60)
-            logger.info("anti_detection_pause", seconds=pause)
-            await asyncio.sleep(pause)
+    _debug_log(f"rotation: index={_keyword_rotation_index}, total={total_keywords}")
     
-    logger.info("subprocess_all_batches_complete", total_posts=len(all_posts))
-    return all_posts
+    # Calculer le batch actuel en utilisant l'index rotatif
+    start_idx = _keyword_rotation_index % total_keywords
+    batch_keywords = []
+    for i in range(batch_size):
+        idx = (start_idx + i) % total_keywords
+        batch_keywords.append(keywords[idx])
+    
+    # Mettre à jour l'index pour le prochain cycle
+    _keyword_rotation_index = (_keyword_rotation_index + batch_size) % total_keywords
+    
+    _debug_log(f"batch keywords: {batch_keywords}, next_index={_keyword_rotation_index}")
+    
+    logger.info("subprocess_single_batch", 
+               keywords_count=len(batch_keywords), 
+               keywords=batch_keywords,
+               rotation_index=start_idx,
+               total_keywords=total_keywords)
+    
+    batch_posts = await _run_scraping_subprocess_batch(batch_keywords, ctx, logger)
+    
+    # Check for restriction marker
+    if isinstance(batch_posts, dict) and batch_posts.get("_restricted"):
+        logger.critical("stopping_scraping_due_to_restriction")
+        _debug_log("STOPPING ALL SCRAPING - Account restricted by LinkedIn")
+        # NOTE: We do NOT auto-disable scraping anymore - user should manually pause if needed
+        # The restriction event is already broadcast in _run_scraping_subprocess_batch
+        # ctx.settings.scraping_enabled = False  # REMOVED - avoid auto-pause after login
+        return []
+    
+    posts = batch_posts if isinstance(batch_posts, list) else []
+    logger.info("subprocess_batch_complete", posts_count=len(posts))
+
+    return posts
 
 
 async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, logger: structlog.BoundLogger) -> list[dict]:
@@ -412,7 +428,9 @@ async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, l
         
         logger.info("subprocess_scraping_start", keywords_count=len(keywords), frozen=getattr(sys, "frozen", False))
         
-        # Run subprocess with timeout (3 minutes per batch should be plenty)
+        # Run subprocess with timeout
+        # TIMEOUT AUGMENTÉ: 7 minutes pour permettre les délais humains anti-détection
+        # (3 keywords x 45s max entre keywords + 12s chargement + actions humaines)
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=cwd,
@@ -420,21 +438,23 @@ async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, l
         _debug_log(f"subprocess started, pid={proc.pid}")
         
         # Wait for completion with timeout
+        # TIMEOUT AUGMENTÉ: 15 minutes pour actions humaines (likes, visites profil, pauses longues jusqu'à 70s)
+        # Calcul: 3 keywords x (12s charge + 10s extract + 60s délai + 70s pause + 15s actions) = ~500s + marge
         try:
-            await asyncio.wait_for(proc.wait(), timeout=180)  # 3 minute timeout per batch
+            await asyncio.wait_for(proc.wait(), timeout=900)  # 15 minute timeout per batch (human-like delays)
             _debug_log(f"subprocess completed, returncode={proc.returncode}")
         except asyncio.TimeoutError:
             proc.kill()
             logger.error("subprocess_scraping_timeout", keywords=keywords[:3])
-            _debug_log(f"subprocess TIMEOUT after 180s, keywords={keywords[:2]}")
+            _debug_log(f"subprocess TIMEOUT after 900s, keywords={keywords[:2]}")
             return []
         
         if proc.returncode != 0:
-            logger.error("subprocess_scraping_failed", returncode=proc.returncode)
-            _debug_log(f"subprocess FAILED, returncode={proc.returncode}")
-            return []
+            logger.warning("subprocess_scraping_nonzero_exit", returncode=proc.returncode)
+            _debug_log(f"subprocess exited with returncode={proc.returncode}, checking output file anyway...")
+            # Continue to read output file - it may contain account_restricted info
         
-        # Read output from file
+        # Read output from file (even if returncode != 0, file may contain restriction info)
         if not os.path.exists(output_file_path):
             logger.error("subprocess_no_output_file")
             _debug_log(f"ERROR: output file does not exist: {output_file_path}")
@@ -452,7 +472,18 @@ async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, l
             if result.get("account_restricted"):
                 logger.critical("account_restricted_detected", reason=result.get("restriction_reason", "unknown"))
                 _debug_log(f"ACCOUNT RESTRICTED: {result.get('restriction_reason')}")
-                # Broadcast restriction event
+                
+                # SÉCURITÉ: Supprimer le storage_state pour forcer reconnexion manuelle
+                try:
+                    storage_state_file = ctx.settings.storage_state
+                    if storage_state_file and os.path.exists(storage_state_file):
+                        os.remove(storage_state_file)
+                        _debug_log(f"Deleted storage_state due to restriction: {storage_state_file}")
+                        logger.info("storage_state_deleted_due_to_restriction", path=storage_state_file)
+                except Exception as del_exc:
+                    _debug_log(f"Failed to delete storage_state: {del_exc}")
+                
+                # Broadcast restriction event with redirect hint
                 if broadcast and EventType:
                     try:
                         await broadcast({
@@ -460,6 +491,8 @@ async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, l
                             "message": "⚠️ Compte LinkedIn temporairement restreint! Arrêt automatique du scraping.",
                             "reason": result.get("restriction_reason", "Détection d'automatisation"),
                             "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "redirect_to_login": True,
+                            "login_reason": "account_restricted",
                         })
                     except Exception:
                         pass
@@ -470,6 +503,17 @@ async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, l
             if result.get("session_revoked"):
                 logger.error("session_revoked_detected", auth_debug=result.get("auth_debug", {}))
                 _debug_log("Session revoked by LinkedIn - attempting auto-reconnect")
+                
+                # SÉCURITÉ: Supprimer le storage_state invalide
+                try:
+                    storage_state_file = ctx.settings.storage_state
+                    if storage_state_file and os.path.exists(storage_state_file):
+                        os.remove(storage_state_file)
+                        _debug_log(f"Deleted invalid storage_state: {storage_state_file}")
+                        logger.info("storage_state_deleted_due_to_revocation", path=storage_state_file)
+                except Exception as del_exc:
+                    _debug_log(f"Failed to delete storage_state: {del_exc}")
+                
                 # Broadcast session revoked event and attempt auto-reconnect
                 await _handle_session_revoked(ctx, logger)
                 # Return empty to stop this batch - the reconnect will retry
@@ -671,8 +715,13 @@ async def process_keywords_batched(all_keywords: list[str], ctx: AppContext) -> 
     if _should_use_subprocess(ctx):
         logger.info("using_subprocess_mode", frozen=getattr(sys, "frozen", False))
         _debug_log(f"using_subprocess_mode, keywords={len(all_keywords)}")
-        raw_posts = await _run_scraping_subprocess(all_keywords, ctx, logger)
-        _debug_log(f"subprocess returned {len(raw_posts)} raw posts")
+        try:
+            raw_posts = await _run_scraping_subprocess(all_keywords, ctx, logger)
+            _debug_log(f"subprocess returned {len(raw_posts)} raw posts")
+        except Exception as e:
+            _debug_log(f"ERROR in _run_scraping_subprocess: {type(e).__name__}: {e}")
+            logger.error("subprocess_exception", error=str(e))
+            raw_posts = []
         # Convert raw dicts to Post objects
         results: list[Post] = []
         for p in raw_posts:
