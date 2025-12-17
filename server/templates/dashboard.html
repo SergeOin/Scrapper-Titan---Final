@@ -162,16 +162,34 @@
       const existing = document.getElementById('reconnectModal');
       if (existing) existing.remove();
       
+      // Determine if credentials were saved but reconnect failed anyway
+      const noCredentials = payload.reason === 'no_credentials' || payload.no_credentials;
+      const hasCredentials = !noCredentials;
+      
       const modal = document.createElement('div');
       modal.id = 'reconnectModal';
       modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1001;';
       modal.innerHTML = `
-        <div style="background:#fff;border-radius:12px;padding:2rem;max-width:400px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
+        <div style="background:#fff;border-radius:12px;padding:2rem;max-width:450px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
           <div style="font-size:3rem;margin-bottom:1rem;">❌</div>
           <h3 style="color:#b91c1c;margin-bottom:1rem;">Session expirée</h3>
-          <p style="color:#666;margin-bottom:1.5rem;">${payload.message || 'La reconnexion automatique a échoué. Veuillez vous reconnecter manuellement.'}</p>
-          <div style="display:flex;gap:1rem;justify-content:center;">
-            <a href="/login?reason=session_revoked" style="background:#2563eb;color:#fff;padding:0.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:500;">Se reconnecter</a>
+          <p style="color:#666;margin-bottom:1rem;">${payload.message || 'La session LinkedIn a expiré.'}</p>
+          ${noCredentials ? `
+            <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:0.75rem;margin-bottom:1rem;text-align:left;">
+              <p style="color:#92400e;font-size:0.9rem;margin:0;">
+                <strong>💡 Conseil :</strong> Activez "Reconnexion automatique" lors de la connexion pour éviter ce message à l'avenir.
+              </p>
+            </div>
+          ` : `
+            <div style="background:#fee2e2;border:1px solid #fecaca;border-radius:8px;padding:0.75rem;margin-bottom:1rem;text-align:left;">
+              <p style="color:#b91c1c;font-size:0.9rem;margin:0;">
+                <strong>⚠️ Reconnexion automatique échouée.</strong> LinkedIn a peut-être changé le mot de passe ou les identifiants sont incorrects.
+              </p>
+            </div>
+          `}
+          <div style="display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;">
+            <a href="/login?reason=session_revoked" style="background:#2563eb;color:#fff;padding:0.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:500;">🔑 Se reconnecter</a>
+            <button onclick="attemptAutoReconnect();document.getElementById('reconnectModal').remove()" style="background:#10b981;color:#fff;padding:0.75rem 1.5rem;border-radius:8px;border:none;cursor:pointer;${noCredentials ? 'display:none;' : ''}">🔄 Réessayer</button>
             <button onclick="document.getElementById('reconnectModal').remove()" style="background:#e5e7eb;padding:0.75rem 1.5rem;border-radius:8px;border:none;cursor:pointer;">Fermer</button>
           </div>
         </div>
@@ -196,18 +214,22 @@
       modal.id = 'humanValidationModal';
       modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1001;';
       modal.innerHTML = `
-        <div style="background:#fff;border-radius:12px;padding:2rem;max-width:450px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
+        <div style="background:#fff;border-radius:12px;padding:2rem;max-width:480px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
           <div style="font-size:3rem;margin-bottom:1rem;">🔐</div>
-          <h3 style="color:#f59e0b;margin-bottom:1rem;">Validation humaine requise</h3>
-          <p style="color:#666;margin-bottom:0.5rem;">LinkedIn demande une vérification de sécurité :</p>
+          <h3 style="color:#f59e0b;margin-bottom:1rem;">Code MFA / Vérification requise</h3>
+          <p style="color:#666;margin-bottom:0.5rem;">La reconnexion automatique a échoué car LinkedIn demande une vérification :</p>
           <ul style="text-align:left;color:#666;margin:1rem 0;padding-left:1.5rem;">
+            <li><strong>Code 2FA/MFA</strong> (application Authenticator ou SMS)</li>
             <li>CAPTCHA (puzzle visuel)</li>
-            <li>Vérification par email/SMS</li>
-            <li>Authentification à deux facteurs (2FA)</li>
+            <li>Vérification par email</li>
           </ul>
-          <p style="color:#666;margin-bottom:1.5rem;font-size:0.9rem;">Veuillez vous connecter manuellement pour résoudre cette vérification.</p>
-          <div style="display:flex;gap:1rem;justify-content:center;">
-            <a href="/login" style="background:#f59e0b;color:#fff;padding:0.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:500;">Connexion manuelle</a>
+          <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:0.75rem;margin:1rem 0;">
+            <p style="color:#92400e;font-size:0.9rem;margin:0;">
+              <strong>💡 Conseil :</strong> Vos identifiants sont sauvegardés. Après la connexion manuelle, la prochaine reconnexion automatique fonctionnera (sauf si MFA est à nouveau demandé).
+            </p>
+          </div>
+          <div style="display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;">
+            <a href="/login?reason=mfa_required" style="background:#f59e0b;color:#fff;padding:0.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:500;">🔑 Se connecter manuellement</a>
             <button onclick="document.getElementById('humanValidationModal').remove()" style="background:#e5e7eb;padding:0.75rem 1.5rem;border-radius:8px;border:none;cursor:pointer;">Fermer</button>
           </div>
         </div>

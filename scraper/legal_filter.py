@@ -427,6 +427,45 @@ EXCLUSION_NETWORKING = [
     "discussion inspirante", "table ronde",
 ]
 
+# Posts de plainte/témoignage sur le recrutement (pas une offre active)
+# Exemple: "« je recrute un Auditeur » mais j'ai reçu des cv d'infographe"
+EXCLUSION_RECRUITMENT_FEEDBACK = [
+    # Plaintes sur CV/candidatures reçues
+    "j ai recu des cv", "j'ai recu des cv", "jai recu des cv",
+    "j ai recu un cv", "j'ai recu un cv",
+    "mais j ai recu", "mais j'ai recu",
+    "cv recu", "cv recus", "candidatures recues",
+    "candidatures hors sujet", "cv hors sujet",
+    "candidatures non pertinentes", "cv non pertinents",
+    "profils non pertinents", "profils hors sujet",
+    # Patterns de citation d'une annonce passée (guillemets)
+    "je recrute un auditeur", "je recrute une auditrice",
+    "je recrute un comptable", "je recrute une comptable",
+    "je recrute un commercial", "je recrute une commerciale",
+    # Témoignage/Retour d'expérience recrutement
+    "retour d experience recrutement", "feedback recrutement",
+    "feed-back recrutement", "feed back recrutement",
+    "mon retour sur le recrutement", "experience de recrutement",
+    "difficultes de recrutement", "problemes de recrutement",
+    # Plaintes générales sur les candidats
+    "candidats qui ne lisent pas", "candidats ne lisent pas",
+    "candidatures a cote de la plaque", "cv a cote de la plaque",
+    "les candidats ne font pas l effort",
+    "ils sont tres conscients", "tres conscients de ce qu ils ont fait",
+    # Expressions de frustration/déception
+    "maintenant c est encore a moi", "c est encore a moi de",
+    "donner un feedback", "donner un feed-back",
+    # Patterns de réflexion sur le recrutement (pas une offre)
+    "les recruteurs savent", "les candidats savent",
+    "quand je recrute", "quand on recrute",
+    "a chaque fois que je recrute", "chaque fois que je poste",
+    # Discussion sur le marché de l'emploi (pas une offre)
+    "le marche de l emploi", "marche du travail juridique",
+    "difficulte a recruter", "difficultes a recruter",
+    "guerre des talents", "penurie de candidats",
+    "tensions sur le recrutement",
+]
+
 # =============================================================================
 # NOUVELLES EXCLUSIONS RENFORCÉES (90% faux positifs détectés)
 # =============================================================================
@@ -991,6 +1030,15 @@ def check_exclusions(
             ])
             if not has_recruitment:
                 return ExclusionResult(True, "post_networking", matched_networking)
+    
+    # 5e. Posts de plainte/feedback sur le recrutement (pas une offre active)
+    # Ex: "je recrute un Auditeur mais j'ai reçu des cv d'infographe"
+    if config.exclude_promo:
+        matched_feedback = [term for term in EXCLUSION_RECRUITMENT_FEEDBACK if term in normalized]
+        if matched_feedback:
+            # Ces posts mentionnent le recrutement mais ne sont PAS des offres actives
+            # Ils parlent de l'expérience passée, de plaintes, de retours
+            return ExclusionResult(True, "feedback_recrutement", matched_feedback)
     
     # ==========================================================================
     # NOUVELLES EXCLUSIONS RENFORCÉES (réduction 90% faux positifs)
@@ -1912,6 +1960,7 @@ __all__ = [
     "EXCLUSION_LEGAL_NEWS",
     "EXCLUSION_TESTIMONIALS",
     "EXCLUSION_NETWORKING",
+    "EXCLUSION_RECRUITMENT_FEEDBACK",
     # NOUVELLES LISTES D'EXCLUSION (réduction 90% faux positifs)
     "EXCLUSION_FORMATION_EDUCATION",
     "EXCLUSION_RECRUTEMENT_PASSE",

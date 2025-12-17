@@ -308,22 +308,35 @@ def stealth_enabled() -> bool:
 COFFEE_BREAK_PROBABILITY = 0.03  # 3% de chance par keyword
 
 # Pages de restriction/warning LinkedIn à détecter
+# NOTE: Ces indicateurs doivent être TRÈS spécifiques pour éviter les faux positifs
+# LinkedIn affiche parfois des checkpoints normaux (vérification email, captcha) qui ne sont PAS des blocages
 RESTRICTION_INDICATORS = [
     "temporairement restreint",
     "temporarily restricted",
     "compte est restreint",
     "account is restricted",
-    "unusual activity",
-    "activité inhabituelle",
-    "security verification",
-    "vérification de sécurité",
-    "checkpoint",
-    "nous avons détecté",
-    "we've detected",
+    "account has been restricted",
+    "votre compte a été restreint",
+    "your account has been suspended",
+    "compte suspendu",
     "logiciels d'automatisation",
-    "automation software",
-    "prove you're not a robot",
+    "automation software detected",
+    "automated behavior",
+    "comportement automatisé détecté",
+]
+
+# Indicateurs IGNORÉS (faux positifs fréquents) - checkpoint normal, pas de blocage
+# Ces termes apparaissent lors de connexions normales et ne signifient PAS que le compte est bloqué
+FALSE_POSITIVE_INDICATORS = [
+    "security verification",  # Vérification normale de sécurité
+    "vérification de sécurité",
+    "unusual activity",  # Peut apparaître pour simple changement d'IP
+    "activité inhabituelle", 
+    "prove you're not a robot",  # Captcha normal
     "prouvez que vous n'êtes pas un robot",
+    "checkpoint",  # URL checkpoint normale lors de la 1ère connexion
+    "we've detected",  # Trop générique
+    "nous avons détecté",
 ]
 
 # User agents réalistes (rotation)
@@ -404,6 +417,10 @@ async def apply_stealth_scripts(page) -> None:
 async def detect_restriction_page(page) -> tuple[bool, str]:
     """Détecte si la page actuelle est une page de restriction LinkedIn.
     
+    NOTE: Cette fonction est maintenant plus conservatrice pour éviter les faux positifs.
+    Les checkpoints normaux (captcha, vérification email) ne sont PAS considérés comme des blocages.
+    Seuls les vrais messages de restriction/suspension déclenchent l'alerte.
+    
     Returns:
         (is_restricted, reason)
     """
@@ -413,14 +430,13 @@ async def detect_restriction_page(page) -> tuple[bool, str]:
         page_url = page.url.lower()
         page_title = (await page.title()).lower()
         
+        # Vérifier les vrais indicateurs de restriction (très spécifiques)
         for indicator in RESTRICTION_INDICATORS:
             if indicator.lower() in page_content_lower or indicator.lower() in page_title:
                 return True, f"Detected: {indicator}"
         
-        # URL-based detection
-        if "checkpoint" in page_url or "challenge" in page_url:
-            return True, f"Checkpoint URL: {page_url}"
-        
+        # URL-based detection - SEULEMENT pour les vrais blocages
+        # NOTE: "checkpoint" et "challenge" sont des pages NORMALES, pas des blocages!
         if "restricted" in page_url or "suspended" in page_url:
             return True, f"Restricted URL: {page_url}"
             

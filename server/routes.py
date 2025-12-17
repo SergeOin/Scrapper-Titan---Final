@@ -20,6 +20,7 @@ import sqlite3
 import json as _json
 from datetime import datetime, timezone
 import os
+import structlog
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Form, Query, Body
 from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse
@@ -28,6 +29,9 @@ from jinja2 import TemplateNotFound  # runtime safeguard for missing templates
 from passlib.hash import bcrypt
 import asyncio
 import signal
+
+# Module-level logger for helper functions without ctx
+_logger = structlog.get_logger("routes")
 
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
@@ -2248,6 +2252,8 @@ async def login_page(
         message = "⏰ Votre session a expiré. Veuillez vous reconnecter."
     elif reason == "cookies_invalid":
         message = "🍪 Les cookies de session sont invalides. Veuillez vous reconnecter."
+    elif reason == "mfa_required":
+        message = "🔑 LinkedIn demande un code MFA/2FA. Veuillez vous connecter et entrer votre code de vérification."
     # If the template directory does not contain login.html (packaging issue),
     # provide a minimal inline fallback so the application remains usable and
     # the user gets a clear indication of the missing resource instead of a 500.
@@ -2374,11 +2380,11 @@ def _save_credentials_for_auto_reconnect(email: str, password: str) -> bool:
         
         creds_path.parent.mkdir(parents=True, exist_ok=True)
         creds_path.write_text(_json.dumps(creds, ensure_ascii=False, indent=2), encoding="utf-8")
-        logger.info("credentials_saved_for_auto_reconnect", path=str(creds_path))
+        _logger.info("credentials_saved_for_auto_reconnect", path=str(creds_path))
         return True
         
     except Exception as e:
-        logger.warning("failed_to_save_credentials_dpapi", error=str(e))
+        _logger.warning("failed_to_save_credentials_dpapi", error=str(e))
         return False
 
 
@@ -2415,7 +2421,7 @@ async def api_session_login(
         try:
             creds_saved = _save_credentials_for_auto_reconnect(email, password)
         except Exception as e:
-            logger.warning("failed_to_save_credentials", error=str(e))
+            ctx.logger.warning("failed_to_save_credentials", error=str(e))
     
     return {"ok": True, "credentials_saved": creds_saved, **diag}
 

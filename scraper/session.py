@@ -63,8 +63,9 @@ async def session_status(ctx: AppContext) -> SessionStatus:
     # basic validation: storage_state.json presence and contains cookies
     details: dict[str, Any] = {"storage_state": ctx.settings.storage_state}
     try:
-        if Path(ctx.settings.storage_state).exists():
-            data = json.loads(Path(ctx.settings.storage_state).read_text(encoding="utf-8"))
+        storage_path = Path(ctx.settings.storage_state)
+        if storage_path.exists():
+            data = json.loads(storage_path.read_text(encoding="utf-8"))
             cookies = data.get("cookies") or []
             li_cookie = None
             for c in cookies:
@@ -75,11 +76,17 @@ async def session_status(ctx: AppContext) -> SessionStatus:
             import time as _time
             li_expires = None
             li_expired = False
+            now = _time.time()
             if li_cookie is not None:
                 li_expires = li_cookie.get("expires")
                 try:
+                    # LinkedIn cookies use Unix timestamps in seconds
+                    # -1 or 0 means session cookie (no explicit expiration)
                     if isinstance(li_expires, (int, float)) and li_expires > 0:
-                        li_expired = _time.time() > float(li_expires)
+                        # Sanity check: if expires is way in the past (before 2020), skip expiration check
+                        # This handles edge cases with weird timestamp formats
+                        if li_expires > 1577836800:  # 2020-01-01
+                            li_expired = now > float(li_expires)
                 except Exception:  # pragma: no cover
                     li_expired = False
             valid = bool(li_cookie) and not li_expired
@@ -89,10 +96,13 @@ async def session_status(ctx: AppContext) -> SessionStatus:
                 "li_at_expires": li_expires,
                 "li_at_expired": li_expired,
                 "has_jsessionid": jsess,
+                "storage_state_size": storage_path.stat().st_size,
             })
             return SessionStatus(valid=valid, details=details)
-    except Exception:
-        pass
+        else:
+            details["storage_state_exists"] = False
+    except Exception as e:
+        details["error"] = str(e)
     return SessionStatus(valid=False, details=details)
 
 
@@ -240,6 +250,14 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                             page.wait_for_timeout(step)
                             total_wait += step
                         if has_li_at or page.url.startswith("https://www.linkedin.com/feed"):
+                            # If we reached the feed but don't have li_at yet, wait a bit and re-check cookies
+                            if not has_li_at:
+                                page.wait_for_timeout(2000)  # Give LinkedIn time to set cookies
+                                try:
+                                    cookies = page.context.cookies()
+                                    has_li_at = any(c.get("name") == "li_at" for c in cookies)
+                                except Exception:
+                                    pass
                             page.context.storage_state(path=_storage_state_path)
                             # Save session store using extracted path
                             try:
@@ -330,10 +348,17 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                     return True, {"has_li_at": True}
                 # Fallback: if on feed even if li_at not inspected
                 if page.url.startswith("https://www.linkedin.com/feed"):
+                    # Wait a bit and re-check cookies since LinkedIn may set them after page load
+                    await page.wait_for_timeout(2000)
+                    try:
+                        cookies = await page.context.cookies()
+                        has_li_at = any(c.get("name") == "li_at" for c in cookies)
+                    except Exception:
+                        pass
                     await page.context.storage_state(path=ctx.settings.storage_state)
-                    _save_session_store(ctx, {"source": "playwright", "on_feed": True})
+                    _save_session_store(ctx, {"source": "playwright", "on_feed": True, "has_li_at": has_li_at})
                     await browser.close()
-                    return True, {"on_feed": True}
+                    return True, {"on_feed": True, "has_li_at": has_li_at}
                 await browser.close()
                 # Provide detailed error about what's blocking login
                 if blocking_reason:

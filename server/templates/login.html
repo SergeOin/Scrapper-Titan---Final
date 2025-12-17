@@ -149,9 +149,18 @@
             <span>Se souvenir du mot de passe (local)</span>
           </label>
         </div>
-        <div class="muted" style="margin-top:.25rem;">
-          Les identifiants peuvent être mémorisés localement dans ce navigateur (localStorage). Ils ne sont pas envoyés au serveur.
-          Pour plus de sécurité, privilégiez le gestionnaire de mots de passe du navigateur.
+        <div style="margin-top:.8rem; padding:.8rem; background:#eff6ff; border:1px solid #93c5fd; border-radius:8px;">
+          <label style="display:flex; align-items:center; gap:.5rem; cursor:pointer;">
+            <input id="saveForAutoReconnect" name="save_credentials" type="checkbox" value="true" checked />
+            <span style="font-weight:500; color:#1e40af;">🔄 Activer la reconnexion automatique</span>
+          </label>
+          <div class="muted" style="margin-top:.25rem; font-size:.85rem; color:#3b82f6;">
+            Si LinkedIn révoque votre session, l'application se reconnectera automatiquement avec vos identifiants.
+            <br>⚠️ Si un code MFA (2FA) est demandé, vous devrez vous reconnecter manuellement.
+          </div>
+        </div>
+        <div class="muted" style="margin-top:.5rem; font-size:.8rem;">
+          Les identifiants sont chiffrés localement (DPAPI Windows) et ne quittent jamais votre machine.
         </div>
         <div style="margin-top:.8rem; display:flex; gap:.5rem; flex-wrap:wrap;">
           <button type="submit">Se connecter</button>
