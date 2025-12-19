@@ -3,7 +3,7 @@
 Goals:
 - Run in mock mode (PLAYWRIGHT_MOCK_MODE=1) so no real browser access required.
 - Force a scrape job for a small keyword list.
-- Print summary: number of posts stored (Mongo or SQLite fallback), last_run, unknown authors metrics.
+- Print summary: number of posts stored in SQLite, last_run metrics.
 
 Usage (PowerShell):
   $Env:PLAYWRIGHT_MOCK_MODE='1'
@@ -40,22 +40,9 @@ async def _run():
         ctx.logger.error("smoke_test_failed", error=str(exc))
         return 3
 
-    # Fetch meta
-    last_run = None
+    # Fetch meta from SQLite
     posts_count = None
-    unknown = None
-    if ctx.mongo_client:
-        try:
-            mcoll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_meta]
-            doc = await mcoll.find_one({"_id": "global"})
-            if doc:
-                last_run = doc.get("last_run")
-                posts_count = doc.get("posts_count")
-                unknown = doc.get("last_job_unknown_authors")
-        except Exception as exc:
-            ctx.logger.warning("smoke_meta_fail", error=str(exc))
-    # SQLite fallback simple count
-    if posts_count is None and ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
+    if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
         import sqlite3
         try:
             conn = sqlite3.connect(ctx.settings.sqlite_path)
@@ -66,7 +53,7 @@ async def _run():
         except Exception:
             pass
 
-    ctx.logger.info("smoke_test_summary", last_run=last_run, posts=posts_count, unknown_authors=unknown)
+    ctx.logger.info("smoke_test_summary", posts=posts_count)
     if posts_count and posts_count > 0:
         return 0
     return 2

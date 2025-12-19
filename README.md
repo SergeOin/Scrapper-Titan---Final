@@ -12,8 +12,8 @@
 ---
 ## 🎯 Objectifs
 - Scraping de posts LinkedIn à partir de mots-clés ciblés (recherche)
-- Stockage principal MongoDB (Atlas), fallback automatique SQLite ou CSV
-- Worker asynchrone (séparé du serveur) + file/queue Redis pour jobs
+- Stockage principal SQLite avec fallback CSV
+- Worker asynchrone (séparé du serveur) + file/queue Redis optionnelle pour jobs
 - Dashboard FastAPI minimal (table paginée + stats + bouton "Forcer scrape")
 - Cache TTL & verrou anti-concurrence pour éviter sur-scraping
 - Logging structuré JSON + rotation + métriques Prometheus `/metrics`
@@ -29,7 +29,7 @@ Pipeline intégré de qualification des posts juridiques en France :
 * Cap visible via endpoint `/api/legal_stats` + barre de progression sur le dashboard
 * Filtrage API & UI: query param `?intent=recherche_profil|autre`
 * Script de purge ciblée par intent: `python scripts/purge_intent.py --intent recherche_profil`
-* Champs persistés (Mongo / SQLite colonnes dédiées / CSV fallback enrichi) :
+* Champs persistés (SQLite colonnes dédiées / CSV fallback enrichi) :
   - `intent`
   - `relevance_score`
   - `confidence`
@@ -114,16 +114,15 @@ project/
 2. Il clique sur "Forcer scrape" (POST) ⇒ push d'un job keyword(s) dans Redis
 3. Le worker (process séparé) consomme la queue ⇒ Playwright + login via `storage_state.json`
 4. Le worker applique les sélecteurs (abstraction testée) ⇒ extrait posts (texte, auteur, date, langue, score heuristique)
-5. Stockage MongoDB (ou fallback) + mise à jour métadonnées (last_run, counts)
+5. Stockage SQLite + mise à jour métadonnées (last_run, counts)
 6. Logs JSON + snapshots d'erreur (screenshots) + métriques incrementées
 7. Le dashboard affiche les nouvelles données via pagination / query params.
 
 ---
 ## 🗄️ Stockage
 Ordre de priorité :
-1. MongoDB (Motor + collection `posts` & `meta`) – backend principal
-2. SQLite (fichier local `fallback.sqlite3`) si Mongo indisponible
-3. CSV (append dans `exports/fallback_posts.csv`) si SQLite échoue
+1. SQLite (fichier local `data/posts.sqlite3`) – backend principal
+2. CSV (append dans `exports/fallback_posts.csv`) si SQLite échoue
 
 Schéma persistant actuel (champs de score supprimés) :
 ```jsonc
@@ -156,9 +155,8 @@ Schéma persistant actuel (champs de score supprimés) :
 ## 📦 Variables d'environnement (voir `.env.example`)
 | Variable | Description | Exemple |
 |----------|-------------|---------|
-| `MONGO_URI` | URI MongoDB Atlas | `mongodb+srv://user:pass@cluster/db` |
-| `MONGO_DB` | Nom DB | `linkedin_scrape` |
-| `REDIS_URL` | Redis queue/cache | `redis://localhost:6379/0` |
+| `SQLITE_PATH` | Chemin base SQLite | `data/posts.sqlite3` |
+| `REDIS_URL` | Redis queue/cache (optionnel) | `redis://localhost:6379/0` |
 | `SCRAPE_KEYWORDS` | Liste mots-clés (séparés par ;) | `python;ai;data` |
 | `SCRAPING_ENABLED` | 1/0 activer désactiver | `1` |
 | `PLAYWRIGHT_HEADLESS` | Mode headless | `1` |
@@ -223,8 +221,6 @@ Invalider le cache après upgrade Playwright : modifier la clé dans le workflow
 Build & run :
 ```bash
 docker build -t linkedin-scraper .
-# Créer un réseau si usage conteneurs Redis/Mongo
-# docker network create internal_net
 
 # Exemple (avec variables inline de test)
 docker run --rm -p 8000:8000 --env-file .env linkedin-scraper
@@ -272,10 +268,10 @@ black .
 | `scrape_posts_extracted_total` | Counter | Total de posts extraits (par job) |
 | `scrape_duration_seconds` | Histogram | Durée des jobs de scraping |
 | `scrape_mock_posts_extracted_total` | Counter | Posts synthétiques générés (mode mock) |
-| `scrape_storage_attempts_total{backend,result}` | Counter | Succès/erreurs par backend (mongo/sqlite/csv) |
+| `scrape_storage_attempts_total{backend,result}` | Counter | Succès/erreurs par backend (sqlite/csv) |
 | `scrape_queue_depth` | Gauge | Profondeur actuelle de la file de jobs Redis |
 | `scrape_job_failures_total` | Counter | Nombre de jobs échoués (exceptions) |
-| `scrape_step_duration_seconds{step}` | Histogram | Durée de sous-étapes (mongo_insert, sqlite_insert, etc.) |
+| `scrape_step_duration_seconds{step}` | Histogram | Durée de sous-étapes (sqlite_insert, etc.) |
 | `scrape_rate_limit_wait_seconds_total` | Counter | Secondes cumulées d'attente dues au rate limiting |
 | `scrape_rate_limit_tokens` | Gauge | Jetons disponibles (bucket courant) |
 | `api_rate_limit_rejections_total` | Counter | Requêtes API rejetées (limitation IP) |
@@ -286,7 +282,7 @@ black .
 Endpoints opérationnels additionnels :
 | Endpoint | Méthode | Description |
 |----------|---------|-------------|
-| `/health` | GET | Santé enrichie (ping Mongo, last_run, age, queue_depth, flags) |
+| `/health` | GET | Santé enrichie (last_run, age, queue_depth, flags) |
 | `/shutdown` | POST | Arrêt contrôlé (token + éventuellement basic auth) |
 | `/debug/auth` | GET | Diagnostic session Playwright (storage_state, modes) |
 | `/debug/last_batch` | GET | Derniers posts (auteur, company, keyword, timestamps) pour debug extraction |
@@ -327,18 +323,15 @@ Améliorations futures possibles :
 
 
 ### Statistiques supplémentaires (meta)
-Le document meta Mongo (`_id: "global"`) contient désormais :
+La table meta SQLite (`id: "global"`) contient :
 ```jsonc
 {
   "posts_count": 1234,
   "last_run": "2025-09-19T09:10:11.123456+00:00",
-  "last_job_posts": 42,
-  "last_job_unknown_authors": 5,
-  "last_job_unknown_ratio": 0.119,
   "scraping_enabled": true
 }
 ```
-Ces champs apparaissent partiellement dans `/health` : `last_job_unknown_authors`, `last_job_posts`, `last_job_unknown_ratio` pour rapidement suivre la qualité de détection auteur.
+Ces champs apparaissent partiellement dans `/health` pour suivre l'état du scraping.
 
 ### Capture d'authentification
 Un screenshot `screenshots/auth_state.png` est généré à chaque tentative d'initialisation de session (utile si auteurs restent `Unknown`).
@@ -365,7 +358,7 @@ Les settings utilisent désormais `pydantic-settings` (Pydantic v2) — `BaseSet
 | Test | Description |
 |------|-------------|
 | Selectors snapshot | Vérifie structure DOM attendue / fallback si changement |
-| Storage fallback | Simule indisponibilité Mongo ⇒ bascule SQLite/CSV |
+| Storage fallback | Simule erreur SQLite ⇒ bascule CSV |
 | API pagination | Vérification limites, pages vides |
 | Queue job lifecycle | Insert → consume → ack timeout |
 | Lock anti-concurrent | Double lancement worker refusé |
@@ -373,7 +366,7 @@ Les settings utilisent désormais `pydantic-settings` (Pydantic v2) — `BaseSet
 
 ---
 ## 🧬 Scores supprimés
-Les champs `score` et `recruitment_score` ont été retirés du modèle persistant pour simplifier l'usage métier. La logique de détection recrutement subsiste uniquement comme incrément de métrique `scrape_recruitment_posts_total`. Toute donnée legacy est migrée (SQLite) ou simplement ignorée (Mongo déjà sans nouveau champ lors d'insertion). Aucune action manuelle requise.
+Les champs `score` et `recruitment_score` ont été retirés du modèle persistant pour simplifier l'usage métier. La logique de détection recrutement subsiste uniquement comme incrément de métrique `scrape_recruitment_posts_total`. Toute donnée legacy est migrée (SQLite) ou simplement ignorée. Aucune action manuelle requise.
 
 ---
 ## ⚖️ Avertissement Légal & Éthique
@@ -431,12 +424,11 @@ Invalider le cache après upgrade Playwright : modifier la clé dans le workflow
 Bloc commenté prêt dans `release.yml` : dé‑commenter + secrets (`MACOS_CERT_B64`, `MACOS_CERT_PASSWORD`, `MACOS_NOTARY_APPLE_ID`, `MACOS_NOTARY_TEAM_ID`, `MACOS_NOTARY_PASSWORD`) pour activer codesign + notarisation.
 
 ### Mises à jour
-Installer simplement la nouvelle version (.msi ou .dmg). Sauvegarder `fallback.sqlite3` si vous utilisez le mode sans Mongo.
+Installer simplement la nouvelle version (.msi ou .dmg). Les données sont conservées dans le fichier SQLite local.
 
 ### Variables d'environnement
 Placer un fichier `.env` à côté de l'exécutable ou définir dans l'environnement système :
 ```
-MONGO_URI=...
 SCRAPE_KEYWORDS=avocat;juriste
 LEGAL_DAILY_POST_CAP=50
 INTERNAL_AUTH_USER=admin
@@ -444,7 +436,7 @@ INTERNAL_AUTH_PASS=ChangeMe!
 ```
 
 ### Stockage local
-Sans `MONGO_URI`, un fichier `fallback.sqlite3` est créé dans le dossier courant.
+Les données sont stockées dans un fichier SQLite local (`data/posts.sqlite3` par défaut).
 
 ### Désinstallation
 Windows : Paramètres → Applications → LinkedInScraper → Désinstaller.
@@ -480,7 +472,7 @@ Priorité: Deta Space (gratuit), sinon Render (Free plan) ou Railway (Free trial
 | `AUTONOMOUS_WORKER_INTERVAL_SECONDS` | Intervalle secondes entre cycles auto (ex: 900) |
 | `INPROCESS_AUTONOMOUS` | `1` pour exécuter le worker dans le même process FastAPI (utile Deta) |
 | `DASHBOARD_PUBLIC` | `1` rendu public, sinon activer auth interne |
-| `MONGO_URI` | Connexion MongoDB Atlas (persistance) sinon fallback SQLite |
+| `SQLITE_PATH` | Chemin vers la base SQLite (stockage principal) |
 | `WORKER_RESTART_DELAY_SECONDS` | Délai redémarrage worker dédié (Render/Railway) |
 | `PORT` | Port imposé par la plateforme (Render/Railway) |
 | `INTERNAL_AUTH_USER` | Active Basic Auth si défini (toujours appliqué même avec `DASHBOARD_PUBLIC=1`) |
@@ -493,7 +485,7 @@ Priorité: Deta Space (gratuit), sinon Render (Free plan) ou Railway (Free trial
 2. Ajouter le `Spacefile` fourni à la racine (déjà présent).
 3. Déployer: `deta space push`.
 4. Dans l'interface Space, ajouter les variables d'environnement souhaitées (ex: `PLAYWRIGHT_MOCK_MODE=1`, `INPROCESS_AUTONOMOUS=1`, `AUTONOMOUS_WORKER_INTERVAL_SECONDS=900`).
-5. (Optionnel) Ajouter `MONGO_URI` vers un cluster Atlas pour persistance; sinon les données seront dans `fallback.sqlite3` interne (éphémère sur rebuilds).
+5. Les données sont stockées dans SQLite (attention: éphémère sur rebuilds).
 
 Limitations Deta:
 - Pas de navigateur Chrome complet stable ⇒ mode réel non garanti.
@@ -506,7 +498,7 @@ Fichiers utilisés: `render.yaml`, `Procfile`..
   - Web: lance `python scripts/run_server.py` sur le port `$PORT`.
   - Worker: lance `python scripts/run_worker.py` avec redémarrage automatique.
 3. Dans l'onglet Environment, ajouter (exemple réel minimal):
-  - `MONGO_URI=...` (Atlas)
+  - `SQLITE_PATH=data/posts.sqlite3`
   - `PLAYWRIGHT_MOCK_MODE=0`
   - `STORAGE_STATE_B64=<base64 du storage_state.json>` (ou montez le fichier via volume privé)
   - `INTERNAL_AUTH_USER=admin` + `INTERNAL_AUTH_PASS=ChangeMe!` (hash auto)
@@ -524,7 +516,7 @@ SSE: Render supporte les connexions persistantes HTTP/1.1 ⇒ `/stream` fonction
 4. S'assurer d'installer Playwright dans postinstall (ex: `nixpacks` build détecte requirements puis ajouter hook: `python -m playwright install --with-deps chromium`).
 
 ### 4. Docker Compose (Auto- hébergement VPS)
-Utiliser `docker-compose.yml` existant: un service API + un worker + Redis + Mongo si souhaité. Adapter `.env`.
+Utiliser `docker-compose.yml` existant: un service API + un worker + Redis. Adapter `.env`.
 
 ### 5. Authentification & Public
 - Démo publique: `DASHBOARD_PUBLIC=1`, laisser `INTERNAL_AUTH_USER` vide.
@@ -609,8 +601,7 @@ La fonction `compute_recruitment_signal(text)` applique :
   - Si `min_score` absent ⇒ pas de filtrage.
 
 ### Stockage & Compatibilité
-- Mongo : champ `recruitment_score` ajouté dans chaque document (nullable).
-- SQLite : colonne ajoutée automatiquement si base créée après la fonctionnalité; pour une base existante exécuter :
+- SQLite : colonne ajoutée automatiquement; pour une base existante exécuter :
   ```sql
   ALTER TABLE posts ADD COLUMN recruitment_score REAL;
   ```
@@ -632,7 +623,7 @@ La fonction `compute_recruitment_signal(text)` applique :
 ---
 ## 🔄 Fallback Storage Testé
 Un test (`tests/test_fallback_storage.py`) vérifie :
-1. Insertion SQLite quand Mongo absent.
+1. Insertion SQLite correcte.
 2. Fallback CSV forcé en simulant une erreur SQLite.
 
 ---
@@ -645,7 +636,7 @@ Fichiers ajoutés : `ruff.toml`, `mypy.ini` pour cohérence multi-environnements
 - **Rate limiting** : protection basique par IP (en mémoire) + seau de jetons (token bucket) pour limiter le scraping excessif.
 - **Scrolling amélioré** : extraction progressive des résultats avec détection de complétude.
 - **Signal de recrutement** : détection heuristique des posts à potentiel de recrutement dans les domaines cibles.
-- **Fallback storage** : mécanisme de secours testable pour MongoDB → SQLite → CSV.
+- **Fallback storage** : mécanisme de secours testable pour SQLite → CSV.
 - **Tests & CI** : couverture accrue des tests, intégration continue avec GitHub Actions.
 
 ### Champs Quotidiens (Quota Juridique)

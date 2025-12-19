@@ -60,7 +60,7 @@ Résultat attendu :
 3. Afficher tableau (montrer les colonnes + liens)
 4. Appliquer filtre `min_score`
 5. Montrer `/api/posts` puis `/metrics`
-6. Expliquer fallback (Mongo principal, SQLite/CSV en secours) + instrumentation
+6. Expliquer le stockage SQLite (principal) avec fallback CSV + instrumentation
 
 ---
 ## 5. Commandes utiles
@@ -79,7 +79,6 @@ powershell -ExecutionPolicy Bypass -File .\scripts\demo_run.ps1 -Port 9001 -Mock
 | Problème | Cause probable | Solution |
 |----------|----------------|----------|
 | `ModuleNotFoundError` | Venv non utilisé | Lancer via script (détecte .venv) |
-| `mongo_connection_failed` | Mauvais mot de passe / IP non whitelistee | Vérifier Atlas Network Access + URI |
 | Redis error logs | Redis absent | Ignorer ou installer Redis |
 | Dashboard vide | Aucun run effectué | Relancer `demo_run.ps1` |
 | Lien vide | Pas de permalink trouvé (réel) | Mock pour la démo |
@@ -131,8 +130,7 @@ Adaptable dans `scraper/worker.py` si markup modifié.
 - Journaliser uniquement ce qui est nécessaire (éviter d’exposer des données personnelles inutiles dans les logs).
 
 - Ne pas committer le vrai mot de passe : utiliser `.env` privé & `.env.example` public.
-- Rotation : changer le mot de passe Mongo après une session partagée.
-- Protection trigger (optionnelle) : définir `TRIGGER_TOKEN` + header `X-Trigger-Token`.
+- Ne pas committer de fichiers sensibles : utiliser `.env` privé & `.env.example` public.`X-Trigger-Token`.
 - Auth dashboard : `INTERNAL_AUTH_USER` + `INTERNAL_AUTH_PASS_HASH` (bcrypt via `passlib`).
 - Journalisation : logs JSON (fichier si `LOG_FILE` défini).
 
@@ -148,9 +146,7 @@ Remove-Item Env:SCRAPE_KEYWORDS -ErrorAction SilentlyContinue
 ## 9. Prochaines améliorations possibles
 - Test automatisé pour `/api/posts` + présence `permalink`
 - Export CSV on-demand endpoint
-- Indicateur visuel de backend (Mongo vs SQLite fallback)
-- Ajout tracing OpenTelemetry (prévu dans design)
-
+- 
 ---
 ## 9.1 Génération mock orientée métiers juridiques
 En mode mock (`PLAYWRIGHT_MOCK_MODE=1`), les posts synthétiques sont désormais générés autour de métiers du domaine légal / notarial / fiscal en FRANÇAIS uniquement.
@@ -193,9 +189,9 @@ Les rôles sont injectés dans la liste de mots-clés lors du calcul de score in
 ## 10. Références internes
 - `scripts/demo_run.ps1` : orchestration démo
 - `scripts/run_once.py` : job unique sans queue
-- `scraper/bootstrap.py` : config & clients (Mongo / Redis)
+- `scraper/bootstrap.py` : config & clients (Redis optionnel)
 - `scraper/worker.py` : extraction / mock / persistence
-- `server/routes.py` : endpoints API + fallback SQLite
+- `server/routes.py` : endpoints API + SQLite
 - `server/templates/dashboard.html` : UI tableau
 
 Bonnes démos !

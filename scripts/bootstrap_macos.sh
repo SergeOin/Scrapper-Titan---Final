@@ -11,7 +11,6 @@ mkdir -p "$APP_SUPPORT" "$APP_SUPPORT/logs" "$APP_SUPPORT/exports" "$APP_SUPPORT
 
 export LOG_LEVEL=${LOG_LEVEL:-INFO}
 export LOG_FILE="$APP_SUPPORT/logs/server.log"
-export DISABLE_MONGO=1
 export DISABLE_REDIS=1
 export SQLITE_PATH="$APP_SUPPORT/fallback.sqlite3"
 export STORAGE_STATE="$APP_SUPPORT/storage_state.json"

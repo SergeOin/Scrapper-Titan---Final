@@ -8,7 +8,6 @@ appdata = os.environ.get('LOCALAPPDATA', '')
 if appdata:
     db = Path(appdata) / 'TitanScraper' / 'fallback.sqlite3'
     os.environ.setdefault('SQLITE_PATH', str(db))
-os.environ.setdefault('DISABLE_MONGO', '1')
 os.environ.setdefault('DISABLE_REDIS', '1')
 os.environ.setdefault('PLAYWRIGHT_MOCK_MODE', '1')
 os.environ.setdefault('MAX_MOCK_POSTS', '2')

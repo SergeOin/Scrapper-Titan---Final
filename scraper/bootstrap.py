@@ -3,14 +3,14 @@
 Central responsibilities:
 - Load and validate settings from environment (.env loaded externally or by Settings class)
 - Configure structured logging (structlog + rotating handlers)
-- Initialize asynchronous clients: Mongo (Motor) and Redis
+- Initialize optional Redis client for job queue
 - Provide a shared context object for the worker logic
 - Expose Prometheus metric instruments (counters, histograms)
 
 Design notes:
 - Avoid heavy imports at module import time (lazy when possible)
-- Ensure idempotent initialization (safe to call bootstrap() once in worker entry
-- Support fallback when Mongo or Redis are unavailable (handled later in worker/storage layer)
+- Ensure idempotent initialization (safe to call bootstrap() once in worker entry)
+- SQLite is the primary storage backend
 """
 from __future__ import annotations
 
@@ -28,13 +28,7 @@ import structlog
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Optional / future: we import lazily inside functions to avoid
-# forcing dependencies when only part of the system is used.
-try:
-    from motor.motor_asyncio import AsyncIOMotorClient  # type: ignore
-except Exception:  # pragma: no cover - if not installed or during type checking
-    AsyncIOMotorClient = Any  # type: ignore
-
+# Optional: Redis for job queue (not required for SQLite-only mode)
 try:
     import redis.asyncio as aioredis  # type: ignore
 except Exception:  # pragma: no cover
@@ -133,21 +127,13 @@ class Settings(BaseSettings):
     min_sleep_ms: int = Field(900, alias="MIN_SLEEP_MS")
     max_sleep_ms: int = Field(2500, alias="MAX_SLEEP_MS")
 
-    # Mongo
-    mongo_uri: str = Field("mongodb://localhost:27017", alias="MONGO_URI")
-    mongo_db: str = Field("linkedin_scrape", alias="MONGO_DB")
-    mongo_collection_posts: str = Field("posts", alias="MONGO_COLLECTION_POSTS")
-    mongo_collection_meta: str = Field("meta", alias="MONGO_COLLECTION_META")
-    mongo_connect_timeout_ms: int = Field(5000, alias="MONGO_CONNECT_TIMEOUT_MS")
-
-    # Redis
+    # Redis (optional - for distributed job queue)
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
     redis_queue_key: str = Field("jobs:scrape", alias="REDIS_QUEUE_KEY")
     job_visibility_timeout: int = Field(300, alias="JOB_VISIBILITY_TIMEOUT")
     job_poll_interval: int = Field(3, alias="JOB_POLL_INTERVAL")
 
-    # Optional: disable remote backends entirely (useful for pure-local SQLite mode)
-    disable_mongo: bool = Field(False, alias="DISABLE_MONGO")
+    # Optional: disable Redis entirely (SQLite-only mode)
     disable_redis: bool = Field(False, alias="DISABLE_REDIS")
 
     # Fallback storage - use absolute path in LOCALAPPDATA for packaged app
@@ -887,7 +873,6 @@ if TYPE_CHECKING:
 class AppContext:
     settings: Settings
     logger: structlog.BoundLogger
-    mongo_client: Optional[Any] = None
     redis: Optional[Any] = None
     token_bucket: Optional["TokenBucket"] = None
     # Risk counters (anti-ban heuristics)
@@ -917,11 +902,6 @@ class AppContext:
 if TYPE_CHECKING:  # pragma: no cover
     from .rate_limit import TokenBucket
 
-    def mongo_db(self):  # type: ignore[override]
-        if self.mongo_client:
-            return self.mongo_client[self.settings.mongo_db]
-        return None
-
 
 _context_singleton: Optional[AppContext] = None
 _context_lock = asyncio.Lock()
@@ -930,42 +910,6 @@ _context_lock = asyncio.Lock()
 # ------------------------------------------------------------
 # Initialization helpers
 # ------------------------------------------------------------
-async def init_mongo(settings: Settings, logger: structlog.BoundLogger) -> Optional[Any]:
-    """Initialize Mongo client or return None if connection fails.
-
-    We do a lightweight ping to validate connectivity. Fallback handled elsewhere.
-    """
-    if AsyncIOMotorClient is Any:  # missing dependency
-        logger.warning("mongo_dependency_missing")
-        return None
-
-    try:
-        client = AsyncIOMotorClient(
-            settings.mongo_uri,
-            serverSelectionTimeoutMS=settings.mongo_connect_timeout_ms,
-            tz_aware=True,
-        )
-        await client.admin.command("ping")
-        logger.info("mongo_connected", uri=settings.mongo_uri)
-        return client
-    except asyncio.CancelledError:
-        # Don't let CancelledError crash the app - just skip Mongo
-        logger.warning("mongo_connection_cancelled", hint="Connexion annulée, utilisation de SQLite")
-        return None
-    except Exception as exc:  # pragma: no cover - depends on environment
-        # If pointing to a local default instance (localhost:27017), treat as optional and avoid noisy error logs.
-        uri = settings.mongo_uri or ""
-        if (("localhost" in uri) or ("127.0.0.1" in uri)) and (":27017" in uri):
-            logger.warning(
-                "mongo_unavailable_local_fallback",
-                error=str(exc),
-                hint="Démarrez MongoDB ou définissez DISABLE_MONGO=1 pour rester sur SQLite",
-            )
-        else:
-            logger.error("mongo_connection_failed", error=str(exc))
-        return None
-
-
 async def init_redis(settings: Settings, logger: structlog.BoundLogger) -> Optional[Any]:
     """Initialize Redis client if library available else return None."""
     if aioredis is None:
@@ -1075,13 +1019,7 @@ async def bootstrap(force: bool = False) -> AppContext:
                 logger.warning("directory_creation_failed", path=d, error=str(e))
 
         t0 = time.perf_counter()
-        # Respect opt-out flags for remote backends
-        if settings.disable_mongo:
-            logger.debug("mongo_disabled_by_env")
-            mongo_client = None
-        else:
-            mongo_client = await init_mongo(settings, logger)
-
+        # Optional Redis for job queue (SQLite is primary storage)
         if settings.disable_redis:
             logger.debug("redis_disabled_by_env")
             redis_client = None
@@ -1097,7 +1035,6 @@ async def bootstrap(force: bool = False) -> AppContext:
         ctx = AppContext(
             settings=settings,
             logger=logger.bind(subsystem="core"),
-            mongo_client=mongo_client,
             redis=redis_client,
             token_bucket=token_bucket,
         )
@@ -1124,7 +1061,6 @@ async def bootstrap(force: bool = False) -> AppContext:
         log_method = logger.debug if settings.quiet_startup else logger.info
         log_method(
             "bootstrap_complete",
-            mongo=bool(mongo_client),
             redis=bool(redis_client),
             elapsed=f"{elapsed:.3f}s",
             keywords=settings.keywords,
@@ -1147,6 +1083,6 @@ async def get_context() -> AppContext:
 if __name__ == "__main__":  # pragma: no cover
     async def _demo():
         ctx = await bootstrap(force=True)
-        print("Context ready. Mongo?", bool(ctx.mongo_client), "Redis?", bool(ctx.redis))
+        print("Context ready. Redis?", bool(ctx.redis))
 
     asyncio.run(_demo())

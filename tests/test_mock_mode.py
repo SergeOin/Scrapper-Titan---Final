@@ -11,7 +11,7 @@ async def test_process_keyword_mock_mode(monkeypatch):
     settings = Settings(playwright_mock_mode=True)  # type: ignore[arg-type]
     configure_logging(settings.log_level, settings)
     logger = structlog.get_logger().bind(test="mock_mode")
-    ctx = AppContext(settings=settings, logger=logger, mongo_client=None, redis=None)
+    ctx = AppContext(settings=settings, logger=logger, redis=None)
 
     # Simule absence playwright même si lib installée
     worker_mod.async_playwright = None  # type: ignore

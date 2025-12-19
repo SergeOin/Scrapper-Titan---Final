@@ -290,7 +290,7 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [1.2.x] - 2025-09-xx
 ### Overview
-Initial public-internal MVP iterations: multi-backend storage (Mongo/SQLite/CSV), recruitment signal metric, basic dashboard, Prometheus metrics, fallback logic, mock mode, packaging groundwork.
+Initial public-internal MVP iterations: SQLite storage with CSV fallback, recruitment signal metric, basic dashboard, Prometheus metrics, mock mode, packaging groundwork.
 
 [Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.14...HEAD
 [1.3.14]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.14

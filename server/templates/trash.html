@@ -183,7 +183,7 @@
           if(!r.ok) throw new Error('HTTP '+r.status);
           const data = await r.json();
           updateDeletedCount(0);
-          showToast(`Corbeille vidée (${(data.removed_sqlite||0) + (data.removed_mongo||0)} supprimés)`, 'success');
+          showToast(`Corbeille vidée (${data.removed_sqlite||0} supprimés)`, 'success');
           const table = document.querySelector('table');
           if(table){
             const empty = document.createElement('div');

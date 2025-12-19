@@ -159,8 +159,8 @@ templates.env.filters['fmt_date'] = _fmt_date
 templates.env.filters['remove_key_emoji'] = _remove_key_emoji
 
 # ------------------------------------------------------------
-# Store for blocked LinkedIn accounts (Mongo if available, else SQLite)
-# Document: { id/_id: str, name: str | None, url: str, blocked_at: ISO8601 }
+# Store for blocked LinkedIn accounts (SQLite)
+# Document: { id: str, name: str | None, url: str, blocked_at: ISO8601 }
 # ------------------------------------------------------------
 from uuid import uuid4
 
@@ -231,13 +231,6 @@ def _blocked_slug_from_url(url: str) -> str:
         return ""
 
 async def _blocked_count(ctx) -> int:
-    # Mongo path
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db]["blocked_accounts"]
-            return await coll.count_documents({})
-        except Exception:
-            return 0
     # SQLite path
     path = ctx.settings.sqlite_path
     if not path or not Path(path).exists():
@@ -253,20 +246,6 @@ async def _blocked_count(ctx) -> int:
 
 
 async def _blocked_list(ctx) -> list[dict[str, Any]]:
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db]["blocked_accounts"]
-            cursor = coll.find({}, {"_id": 1, "url": 1, "blocked_at": 1}).sort("blocked_at", -1)
-            items: list[dict[str, Any]] = []
-            async for doc in cursor:
-                items.append({
-                    "id": str(doc.get("_id")),
-                    "url": doc.get("url"),
-                    "blocked_at": doc.get("blocked_at"),
-                })
-            return items
-        except Exception:
-            return []
     # SQLite
     path = ctx.settings.sqlite_path
     if not path or not Path(path).exists():
@@ -285,20 +264,6 @@ async def _blocked_list(ctx) -> list[dict[str, Any]]:
 async def _blocked_add(ctx, url: str):
     now_iso = datetime.now(timezone.utc).isoformat()
     item_id = str(uuid4())
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db]["blocked_accounts"]
-            # Unique by url: check duplicate
-            exists = await coll.find_one({"url": url})
-            if exists:
-                raise HTTPException(status_code=409, detail="Ce compte est déjà bloqué")
-            doc = {"_id": item_id, "url": url, "blocked_at": now_iso}
-            await coll.insert_one(doc)
-            return {"id": item_id, "url": url, "blocked_at": now_iso}
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Erreur d'insertion: {exc}")
     # SQLite
     path = ctx.settings.sqlite_path
     if not path:
@@ -319,17 +284,6 @@ async def _blocked_add(ctx, url: str):
 
 
 async def _blocked_delete(ctx, item_id: str):
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db]["blocked_accounts"]
-            res = await coll.delete_one({"_id": item_id})
-            if not getattr(res, 'deleted_count', 0):
-                raise HTTPException(status_code=404, detail="Compte introuvable")
-            return
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Erreur suppression: {exc}")
     # SQLite
     path = ctx.settings.sqlite_path
     if not path or not Path(path).exists():
@@ -835,7 +789,7 @@ def _fetch_deleted_posts(ctx) -> list[dict[str, Any]]:
             for r in conn.execute(query):
                 rows.append(dict(r))
         except sqlite3.OperationalError as e:
-            # In environments that never created the 'posts' table (e.g., Mongo-only setups),
+            # In environments that never created the 'posts' table,
             # gracefully degrade to an empty trash view instead of raising 500.
             if "no such table: posts" in str(e).lower():
                 try:
@@ -956,45 +910,10 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
         
         # === RULE 4: Cannot determine with certainty ===
         return None
-    # Mongo path
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            # Toujours exclure contenu de démonstration
-            mf: dict[str, Any] = {"author": {"$ne": "demo_recruteur"}, "keyword": {"$ne": "demo_recruteur"}}
-            if q:
-                mf["$or"] = [
-                    {"text": {"$regex": q, "$options": "i"}},
-                    {"author": {"$regex": q, "$options": "i"}},
-                    {"company": {"$regex": q, "$options": "i"}},
-                    {"keyword": {"$regex": q, "$options": "i"}},
-                ]
-            if intent and intent in ("recherche_profil","autre"):
-                mf["intent"] = intent
-            # Exclude raw + legacy score fields
-            projection = {"score": 0, "recruitment_score": 0}
-            if not include_raw:
-                projection["raw"] = 0
-            cursor = coll.find(mf, projection).sort(sort_field, sort_direction).skip(skip).limit(limit)
-            rows = []
-            async for doc in cursor:
-                try:
-                    author = str(doc.get("author") or "")
-                    comp = doc.get("company")
-                    prof = doc.get("author_profile")
-                    txt = doc.get("text")
-                    derived = _derive_company(author, comp, prof, txt)
-                    if derived and (not comp or str(comp).strip().lower() == author.strip().lower()):
-                        doc["company"] = derived
-                except Exception:
-                    pass
-                rows.append(doc)
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.error("posts_query_failed", error=str(exc))
-            rows = []
-    # SQLite fallback (if no mongo rows and/or mongo unavailable)
+    # SQLite storage
+    rows = []
     try:
-        if (not rows) and ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
+        if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
             conn = sqlite3.connect(ctx.settings.sqlite_path)
             conn.row_factory = sqlite3.Row
             with conn:
@@ -1150,7 +1069,7 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
     except Exception as exc:  # pragma: no cover
         ctx.logger.warning("sqlite_fallback_query_failed", error=str(exc))
 
-    # Apply flag annotations for mongo path or legacy rows
+    # Apply flag annotations for rows
     try:
         if rows and ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
             conn = sqlite3.connect(ctx.settings.sqlite_path)
@@ -1346,22 +1265,7 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
 
 async def count_posts(ctx, q: Optional[str] = None) -> int:
     q = _sanitize_query(q)
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            mf: dict[str, Any] = {"author": {"$ne": "demo_recruteur"}, "keyword": {"$ne": "demo_recruteur"}}
-            if q:
-                mf["$or"] = [
-                    {"text": {"$regex": q, "$options": "i"}},
-                    {"author": {"$regex": q, "$options": "i"}},
-                    {"company": {"$regex": q, "$options": "i"}},
-                    {"keyword": {"$regex": q, "$options": "i"}},
-                ]
-            return await coll.count_documents(mf)
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.error("posts_count_failed", error=str(exc))
-            return 0
-    # SQLite fallback
+    # SQLite storage
     try:
         if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
             conn = sqlite3.connect(ctx.settings.sqlite_path)
@@ -1405,46 +1309,32 @@ async def fetch_meta(ctx) -> dict[str, Any]:
         "pending_jobs": None,
         "keywords": ", ".join(ctx.settings.keywords),
     }
-    # Mongo authoritative if present
-    if ctx.mongo_client:
-        try:
-            mcoll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_meta]
-            doc = await mcoll.find_one({"_id": "global"})
-            if doc:
-                meta.update({
-                    "last_run": doc.get("last_run"),
-                    "posts_count": doc.get("posts_count", 0),
-                    "scraping_enabled": doc.get("scraping_enabled", meta["scraping_enabled"]),
-                })
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.error("meta_query_failed", error=str(exc))
-    else:
-        # SQLite meta: prefer explicit meta table when present, then approximate posts_count from posts
-        # NOTE: scraping_enabled is NOT read from SQLite - always use ctx.settings.scraping_enabled
-        # to avoid stale state from previous sessions overriding the default True value
-        try:
-            if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
-                conn = sqlite3.connect(ctx.settings.sqlite_path)
-                with conn:
-                    # Try meta table first (created by worker.update_meta)
-                    try:
-                        row = conn.execute("SELECT last_run, COALESCE(posts_count,0) FROM meta WHERE id = 'global'").fetchone()
-                        if row:
-                            meta["last_run"] = row[0]
-                            meta["posts_count"] = int(row[1] or 0)
-                            # meta["scraping_enabled"] stays as ctx.settings.scraping_enabled (default True)
-                    except Exception:
-                        pass
-                    # Fallback: compute posts_count from posts if meta table not present
-                    _ensure_post_flags(conn)
-                    c = conn.execute(
-                        "SELECT COUNT(*) FROM posts p LEFT JOIN post_flags f ON f.post_id = p.id "
-                        "WHERE LOWER(p.author) <> 'demo_recruteur' AND LOWER(p.keyword) <> 'demo_recruteur' AND COALESCE(f.is_deleted,0) = 0"
-                    ).fetchone()
-                    if c and (not meta.get("posts_count")):
-                        meta["posts_count"] = int(c[0] or 0)
-        except Exception:  # pragma: no cover
-            pass
+    # SQLite meta: prefer explicit meta table when present, then approximate posts_count from posts
+    # NOTE: scraping_enabled is NOT read from SQLite - always use ctx.settings.scraping_enabled
+    # to avoid stale state from previous sessions overriding the default True value
+    try:
+        if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
+            conn = sqlite3.connect(ctx.settings.sqlite_path)
+            with conn:
+                # Try meta table first (created by worker.update_meta)
+                try:
+                    row = conn.execute("SELECT last_run, COALESCE(posts_count,0) FROM meta WHERE id = 'global'").fetchone()
+                    if row:
+                        meta["last_run"] = row[0]
+                        meta["posts_count"] = int(row[1] or 0)
+                        # meta["scraping_enabled"] stays as ctx.settings.scraping_enabled (default True)
+                except Exception:
+                    pass
+                # Fallback: compute posts_count from posts if meta table not present
+                _ensure_post_flags(conn)
+                c = conn.execute(
+                    "SELECT COUNT(*) FROM posts p LEFT JOIN post_flags f ON f.post_id = p.id "
+                    "WHERE LOWER(p.author) <> 'demo_recruteur' AND LOWER(p.keyword) <> 'demo_recruteur' AND COALESCE(f.is_deleted,0) = 0"
+                ).fetchone()
+                if c and (not meta.get("posts_count")):
+                    meta["posts_count"] = int(c[0] or 0)
+    except Exception:  # pragma: no cover
+        pass
     if ctx.redis:
         try:
             meta["pending_jobs"] = await ctx.redis.llen(ctx.settings.redis_queue_key)
@@ -1817,14 +1707,6 @@ async def api_purge_post(
 ):
     """Purge définitivement un post (suppression de la base et des flags)."""
     removed = 0
-    # Mongo
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            res = await coll.delete_one({"_id": post_id})
-            removed += int(getattr(res, 'deleted_count', 0) or 0)
-        except Exception:
-            pass
     # SQLite
     path = ctx.settings.sqlite_path
     if path and Path(path).exists():
@@ -1850,9 +1732,6 @@ async def api_trash_empty(
 ):
     """Supprime définitivement tous les posts marqués supprimés (corbeille)."""
     removed_sqlite = 0
-    removed_mongo = 0
-    # Mongo: best-effort remove documents that have a corresponding deleted flag in SQLite (if any)
-    # If only Mongo is used, no flags table exists; skip to avoid heavy full scans.
     path = ctx.settings.sqlite_path
     deleted_ids: list[str] = []
     if path and Path(path).exists():
@@ -1879,14 +1758,9 @@ async def api_trash_empty(
                         pass
         except Exception:
             pass
-    if deleted_ids and ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            mres = await coll.delete_many({"_id": {"$in": deleted_ids}})
-            removed_mongo = int(getattr(mres, 'deleted_count', 0) or 0)
-        except Exception:
-            pass
-    return {"ok": True, "removed_sqlite": removed_sqlite, "removed_mongo": removed_mongo, "trash_count": _count_deleted(ctx)}
+    if deleted_ids:
+        pass  # All deletion already handled in SQLite above
+    return {"ok": True, "removed_sqlite": removed_sqlite, "trash_count": _count_deleted(ctx)}
 
 
 @router.get("/api/trash/count")
@@ -1919,19 +1793,8 @@ async def health(ctx=Depends(get_auth_context)):
     # Base status
     data: dict[str, Any] = {
         "status": "ok",
-        "mongo_connected": bool(ctx.mongo_client),
         "redis_connected": bool(ctx.redis),
     }
-    # Mongo ping time + meta
-    if ctx.mongo_client:
-        import time as _time
-        try:
-            t0 = _time.perf_counter()
-            await ctx.mongo_client.admin.command("ping")
-            data["mongo_ping_ms"] = round((_time.perf_counter() - t0) * 1000, 2)
-        except Exception as exc:  # pragma: no cover
-            data["mongo_ping_ms"] = None
-            data["mongo_error"] = str(exc)
     # Meta info (reuse existing helper)
     try:
         meta = await fetch_meta(ctx)
@@ -2017,17 +1880,6 @@ async def health(ctx=Depends(get_auth_context)):
         data["pacing_mode"] = pacing
     except Exception:
         pass
-    # Augmented meta stats: last job unknown author metrics if present
-    if ctx.mongo_client:
-        try:
-            mcoll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_meta]
-            doc = await mcoll.find_one({"_id": "global"}, {"last_job_unknown_authors":1,"last_job_posts":1,"last_job_unknown_ratio":1})
-            if doc:
-                data["last_job_unknown_authors"] = doc.get("last_job_unknown_authors")
-                data["last_job_posts"] = doc.get("last_job_posts")
-                data["last_job_unknown_ratio"] = doc.get("last_job_unknown_ratio")
-        except Exception:
-            pass
     return data
 
 
@@ -2585,7 +2437,7 @@ async def logout_redirect(request: Request, ctx=Depends(get_auth_context), _auth
 
 @router.post("/toggle")
 async def toggle_scraping(request: Request, ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
-    """Inverse l'état `scraping_enabled` en mémoire et persiste dans Mongo si disponible.
+    """Inverse l'état `scraping_enabled` en mémoire.
 
     Retourne le nouvel état. Note: Ce réglage n'est pas encore persisté dans un fichier de config;
     il sera réinitialisé au redémarrage sur la valeur d'origine des settings d'environnement.
@@ -2594,13 +2446,6 @@ async def toggle_scraping(request: Request, ctx=Depends(get_auth_context), _auth
     # Flip in-memory flag
     new_state = not ctx.settings.scraping_enabled
     ctx.settings.scraping_enabled = new_state  # type: ignore[attr-defined]
-    # Persist in meta doc si Mongo
-    if ctx.mongo_client:
-        try:
-            mcoll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_meta]
-            await mcoll.update_one({"_id": "global"}, {"$set": {"scraping_enabled": new_state}}, upsert=True)
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.warning("toggle_persist_failed", error=str(exc))
     # File persistence
     try:
         _save_runtime_state({"scraping_enabled": new_state})
@@ -2664,36 +2509,20 @@ async def debug_last_batch(limit: int = 5, ctx=Depends(get_auth_context), _auth=
     """Return the most recent posts (author/company debug) limited to 'limit'.
 
     Fields: author, company, keyword, collected_at, published_at, permalink.
-    Uses Mongo if available, else SQLite fallback. Does not expose raw text to keep payload small.
+    Uses SQLite storage. Does not expose raw text to keep payload small.
     """
     limit = max(1, min(50, limit))
     items: list[dict[str, Any]] = []
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            cursor = coll.find({}, {"author":1, "company":1, "keyword":1, "collected_at":1, "published_at":1, "permalink":1}).sort("collected_at", -1).limit(limit)
-            async for doc in cursor:
-                items.append({
-                    "author": doc.get("author"),
-                    "company": doc.get("company"),
-                    "keyword": doc.get("keyword"),
-                    "collected_at": doc.get("collected_at"),
-                    "published_at": doc.get("published_at"),
-                    "permalink": doc.get("permalink"),
-                })
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.error("debug_last_batch_mongo_failed", error=str(exc))
-    if not items:
-        # SQLite fallback
-        try:
-            if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
-                conn = sqlite3.connect(ctx.settings.sqlite_path)
-                conn.row_factory = sqlite3.Row
-                with conn:
-                    for r in conn.execute("SELECT author, company, keyword, collected_at, published_at, permalink FROM posts ORDER BY collected_at DESC LIMIT ?", (limit,)):
-                        items.append(dict(r))
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.warning("debug_last_batch_sqlite_failed", error=str(exc))
+    # SQLite storage
+    try:
+        if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
+            conn = sqlite3.connect(ctx.settings.sqlite_path)
+            conn.row_factory = sqlite3.Row
+            with conn:
+                for r in conn.execute("SELECT author, company, keyword, collected_at, published_at, permalink FROM posts ORDER BY collected_at DESC LIMIT ?", (limit,)):
+                    items.append(dict(r))
+    except Exception as exc:  # pragma: no cover
+        ctx.logger.warning("debug_last_batch_sqlite_failed", error=str(exc))
     return {"count": len(items), "items": items}
 
 
@@ -2734,7 +2563,6 @@ async def api_stats(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
         "autonomous_interval": ctx.settings.autonomous_worker_interval_seconds,
         "scraping_enabled": ctx.settings.scraping_enabled,
         "keywords_count": len(ctx.settings.keywords),
-        "mongo_connected": bool(ctx.mongo_client),
         "redis_connected": bool(ctx.redis),
     }
     # Meta (posts count, last_run)
@@ -2866,7 +2694,7 @@ async def count_blocked_accounts(ctx=Depends(get_auth_context), _auth=Depends(re
 
 
 # ------------------------------------------------------------
-# Admin: purge all posts (Mongo + SQLite + CSV fallback)
+# Admin: purge all posts (SQLite + CSV fallback)
 # ------------------------------------------------------------
 @router.post("/api/admin/purge_posts")
 async def api_admin_purge_posts(request: Request, ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
@@ -2877,18 +2705,6 @@ async def api_admin_purge_posts(request: Request, ctx=Depends(get_auth_context),
     """
     _require_desktop_trigger(request)
     removed_sqlite = 0
-    removed_mongo = 0
-    # Mongo purge
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            res = await coll.delete_many({})
-            removed_mongo = getattr(res, 'deleted_count', 0) or 0
-            # Reset meta doc counters
-            mcoll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_meta]
-            await mcoll.update_one({"_id": "global"}, {"$set": {"posts_count": 0, "last_run": None}}, upsert=True)
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.error("api_purge_mongo_failed", error=str(exc))
     # SQLite purge
     import sqlite3 as _sqlite
     from pathlib import Path as _P
@@ -2924,12 +2740,12 @@ async def api_admin_purge_posts(request: Request, ctx=Depends(get_auth_context),
         ctx.daily_post_count = 0  # type: ignore[attr-defined]
     except Exception:
         pass
-    # Broadcast a lightweight event so UI can react (reuse toggle type or define new?)
+    # Broadcast a lightweight event so UI can react
     try:
-        await broadcast({"type": "purge", "removed_sqlite": removed_sqlite, "removed_mongo": removed_mongo})
+        await broadcast({"type": "purge", "removed_sqlite": removed_sqlite})
     except Exception:
         pass
-    return {"ok": True, "removed_sqlite": removed_sqlite, "removed_mongo": removed_mongo}
+    return {"ok": True, "removed_sqlite": removed_sqlite}
 
 
 # ------------------------------------------------------------

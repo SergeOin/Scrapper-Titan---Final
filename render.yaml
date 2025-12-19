@@ -33,5 +33,5 @@ services:
         value: INFO
 # Notes:
 # - Utiliser un Redis managé si nécessaire pour la queue (sinon mode autonome périodique).
-# - Fournir MONGO_URI via Dashboard Render (Environment Variables).
 # - Pour mode real scraping: PLAYWRIGHT_MOCK_MODE=0 et stockage state pré-créé.
+# - Données stockées en SQLite (SQLITE_PATH) avec sauvegarde locale.

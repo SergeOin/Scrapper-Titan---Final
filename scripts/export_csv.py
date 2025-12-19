@@ -1,4 +1,4 @@
-"""Export posts to a CSV file (minimal fields) from MongoDB if available else SQLite.
+"""Export posts to a CSV file from SQLite.
 
 Usage:
   python scripts/export_csv.py --out exports/export_posts.csv --limit 500
@@ -23,17 +23,7 @@ FIELDS = ["_id","keyword","author","company","text","language","published_at","c
 async def gather_posts(limit: int) -> list[dict[str, Any]]:
     ctx = await get_context()
     rows: list[dict[str, Any]] = []
-    # Try Mongo first
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            cursor = coll.find({}, {"raw":0}).sort("collected_at", -1).limit(limit)
-            async for doc in cursor:
-                rows.append(doc)
-            return rows
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.warning("mongo_export_failed", error=str(exc))
-    # Fallback SQLite
+    # SQLite storage
     try:
         if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
             conn = sqlite3.connect(ctx.settings.sqlite_path)

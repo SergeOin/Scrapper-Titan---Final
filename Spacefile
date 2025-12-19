@@ -26,7 +26,6 @@ services:
         value: "INFO"
       - key: ENABLE_METRICS
         value: "1"
-    # Note: Pour utiliser MongoDB Atlas, ajouter MONGO_URI via variables d'environnement Space UI.
 
 # Notes importantes:
 # - Deta Space n'offre pas de service de navigateur complet; le mode mock est recommandé.

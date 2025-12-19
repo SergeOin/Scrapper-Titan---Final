@@ -1176,11 +1176,8 @@ def main():
     os.environ.setdefault("AUTONOMOUS_WORKER_INTERVAL_SECONDS", "60")  # run a cycle every 60s by default
     # Keep dashboard private by default in desktop mode
     os.environ.setdefault("DASHBOARD_PUBLIC", "0")
-    # Speed optimizations: disable remote backends by default in packaged desktop (avoid 5s connection timeouts)
-    os.environ.setdefault("DISABLE_MONGO", "1")
+    # Speed optimizations: disable remote backends by default in packaged desktop (avoid connection timeouts)
     os.environ.setdefault("DISABLE_REDIS", "1")
-    # Lower Mongo connect timeout further if user re-enables it
-    os.environ.setdefault("MONGO_CONNECT_TIMEOUT_MS", "1200")
 
     # Point runtime artifacts to user-writable locations
     os.environ.setdefault("SCREENSHOT_DIR", str(user_base / "screenshots"))

@@ -1,1 +1,0 @@
-﻿{"keywords":["recrute juriste"],"storage_state":"C:\\Users\\plogr\\AppData\\Local\\TitanScraper\\storage_state.json","max_per_keyword":5,"headless":false,"browsers_path":"C:\\Users\\plogr\\AppData\\Local\\TitanScraper\\pw-browsers"}

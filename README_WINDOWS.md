@@ -4,7 +4,6 @@
 ```powershell
 $env:PORT = '8001'
 $env:PLAYWRIGHT_MOCK_MODE = '0'
-$env:DISABLE_MONGO = '1'
 $env:DISABLE_REDIS = '1'
 $env:QUIET_STARTUP = '1'
 python scripts/run_server.py

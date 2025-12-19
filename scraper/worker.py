@@ -4,7 +4,7 @@ Responsibilities:
 - Consume scrape jobs (keywords) from Redis queue (simple list semantics)
 - For each keyword, launch Playwright page, perform search, extract posts
 - Apply retries + jitter sleeps; screenshot on fatal failure
-- Store results in MongoDB (primary) with fallback to SQLite then CSV
+- Store results in SQLite (primary) with fallback to CSV
 - Update meta info (last_run, counts) and expose Prometheus metrics increments
 - Respect global SCRAPING_ENABLED flag and file lock to prevent concurrent runs
 
@@ -906,7 +906,7 @@ class StorageError(Exception):
 # Storage Helpers
 # ------------------------------------------------------------
 async def store_posts(ctx: AppContext, posts: list[Post]) -> int:
-    """Store posts using priority: Mongo → SQLite → CSV.
+    """Store posts using priority: SQLite → CSV.
 
     Each path tries to insert many; duplicates filtered by _id (hash).
     
@@ -938,43 +938,7 @@ async def store_posts(ctx: AppContext, posts: list[Post]) -> int:
     
     # Retain posts as-is (tests rely on counting inserted rows), previously we filtered mock artifacts here.
     logger = ctx.logger.bind(step="store_posts", count=len(posts))
-    # Attempt Mongo
-    if ctx.mongo_client:
-        try:
-            with SCRAPE_STEP_DURATION.labels(step="mongo_insert").time():
-                coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-                docs = []
-                for p in posts:
-                    d = {
-                        "_id": p.id,
-                        "keyword": p.keyword,
-                        "author": p.author,
-                        "author_profile": p.author_profile,
-                        "company": getattr(p, "company", None),
-                        "permalink": getattr(p, "permalink", None),
-                        "text": p.text,
-                        "language": p.language,
-                        "published_at": p.published_at,
-                        "collected_at": p.collected_at,
-                        # Scores removed from persistence
-                        "raw": p.raw or {},
-                        # Legal classification enriched fields (optional presence)
-                        "intent": getattr(p, "intent", None),
-                        "relevance_score": getattr(p, "relevance_score", None),
-                        "confidence": getattr(p, "confidence", None),
-                        "keywords_matched": getattr(p, "keywords_matched", None),
-                        "location_ok": getattr(p, "location_ok", None),
-                    }
-                    docs.append(d)
-                if docs:
-                    await coll.insert_many(docs, ordered=False)
-                    SCRAPE_STORAGE_ATTEMPTS.labels("mongo", "success").inc()
-                    logger.info("mongo_inserted", inserted=len(docs))
-                    return len(docs)
-        except Exception as exc:  # pragma: no cover
-            SCRAPE_STORAGE_ATTEMPTS.labels("mongo", "error").inc()
-            logger.error("mongo_insert_failed", error=str(exc))
-    # SQLite fallback
+    # SQLite primary storage
     try:
         with SCRAPE_STEP_DURATION.labels(step="sqlite_insert").time():
             inserted = _store_sqlite(ctx.settings, posts)
@@ -1216,29 +1180,11 @@ def _store_csv(csv_path: Path, posts: list[Post]) -> None:
 async def update_meta(ctx: AppContext, total_new: int) -> None:
     """Update meta information after a job completes.
 
-    Primary store is Mongo when available. If Mongo is absent, persist a lightweight
-    meta row in SQLite so the dashboard /health can reflect last_run even when
-    zero posts were inserted (avoids indefinite "Cycle en cours…" perception).
+    Persist a lightweight meta row in SQLite so the dashboard /health can
+    reflect last_run even when zero posts were inserted.
     """
     now_iso = datetime.now(timezone.utc).isoformat()
-    # Mongo path
-    if ctx.mongo_client:
-        try:
-            meta_coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_meta]
-            await meta_coll.update_one(
-                {"_id": "global"},
-                {
-                    "$set": {"last_run": now_iso},
-                    "$inc": {"posts_count": total_new},
-                    "$setOnInsert": {"scraping_enabled": ctx.settings.scraping_enabled},
-                },
-                upsert=True,
-            )
-            return
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.error("meta_update_failed", error=str(exc))
-            # fall through to SQLite as a best-effort fallback
-    # SQLite fallback meta (keeps last_run fresh even when no documents inserted)
+    # SQLite meta storage
     try:
         if ctx.settings.sqlite_path:
             db_path = ctx.settings.sqlite_path
@@ -1272,22 +1218,6 @@ async def update_meta(ctx: AppContext, total_new: int) -> None:
             ctx.logger.warning("sqlite_meta_update_failed", error=str(exc))
         except Exception:
             pass
-
-async def update_meta_job_stats(ctx: AppContext, total_new: int, unknown_authors: int):
-    """Augment meta with per-job unknown author stats (last job only)."""
-    if not ctx.mongo_client:
-        return
-    try:
-        meta_coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_meta]
-        ratio = (unknown_authors / total_new) if total_new > 0 else 0.0
-        await meta_coll.update_one(
-            {"_id": "global"},
-            {"$set": {"last_job_unknown_authors": unknown_authors, "last_job_posts": total_new, "last_job_unknown_ratio": ratio}},
-            upsert=True,
-        )
-    except Exception as exc:  # pragma: no cover
-        ctx.logger.error("meta_job_stats_failed", error=str(exc))
-
 
 # ------------------------------------------------------------
 # Playwright extraction logic (élargi)
@@ -2352,7 +2282,6 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
             pass
         await update_meta(ctx, len(all_new))
         meta_written = True
-        await update_meta_job_stats(ctx, len(all_new), unknown_count)
         if broadcast and EventType:  # best-effort SSE
             try:
                 await broadcast({
@@ -2380,7 +2309,7 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
         return len(all_new)
     finally:
         # If anything failed before meta was updated (e.g., Playwright/browser errors),
-        # still bump last_run in SQLite/Mongo with zero increments so the dashboard
+        # still bump last_run in SQLite with zero increments so the dashboard
         # doesn't appear stuck on "Cycle en cours…".
         if not meta_written:
             try:
