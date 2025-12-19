@@ -60,10 +60,27 @@ from .bootstrap import (
 )
 
 # Global rotation index for keyword batching (survives across worker cycles)
+# NOTE: Now managed by adapters.get_next_keywords() when use_keyword_strategy is enabled
 _keyword_rotation_index: int = 0
 from . import utils
 from .legal_classifier import classify_legal_post, LEGAL_ROLE_KEYWORDS
 from .legal_filter import is_legal_job_post, FilterConfig
+
+# =============================================================================
+# ADAPTERS - Progressive migration to new modular architecture
+# =============================================================================
+from .adapters import (
+    get_feature_flags,
+    get_next_keywords as _adapter_get_next_keywords,
+    record_keyword_result,
+    get_scraping_limits,
+    record_restriction_event,
+    get_next_interval as _adapter_get_next_interval,
+    should_scrape_now,
+    is_duplicate_post,
+    mark_post_seen,
+    record_scrape_result,
+)
 
 if TYPE_CHECKING:
     from .bootstrap import Settings
@@ -317,7 +334,7 @@ async def _run_scraping_subprocess(keywords: list[str], ctx: AppContext, logger:
     
     ANTI-DETECTION: Traite UN SEUL batch de 3 keywords par exécution worker.
     Les posts sont immédiatement retournés pour stockage, évitant les pertes.
-    ROTATION: Utilise un index rotatif pour parcourir tous les mots-clés.
+    ROTATION: Utilise un index rotatif ou KeywordStrategy via adapters.
     """
     global _keyword_rotation_index
     _debug_log(f"_run_scraping_subprocess called with {len(keywords)} keywords")
@@ -325,19 +342,21 @@ async def _run_scraping_subprocess(keywords: list[str], ctx: AppContext, logger:
     batch_size = 3  # 3 keywords par subprocess - équilibre productivité/discrétion
     total_keywords = len(keywords)
     
-    _debug_log(f"rotation: index={_keyword_rotation_index}, total={total_keywords}")
-    
-    # Calculer le batch actuel en utilisant l'index rotatif
-    start_idx = _keyword_rotation_index % total_keywords
-    batch_keywords = []
-    for i in range(batch_size):
-        idx = (start_idx + i) % total_keywords
-        batch_keywords.append(keywords[idx])
-    
-    # Mettre à jour l'index pour le prochain cycle
-    _keyword_rotation_index = (_keyword_rotation_index + batch_size) % total_keywords
-    
-    _debug_log(f"batch keywords: {batch_keywords}, next_index={_keyword_rotation_index}")
+    # Use adapters for keyword selection if enabled, else legacy rotation
+    flags = get_feature_flags()
+    if flags.use_keyword_strategy:
+        batch_keywords = _adapter_get_next_keywords(keywords, batch_size=batch_size)
+        _debug_log(f"[ADAPTER] KeywordStrategy returned: {batch_keywords}")
+    else:
+        # Legacy rotation behavior
+        _debug_log(f"rotation: index={_keyword_rotation_index}, total={total_keywords}")
+        start_idx = _keyword_rotation_index % total_keywords
+        batch_keywords = []
+        for i in range(batch_size):
+            idx = (start_idx + i) % total_keywords
+            batch_keywords.append(keywords[idx])
+        _keyword_rotation_index = (_keyword_rotation_index + batch_size) % total_keywords
+        _debug_log(f"batch keywords: {batch_keywords}, next_index={_keyword_rotation_index}")
     
     logger.info("subprocess_single_batch", 
                keywords_count=len(batch_keywords), 
@@ -473,6 +492,9 @@ async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, l
                 logger.critical("account_restricted_detected", reason=result.get("restriction_reason", "unknown"))
                 _debug_log(f"ACCOUNT RESTRICTED: {result.get('restriction_reason')}")
                 
+                # [ADAPTER] Record restriction event for progressive mode
+                record_restriction_event("restriction")
+                
                 # SÉCURITÉ: Supprimer le storage_state pour forcer reconnexion manuelle
                 try:
                     storage_state_file = ctx.settings.storage_state
@@ -522,6 +544,17 @@ async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, l
         posts = result.get("posts", [])
         _debug_log(f"subprocess returned {len(posts)} posts, stats={result.get('stats', {})}")
         logger.info("subprocess_scraping_complete", posts_count=len(posts), keywords_processed=result.get("keywords_processed", 0))
+        
+        # [ADAPTER] Record successful scrape result for all modules
+        record_scrape_result(
+            posts_found=len(posts),
+            had_restriction=False,
+            had_captcha=False,
+        )
+        
+        # [ADAPTER] Record results per keyword if available
+        for kw in batch_keywords:
+            record_keyword_result(keyword=kw, posts_found=len(posts) // len(batch_keywords))
         
         return posts
     
@@ -875,9 +908,34 @@ class StorageError(Exception):
 async def store_posts(ctx: AppContext, posts: list[Post]) -> int:
     """Store posts using priority: Mongo → SQLite → CSV.
 
-    Each path tries to insert many; duplicates filtered by _id (hash)."""
+    Each path tries to insert many; duplicates filtered by _id (hash).
+    
+    [ADAPTER] If use_post_cache is enabled, deduplicates using PostCache before storage.
+    """
     if not posts:
         return 0
+    
+    # [ADAPTER] Filter duplicates using PostCache if enabled
+    flags = get_feature_flags()
+    if flags.use_post_cache:
+        original_count = len(posts)
+        non_duplicate_posts = []
+        for p in posts:
+            if not is_duplicate_post(text=p.text, url=getattr(p, 'permalink', ''), post_id=p.id):
+                non_duplicate_posts.append(p)
+                # Mark as seen for future deduplication
+                mark_post_seen(text=p.text, url=getattr(p, 'permalink', ''), post_id=p.id)
+        
+        if len(non_duplicate_posts) < original_count:
+            ctx.logger.info("post_cache_dedup", 
+                          original=original_count, 
+                          after_dedup=len(non_duplicate_posts),
+                          filtered_out=original_count - len(non_duplicate_posts))
+        posts = non_duplicate_posts
+        
+        if not posts:
+            return 0
+    
     # Retain posts as-is (tests rely on counting inserted rows), previously we filtered mock artifacts here.
     logger = ctx.logger.bind(step="store_posts", count=len(posts))
     # Attempt Mongo
@@ -2526,7 +2584,11 @@ async def worker_loop() -> None:
             if ctx.settings.autonomous_worker_interval_seconds > 0:
                 logger.info("autonomous_mode_enabled", interval=ctx.settings.autonomous_worker_interval_seconds)
                 while True:
-                    if ctx.settings.scraping_enabled:
+                    # [ADAPTER] Check if we should scrape now (respects scheduler pause/active windows)
+                    flags = get_feature_flags()
+                    can_scrape, scrape_reason = should_scrape_now()
+                    
+                    if ctx.settings.scraping_enabled and can_scrape:
                         async with run_with_lock(ctx):
                             try:
                                 new = await process_job(ctx.settings.keywords, ctx)
@@ -2535,33 +2597,46 @@ async def worker_loop() -> None:
                             except Exception as exc:  # pragma: no cover
                                 logger.error("autonomous_cycle_failed", error=str(exc))
                     else:
-                        logger.info("scraping_disabled_wait")
-                    # Adaptive interval shrink if far from daily target during active hours window 9-18 by default
-                    try:
-                        import datetime as _dt, random
-                        now = _dt.datetime.now()
-                        target = ctx.settings.daily_post_target
-                        soft_target = getattr(ctx.settings, 'daily_post_soft_target', max(1, int(target*0.8)))
-                        collected = getattr(ctx, 'daily_post_count', 0)
-                        active_start, active_end = 9, 18
-                        base_interval = ctx.settings.autonomous_worker_interval_seconds
-                        if active_start <= now.hour < active_end:
-                            remaining = max(1, target - collected)
-                            hours_left = max(0.25, active_end - now.hour - now.minute/60.0)
-                            # posts/hour needed
-                            pph_needed = remaining / hours_left if hours_left > 0 else remaining
-                            # Rough per-cycle yield guess (8) to derive desired interval
-                            est_per_cycle = 8
-                            if collected < soft_target:
-                                # Force more frequent cycles early in the day until soft target reached
-                                desired_interval = 300
-                            else:
-                                desired_interval = int(min(base_interval, max(300, (est_per_cycle / max(1, pph_needed)) * 3600))) if remaining > 0 else int(base_interval * random.uniform(1.2, 1.8))
-                            sleep_next = max(180, min(base_interval, desired_interval))
+                        if not can_scrape:
+                            logger.info("scraping_paused_by_scheduler", reason=scrape_reason)
                         else:
-                            sleep_next = int(base_interval * 1.5)
-                    except Exception:
-                        sleep_next = ctx.settings.autonomous_worker_interval_seconds
+                            logger.info("scraping_disabled_wait")
+                    
+                    # [ADAPTER] Use SmartScheduler for interval if enabled, else legacy logic
+                    if flags.use_smart_scheduler:
+                        sleep_next = _adapter_get_next_interval(
+                            default_interval=ctx.settings.autonomous_worker_interval_seconds,
+                            success=True,
+                            posts_found=getattr(ctx, '_last_cycle_posts', 0),
+                        )
+                        logger.debug("smart_scheduler_interval", seconds=sleep_next)
+                    else:
+                        # Legacy adaptive interval logic
+                        try:
+                            import datetime as _dt, random
+                            now = _dt.datetime.now()
+                            target = ctx.settings.daily_post_target
+                            soft_target = getattr(ctx.settings, 'daily_post_soft_target', max(1, int(target*0.8)))
+                            collected = getattr(ctx, 'daily_post_count', 0)
+                            active_start, active_end = 9, 18
+                            base_interval = ctx.settings.autonomous_worker_interval_seconds
+                            if active_start <= now.hour < active_end:
+                                remaining = max(1, target - collected)
+                                hours_left = max(0.25, active_end - now.hour - now.minute/60.0)
+                                # posts/hour needed
+                                pph_needed = remaining / hours_left if hours_left > 0 else remaining
+                                # Rough per-cycle yield guess (8) to derive desired interval
+                                est_per_cycle = 8
+                                if collected < soft_target:
+                                    # Force more frequent cycles early in the day until soft target reached
+                                    desired_interval = 300
+                                else:
+                                    desired_interval = int(min(base_interval, max(300, (est_per_cycle / max(1, pph_needed)) * 3600))) if remaining > 0 else int(base_interval * random.uniform(1.2, 1.8))
+                                sleep_next = max(180, min(base_interval, desired_interval))
+                            else:
+                                sleep_next = int(base_interval * 1.5)
+                        except Exception:
+                            sleep_next = ctx.settings.autonomous_worker_interval_seconds
                     await asyncio.sleep(sleep_next)
             else:
                 if ctx.settings.scraping_enabled:

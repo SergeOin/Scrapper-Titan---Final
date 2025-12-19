@@ -2930,3 +2930,555 @@ async def api_admin_purge_posts(request: Request, ctx=Depends(get_auth_context),
     except Exception:
         pass
     return {"ok": True, "removed_sqlite": removed_sqlite, "removed_mongo": removed_mongo}
+
+
+# ------------------------------------------------------------
+# Advanced Module Endpoints (Selectors, Keywords, Scheduler, etc.)
+# These endpoints expose status and control for the new scraper modules
+# ------------------------------------------------------------
+
+@router.get("/api/selector_health")
+async def api_selector_health(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get CSS selector health and statistics.
+    
+    Returns selector success rates, fallback usage, and recommendations.
+    """
+    try:
+        from scraper.selectors import get_selector_manager
+        manager = get_selector_manager()
+        return {
+            "ok": True,
+            "health": manager.get_health_report(),
+        }
+    except ImportError:
+        return {"ok": False, "error": "Module selectors non disponible"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.get("/api/keyword_stats")
+async def api_keyword_stats(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get keyword strategy statistics.
+    
+    Returns keyword performance, rotation status, and recommendations.
+    """
+    try:
+        from scraper.keyword_strategy import get_keyword_strategy
+        strategy = get_keyword_strategy()
+        return {
+            "ok": True,
+            "stats": strategy.get_stats(),
+        }
+    except ImportError:
+        return {"ok": False, "error": "Module keyword_strategy non disponible"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.get("/api/progressive_mode")
+async def api_progressive_mode(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get current progressive scraping mode status.
+    
+    Returns current mode (conservative/moderate/aggressive), limits, and history.
+    """
+    try:
+        from scraper.progressive_mode import get_mode_manager
+        manager = get_mode_manager()
+        return {
+            "ok": True,
+            "mode": manager.current_mode.value,
+            "limits": {
+                "posts_per_run": manager.get_limits().posts_per_run,
+                "keywords_per_run": manager.get_limits().keywords_per_run,
+                "min_interval_seconds": manager.get_limits().min_interval_seconds,
+            },
+            "status": manager.get_status(),
+        }
+    except ImportError:
+        return {"ok": False, "error": "Module progressive_mode non disponible"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.post("/api/progressive_mode/set")
+async def api_set_progressive_mode(
+    request: Request,
+    mode: str = Body(..., embed=True),
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Manually set the progressive scraping mode.
+    
+    Valid modes: conservative, moderate, aggressive
+    """
+    _require_desktop_trigger(request)
+    try:
+        from scraper.progressive_mode import get_mode_manager, ScrapingMode
+        manager = get_mode_manager()
+        
+        mode_map = {
+            "conservative": ScrapingMode.CONSERVATIVE,
+            "moderate": ScrapingMode.MODERATE,
+            "aggressive": ScrapingMode.AGGRESSIVE,
+        }
+        
+        if mode.lower() not in mode_map:
+            raise HTTPException(status_code=400, detail=f"Mode invalide: {mode}")
+        
+        manager.set_mode(mode_map[mode.lower()])
+        
+        return {
+            "ok": True,
+            "mode": manager.current_mode.value,
+            "limits": {
+                "posts_per_run": manager.get_limits().posts_per_run,
+                "keywords_per_run": manager.get_limits().keywords_per_run,
+            },
+        }
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Module progressive_mode non disponible")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/api/scheduler_status")
+async def api_scheduler_status(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get smart scheduler status.
+    
+    Returns next run time, current interval, time window info, and history.
+    """
+    try:
+        from scraper.smart_scheduler import get_scheduler
+        scheduler = get_scheduler()
+        return {
+            "ok": True,
+            "status": scheduler.get_status(),
+        }
+    except ImportError:
+        return {"ok": False, "error": "Module smart_scheduler non disponible"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.post("/api/scheduler/pause")
+async def api_pause_scheduler(
+    request: Request,
+    duration_seconds: int = Body(3600, embed=True),
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Pause the smart scheduler for a duration.
+    
+    Default: 1 hour (3600 seconds)
+    """
+    _require_desktop_trigger(request)
+    try:
+        from scraper.smart_scheduler import get_scheduler
+        scheduler = get_scheduler()
+        scheduler.pause(duration_seconds)
+        return {
+            "ok": True,
+            "paused_until": scheduler._paused_until.isoformat() if scheduler._paused_until else None,
+        }
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Module smart_scheduler non disponible")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/api/scheduler/resume")
+async def api_resume_scheduler(
+    request: Request,
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Resume the smart scheduler if paused."""
+    _require_desktop_trigger(request)
+    try:
+        from scraper.smart_scheduler import get_scheduler
+        scheduler = get_scheduler()
+        scheduler.resume()
+        return {"ok": True, "paused": False}
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Module smart_scheduler non disponible")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/api/cache_stats")
+async def api_cache_stats(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get post cache statistics.
+    
+    Returns cache size, hit rate, and recent activity.
+    """
+    try:
+        from scraper.post_cache import get_post_cache
+        cache = get_post_cache()
+        return {
+            "ok": True,
+            "stats": cache.get_stats(),
+        }
+    except ImportError:
+        return {"ok": False, "error": "Module post_cache non disponible"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.post("/api/cache/clear")
+async def api_clear_cache(
+    request: Request,
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Clear the post deduplication cache."""
+    _require_desktop_trigger(request)
+    try:
+        from scraper.post_cache import get_post_cache
+        cache = get_post_cache()
+        cache.clear()
+        return {"ok": True, "message": "Cache vidé"}
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Module post_cache non disponible")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/api/ml_status")
+async def api_ml_status(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get ML classification status.
+    
+    Returns active backend, available backends, and classification stats.
+    """
+    try:
+        from scraper.ml_interface import get_ml_interface
+        ml = get_ml_interface()
+        return {
+            "ok": True,
+            "status": ml.get_status(),
+        }
+    except ImportError:
+        return {"ok": False, "error": "Module ml_interface non disponible"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.post("/api/ml/switch_backend")
+async def api_switch_ml_backend(
+    request: Request,
+    backend: str = Body(..., embed=True),
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Switch ML classification backend.
+    
+    Valid backends: heuristic, sklearn, api
+    """
+    _require_desktop_trigger(request)
+    try:
+        from scraper.ml_interface import get_ml_interface
+        ml = get_ml_interface()
+        
+        success = ml.switch_backend(backend)
+        if not success:
+            raise HTTPException(status_code=400, detail=f"Backend '{backend}' non disponible")
+        
+        return {
+            "ok": True,
+            "active_backend": ml.get_status()["active_backend"],
+        }
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Module ml_interface non disponible")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/api/system_health")
+async def api_system_health(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get unified system health combining all modules.
+    
+    Returns aggregated health status from all scraper modules.
+    """
+    health_data: dict[str, Any] = {
+        "ok": True,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "modules": {},
+    }
+    
+    # Selector health
+    try:
+        from scraper.selectors import get_selector_manager
+        manager = get_selector_manager()
+        health_data["modules"]["selectors"] = {
+            "status": "ok",
+            "data": manager.get_health_report(),
+        }
+    except Exception as exc:
+        health_data["modules"]["selectors"] = {"status": "error", "error": str(exc)}
+    
+    # Keyword strategy
+    try:
+        from scraper.keyword_strategy import get_keyword_strategy
+        strategy = get_keyword_strategy()
+        stats = strategy.get_stats()
+        health_data["modules"]["keywords"] = {
+            "status": "ok",
+            "active_keywords": stats.get("active_keywords", 0),
+            "retired_keywords": stats.get("retired_keywords", 0),
+        }
+    except Exception as exc:
+        health_data["modules"]["keywords"] = {"status": "error", "error": str(exc)}
+    
+    # Progressive mode
+    try:
+        from scraper.progressive_mode import get_mode_manager
+        manager = get_mode_manager()
+        health_data["modules"]["progressive_mode"] = {
+            "status": "ok",
+            "mode": manager.current_mode.value,
+        }
+    except Exception as exc:
+        health_data["modules"]["progressive_mode"] = {"status": "error", "error": str(exc)}
+    
+    # Scheduler
+    try:
+        from scraper.smart_scheduler import get_scheduler
+        scheduler = get_scheduler()
+        status = scheduler.get_status()
+        health_data["modules"]["scheduler"] = {
+            "status": "ok",
+            "paused": status.get("paused", False),
+            "next_run_in_seconds": status.get("next_run_in_seconds"),
+        }
+    except Exception as exc:
+        health_data["modules"]["scheduler"] = {"status": "error", "error": str(exc)}
+    
+    # Cache
+    try:
+        from scraper.post_cache import get_post_cache
+        cache = get_post_cache()
+        stats = cache.get_stats()
+        health_data["modules"]["cache"] = {
+            "status": "ok",
+            "size": stats.get("memory_cache_size", 0),
+            "hit_rate": stats.get("hit_rate", 0),
+        }
+    except Exception as exc:
+        health_data["modules"]["cache"] = {"status": "error", "error": str(exc)}
+    
+    # ML
+    try:
+        from scraper.ml_interface import get_ml_interface
+        ml = get_ml_interface()
+        ml_status = ml.get_status()
+        health_data["modules"]["ml"] = {
+            "status": "ok",
+            "active_backend": ml_status.get("active_backend"),
+        }
+    except Exception as exc:
+        health_data["modules"]["ml"] = {"status": "error", "error": str(exc)}
+    
+    # Check if any module has errors
+    error_count = sum(1 for m in health_data["modules"].values() if m.get("status") == "error")
+    if error_count > 0:
+        health_data["ok"] = False
+        health_data["error_count"] = error_count
+    
+    return health_data
+
+
+# =============================================================================
+# FEATURE FLAGS MANAGEMENT
+# =============================================================================
+
+@router.get("/api/feature_flags")
+async def api_feature_flags(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get current feature flags status.
+    
+    Returns the state of all feature toggles for the new modular architecture.
+    """
+    try:
+        from scraper.adapters import get_feature_flags
+        
+        flags = get_feature_flags()
+        flags_dict = {
+            "use_keyword_strategy": flags.use_keyword_strategy,
+            "use_progressive_mode": flags.use_progressive_mode,
+            "use_smart_scheduler": flags.use_smart_scheduler,
+            "use_post_cache": flags.use_post_cache,
+            "use_selector_manager": flags.use_selector_manager,
+            "use_metadata_extractor": flags.use_metadata_extractor,
+            "use_unified_filter": flags.use_unified_filter,
+            "use_ml_interface": flags.use_ml_interface,
+        }
+        
+        # Count active flags
+        active_count = sum(1 for v in flags_dict.values() if v)
+        
+        # Determine current phase
+        if all(flags_dict.values()):
+            phase = "all"
+        elif flags.use_keyword_strategy and flags.use_progressive_mode:
+            phase = "phase2"
+        elif flags.use_post_cache and flags.use_smart_scheduler:
+            phase = "phase1"
+        elif active_count > 0:
+            phase = "custom"
+        else:
+            phase = "legacy"
+        
+        return {
+            "ok": True,
+            "flags": flags_dict,
+            "active_count": active_count,
+            "total_count": len(flags_dict),
+            "current_phase": phase,
+            "env_vars": {
+                "TITAN_ENABLE_ALL": "Enable all features",
+                "TITAN_ENABLE_PHASE2": "Enable Phase 2 (keywords + progressive + Phase 1)",
+                "TITAN_ENABLE_PHASE1": "Enable Phase 1 (cache + scheduler)",
+            },
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.post("/api/feature_flags/set")
+async def api_set_feature_flags(
+    request: Request,
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Update feature flags at runtime.
+    
+    Body: {"flag_name": true/false, ...}
+    Example: {"use_post_cache": true, "use_smart_scheduler": true}
+    """
+    try:
+        from scraper.adapters import set_feature_flags, get_feature_flags
+        
+        body = await request.json()
+        
+        # Validate flags
+        valid_flags = {
+            "use_keyword_strategy", "use_progressive_mode", "use_smart_scheduler",
+            "use_post_cache", "use_selector_manager", "use_metadata_extractor",
+            "use_unified_filter", "use_ml_interface",
+        }
+        
+        updates = {}
+        invalid = []
+        for key, value in body.items():
+            if key in valid_flags:
+                updates[key] = bool(value)
+            else:
+                invalid.append(key)
+        
+        if updates:
+            set_feature_flags(**updates)
+        
+        # Return updated state
+        flags = get_feature_flags()
+        
+        return {
+            "ok": True,
+            "updated": list(updates.keys()),
+            "invalid_flags": invalid if invalid else None,
+            "current_state": {
+                "use_keyword_strategy": flags.use_keyword_strategy,
+                "use_progressive_mode": flags.use_progressive_mode,
+                "use_smart_scheduler": flags.use_smart_scheduler,
+                "use_post_cache": flags.use_post_cache,
+                "use_selector_manager": flags.use_selector_manager,
+                "use_metadata_extractor": flags.use_metadata_extractor,
+                "use_unified_filter": flags.use_unified_filter,
+                "use_ml_interface": flags.use_ml_interface,
+            },
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/api/feature_flags/enable_phase1")
+async def api_enable_phase1(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Enable Phase 1 features: post_cache + smart_scheduler (low risk)."""
+    try:
+        from scraper.adapters import enable_phase1, get_feature_flags
+        
+        enable_phase1()
+        flags = get_feature_flags()
+        
+        return {
+            "ok": True,
+            "phase": "phase1",
+            "enabled": ["use_post_cache", "use_smart_scheduler"],
+            "message": "Phase 1 activée: cache de déduplication + scheduling intelligent",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/api/feature_flags/enable_phase2")
+async def api_enable_phase2(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Enable Phase 2 features: Phase 1 + keyword_strategy + progressive_mode."""
+    try:
+        from scraper.adapters import enable_phase2, get_feature_flags
+        
+        enable_phase2()
+        flags = get_feature_flags()
+        
+        return {
+            "ok": True,
+            "phase": "phase2",
+            "enabled": ["use_post_cache", "use_smart_scheduler", "use_keyword_strategy", "use_progressive_mode"],
+            "message": "Phase 2 activée: stratégie mots-clés + mode progressif + Phase 1",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/api/feature_flags/enable_all")
+async def api_enable_all_features(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Enable all new module features."""
+    try:
+        from scraper.adapters import enable_all_features, get_feature_flags
+        
+        enable_all_features()
+        flags = get_feature_flags()
+        
+        return {
+            "ok": True,
+            "phase": "all",
+            "message": "Tous les modules sont activés",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/api/feature_flags/disable_all")
+async def api_disable_all_features(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Disable all new module features (return to legacy mode)."""
+    try:
+        from scraper.adapters import set_feature_flags, get_feature_flags
+        
+        set_feature_flags(
+            use_keyword_strategy=False,
+            use_progressive_mode=False,
+            use_smart_scheduler=False,
+            use_post_cache=False,
+            use_selector_manager=False,
+            use_metadata_extractor=False,
+            use_unified_filter=False,
+            use_ml_interface=False,
+        )
+        
+        return {
+            "ok": True,
+            "phase": "legacy",
+            "message": "Tous les modules désactivés - mode legacy actif",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))

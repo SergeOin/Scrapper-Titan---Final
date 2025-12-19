@@ -59,6 +59,12 @@
   .floating-block:hover { background:#0284c7; }
   .floating-block .icon { display:inline-flex; align-items:center; justify-content:center; }
   .floating-block .icon svg { width:16px; height:16px; display:block; }
+  /* Feature Flags floating button */
+  .floating-flags { position:fixed; bottom:1.5rem; right:15.5rem; background:#7c3aed; color:#f5f3ff; padding:0.6rem 0.9rem; border-radius:999px; display:flex; align-items:center; gap:0.5rem; box-shadow:0 10px 25px rgba(124,58,237,0.35); text-decoration:none; font-size:0.9rem; cursor:pointer; border:none; }
+  .floating-flags:hover { background:#6d28d9; }
+  .floating-flags .icon { display:inline-flex; align-items:center; justify-content:center; }
+  .floating-flags .icon svg { width:16px; height:16px; display:block; }
+  .floating-flags .status { background:#a78bfa; color:#1e1b4b; padding:0 0.5rem; border-radius:999px; font-weight:600; font-size:0.75rem; }
   /* Drawer styles */
   .drawer-backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.45); opacity:0; pointer-events:none; transition:opacity .2s ease; z-index:1000; }
   .drawer { position:fixed; top:0; right:-520px; width:520px; max-width:92vw; height:100%; background:#0b1220; color:#e2e8f0; border-left:1px solid rgba(148,163,184,0.2); box-shadow: -12px 0 30px rgba(0,0,0,0.35); transition:right .22s ease; z-index:1001; display:flex; flex-direction:column; }
@@ -1338,6 +1344,192 @@
   <a id="floatingTrash" class="floating-trash" href="/corbeille" title="Ouvrir la corbeille">
     🗑️ <span class="count" id="trashCountBadge">{{ trash_count }}</span>
   </a>
+  <!-- Feature Flags button and drawer -->
+  <button id="floatingFlags" class="floating-flags" type="button" title="Gérer les Feature Flags" aria-label="Gérer les Feature Flags">
+    <span class="icon" aria-hidden="true">⚙️</span>
+    <span>Modules</span>
+    <span class="status" id="flagsStatusBadge">?</span>
+  </button>
+  <!-- Feature Flags drawer -->
+  <div id="flagsDrawerBackdrop" class="drawer-backdrop" aria-hidden="true"></div>
+  <div id="flagsDrawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="flagsDrawerTitle" aria-hidden="true">
+    <header>
+      <h2 id="flagsDrawerTitle" style="margin:0;font-size:1rem;font-weight:600;">⚙️ Modules & Feature Flags</h2>
+      <button type="button" id="flagsDrawerCloseBtn" class="close-btn" aria-label="Fermer">Fermer ✕</button>
+    </header>
+    <div class="content" style="padding:1rem;overflow-y:auto;">
+      <div id="flagsLoading" style="text-align:center;padding:2rem;color:#94a3b8;">
+        <span class="inline-spinner"></span> Chargement...
+      </div>
+      <div id="flagsContent" style="display:none;">
+        <!-- Phase buttons -->
+        <div style="margin-bottom:1.5rem;">
+          <h3 style="font-size:0.9rem;color:#94a3b8;margin:0 0 0.75rem;">Activation rapide</h3>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+            <button onclick="activatePhase('phase1')" class="phase-btn" id="btnPhase1" style="background:#166534;color:#fff;border:none;padding:0.5rem 1rem;border-radius:6px;cursor:pointer;">Phase 1</button>
+            <button onclick="activatePhase('phase2')" class="phase-btn" id="btnPhase2" style="background:#1e40af;color:#fff;border:none;padding:0.5rem 1rem;border-radius:6px;cursor:pointer;">Phase 2</button>
+            <button onclick="activatePhase('all')" class="phase-btn" id="btnAll" style="background:#7c3aed;color:#fff;border:none;padding:0.5rem 1rem;border-radius:6px;cursor:pointer;">Tout activer</button>
+            <button onclick="activatePhase('none')" class="phase-btn" id="btnNone" style="background:#dc2626;color:#fff;border:none;padding:0.5rem 1rem;border-radius:6px;cursor:pointer;">Désactiver</button>
+          </div>
+        </div>
+        <!-- Individual flags -->
+        <div id="flagsList" style="display:flex;flex-direction:column;gap:0.75rem;"></div>
+        <!-- Phase descriptions -->
+        <div style="margin-top:1.5rem;padding:1rem;background:#1e293b;border-radius:8px;">
+          <h4 style="margin:0 0 0.5rem;font-size:0.85rem;color:#94a3b8;">Phases de migration</h4>
+          <ul style="margin:0;padding-left:1.25rem;font-size:0.8rem;color:#64748b;">
+            <li><strong style="color:#22c55e;">Phase 1:</strong> Post cache, Smart scheduler</li>
+            <li><strong style="color:#3b82f6;">Phase 2:</strong> + Keyword strategy, Progressive mode</li>
+            <li><strong style="color:#a78bfa;">Tout:</strong> + Unified filter, ML interface</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+  (function(){
+    // Feature Flags drawer logic
+    const flagsBtn = document.getElementById('floatingFlags');
+    const flagsBackdrop = document.getElementById('flagsDrawerBackdrop');
+    const flagsDrawer = document.getElementById('flagsDrawer');
+    const flagsCloseBtn = document.getElementById('flagsDrawerCloseBtn');
+    const flagsLoading = document.getElementById('flagsLoading');
+    const flagsContent = document.getElementById('flagsContent');
+    const flagsList = document.getElementById('flagsList');
+    const flagsStatusBadge = document.getElementById('flagsStatusBadge');
+    
+    function openFlagsDrawer(){
+      flagsDrawer.classList.add('open');
+      flagsBackdrop.classList.add('open');
+      flagsDrawer.setAttribute('aria-hidden','false');
+      flagsBackdrop.setAttribute('aria-hidden','false');
+      loadFlags();
+    }
+    function closeFlagsDrawer(){
+      flagsDrawer.classList.remove('open');
+      flagsBackdrop.classList.remove('open');
+      flagsDrawer.setAttribute('aria-hidden','true');
+      flagsBackdrop.setAttribute('aria-hidden','true');
+    }
+    
+    flagsBtn.addEventListener('click', openFlagsDrawer);
+    flagsBackdrop.addEventListener('click', closeFlagsDrawer);
+    flagsCloseBtn.addEventListener('click', closeFlagsDrawer);
+    
+    async function loadFlags(){
+      flagsLoading.style.display = 'block';
+      flagsContent.style.display = 'none';
+      try {
+        const resp = await fetch('/api/feature_flags', { headers: desktopHeaders() });
+        const data = await resp.json();
+        if(data.ok && data.flags){
+          renderFlags(data.flags);
+          flagsContent.style.display = 'block';
+        } else {
+          flagsList.innerHTML = '<p style="color:#f87171;">Erreur de chargement</p>';
+          flagsContent.style.display = 'block';
+        }
+      } catch(e) {
+        flagsList.innerHTML = '<p style="color:#f87171;">Erreur: '+e.message+'</p>';
+        flagsContent.style.display = 'block';
+      }
+      flagsLoading.style.display = 'none';
+    }
+    
+    function renderFlags(flags){
+      const flagNames = {
+        post_cache: {name: 'Post Cache', desc: 'Cache persistant pour déduplication'},
+        smart_scheduler: {name: 'Smart Scheduler', desc: 'Planification adaptative des sessions'},
+        keyword_strategy: {name: 'Keyword Strategy', desc: 'Stratégie pondérée des mots-clés'},
+        progressive_mode: {name: 'Progressive Mode', desc: 'Mode progressif avec paliers'},
+        unified_filter: {name: 'Unified Filter', desc: 'Filtre juridique unifié'},
+        ml_interface: {name: 'ML Interface', desc: 'Interface ML prête pour intégration'}
+      };
+      let html = '';
+      let enabled = 0;
+      for(const [key, val] of Object.entries(flags)){
+        const info = flagNames[key] || {name: key, desc: ''};
+        const isOn = val === true;
+        if(isOn) enabled++;
+        html += `
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:0.75rem;background:#1e293b;border-radius:8px;">
+            <div>
+              <div style="font-weight:500;color:#e2e8f0;">${info.name}</div>
+              <div style="font-size:0.75rem;color:#64748b;">${info.desc}</div>
+            </div>
+            <label style="position:relative;display:inline-block;width:48px;height:26px;cursor:pointer;">
+              <input type="checkbox" data-flag="${key}" ${isOn?'checked':''} onchange="toggleFlag('${key}',this.checked)" style="opacity:0;width:0;height:0;">
+              <span style="position:absolute;inset:0;background:${isOn?'#22c55e':'#475569'};border-radius:26px;transition:.3s;"></span>
+              <span style="position:absolute;left:${isOn?'24px':'3px'};top:3px;width:20px;height:20px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 2px 4px rgba(0,0,0,.2);"></span>
+            </label>
+          </div>
+        `;
+      }
+      flagsList.innerHTML = html;
+      flagsStatusBadge.textContent = enabled + '/' + Object.keys(flags).length;
+    }
+    
+    window.toggleFlag = async function(key, value){
+      try {
+        const body = {};
+        body[key] = value;
+        const resp = await fetch('/api/feature_flags/set', {
+          method: 'POST',
+          headers: {...desktopHeaders(), 'Content-Type': 'application/json'},
+          body: JSON.stringify(body)
+        });
+        const data = await resp.json();
+        if(data.ok){
+          showToast((value?'✅ ':'❌ ') + key + (value?' activé':' désactivé'), value?'success':'info');
+          if(data.flags) renderFlags(data.flags);
+        } else {
+          showToast('Erreur: '+data.detail, 'error');
+          loadFlags();
+        }
+      } catch(e){
+        showToast('Erreur: '+e.message, 'error');
+        loadFlags();
+      }
+    };
+    
+    window.activatePhase = async function(phase){
+      let endpoint = '';
+      if(phase === 'phase1') endpoint = '/api/feature_flags/enable_phase1';
+      else if(phase === 'phase2') endpoint = '/api/feature_flags/enable_phase2';
+      else if(phase === 'all') endpoint = '/api/feature_flags/enable_all';
+      else if(phase === 'none') endpoint = '/api/feature_flags/disable_all';
+      else return;
+      try {
+        const resp = await fetch(endpoint, {
+          method: 'POST',
+          headers: desktopHeaders()
+        });
+        const data = await resp.json();
+        if(data.ok){
+          showToast('✅ ' + (phase==='none'?'Tous les modules désactivés':'Phase '+phase+' activée'), 'success');
+          if(data.flags) renderFlags(data.flags);
+        } else {
+          showToast('Erreur: '+data.detail, 'error');
+        }
+      } catch(e){
+        showToast('Erreur: '+e.message, 'error');
+      }
+    };
+    
+    // Load initial status on page load
+    fetch('/api/feature_flags', { headers: desktopHeaders() })
+      .then(r=>r.json())
+      .then(data=>{
+        if(data.ok && data.flags){
+          let enabled = Object.values(data.flags).filter(v=>v===true).length;
+          flagsStatusBadge.textContent = enabled + '/' + Object.keys(data.flags).length;
+        }
+      })
+      .catch(()=>{
+        flagsStatusBadge.textContent = '?';
+      });
+  })();
+  </script>
   <!-- Inline drawer for blocked accounts management -->
   <div id="drawerBackdrop" class="drawer-backdrop" aria-hidden="true"></div>
   <div id="blockedDrawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true">

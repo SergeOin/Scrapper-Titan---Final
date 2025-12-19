@@ -590,6 +590,147 @@ LEGAL_FILTER_AVG_SCORE = Gauge(
     "legal_filter_avg_score", "Average score of accepted posts", labelnames=("score_type",)
 )
 
+# ------------------------------------------------------------
+# New Module Metrics (adapters.py integration)
+# ------------------------------------------------------------
+# Post Cache metrics
+POST_CACHE_CHECKS = Counter(
+    "post_cache_checks_total", "Total deduplication checks performed"
+)
+POST_CACHE_HITS = Counter(
+    "post_cache_hits_total", "Cache hits (duplicates found)", labelnames=("layer",)
+)
+POST_CACHE_MISSES = Counter(
+    "post_cache_misses_total", "Cache misses (new posts)"
+)
+POST_CACHE_SIZE = Gauge(
+    "post_cache_size", "Current cache size", labelnames=("layer",)
+)
+
+# Smart Scheduler metrics
+SCHEDULER_INTERVAL = Gauge(
+    "scheduler_interval_seconds", "Current recommended scrape interval"
+)
+SCHEDULER_EVENTS = Counter(
+    "scheduler_events_total", "Scheduler events recorded", labelnames=("event_type",)
+)
+SCHEDULER_PAUSED = Gauge(
+    "scheduler_paused", "Whether scheduler is currently paused (1=paused, 0=active)"
+)
+
+# Keyword Strategy metrics
+KEYWORD_STRATEGY_BATCHES = Counter(
+    "keyword_strategy_batches_total", "Total keyword batches generated"
+)
+KEYWORD_STRATEGY_SCORES = Gauge(
+    "keyword_strategy_score", "Performance score per keyword", labelnames=("keyword",)
+)
+KEYWORD_STRATEGY_EXPLORE_RATIO = Gauge(
+    "keyword_strategy_explore_ratio", "Current exploration ratio (vs exploitation)"
+)
+
+# Progressive Mode metrics
+PROGRESSIVE_MODE_CURRENT = Gauge(
+    "progressive_mode_current", "Current scraping mode (1=conservative, 2=moderate, 3=aggressive)"
+)
+PROGRESSIVE_MODE_SESSIONS = Counter(
+    "progressive_mode_sessions_total", "Sessions by result", labelnames=("result",)
+)
+
+# Unified Filter metrics
+UNIFIED_FILTER_CLASSIFICATIONS = Counter(
+    "unified_filter_classifications_total", "Posts classified by unified filter", labelnames=("category",)
+)
+UNIFIED_FILTER_CONFIDENCE = Histogram(
+    "unified_filter_confidence", "Confidence distribution of classifications"
+)
+
+# ML Interface metrics
+ML_INTERFACE_PREDICTIONS = Counter(
+    "ml_interface_predictions_total", "ML predictions made", labelnames=("backend", "category",)
+)
+ML_INTERFACE_LATENCY = Histogram(
+    "ml_interface_latency_seconds", "ML prediction latency"
+)
+
+# Feature Flags status
+FEATURE_FLAGS_ENABLED = Gauge(
+    "feature_flags_enabled", "Which feature flags are enabled", labelnames=("flag",)
+)
+
+
+def update_feature_flags_metrics():
+    """Update Prometheus metrics for feature flags.
+    
+    Call this after changing feature flags to update the metrics.
+    """
+    try:
+        from .adapters import get_feature_flags
+        flags = get_feature_flags()
+        
+        flag_names = [
+            "use_keyword_strategy",
+            "use_progressive_mode", 
+            "use_smart_scheduler",
+            "use_post_cache",
+            "use_unified_filter",
+            "use_metadata_extractor",
+            "use_selector_manager",
+            "use_ml_interface",
+        ]
+        
+        for name in flag_names:
+            value = 1.0 if getattr(flags, name, False) else 0.0
+            FEATURE_FLAGS_ENABLED.labels(flag=name).set(value)
+    except Exception:
+        pass  # Ignore errors if adapters not available
+
+
+def update_scheduler_metrics():
+    """Update Prometheus metrics for smart scheduler.
+    
+    Call periodically to track scheduler status.
+    """
+    try:
+        from .adapters import get_feature_flags, get_next_interval
+        flags = get_feature_flags()
+        
+        if flags.use_smart_scheduler:
+            interval = get_next_interval(default_interval=300)
+            SCHEDULER_INTERVAL.set(interval)
+            
+            # Check pause status
+            from .smart_scheduler import get_smart_scheduler
+            scheduler = get_smart_scheduler()
+            status = scheduler.get_status()
+            SCHEDULER_PAUSED.set(1.0 if status.get("is_paused") else 0.0)
+    except Exception:
+        pass
+
+
+def update_progressive_mode_metrics():
+    """Update Prometheus metrics for progressive mode.
+    
+    Call periodically to track current mode.
+    """
+    try:
+        from .adapters import get_feature_flags
+        flags = get_feature_flags()
+        
+        if flags.use_progressive_mode:
+            from .progressive_mode import get_progressive_mode_manager, ScrapingMode
+            manager = get_progressive_mode_manager()
+            mode = manager.get_current_mode()
+            
+            mode_values = {
+                ScrapingMode.CONSERVATIVE: 1,
+                ScrapingMode.MODERATE: 2,
+                ScrapingMode.AGGRESSIVE: 3,
+            }
+            PROGRESSIVE_MODE_CURRENT.set(mode_values.get(mode, 0))
+    except Exception:
+        pass
+
 
 # ------------------------------------------------------------
 # Helper: Build FilterConfig from Settings
