@@ -5,10 +5,8 @@ can be unit tested independently.
 """
 from __future__ import annotations
 
-from typing import Iterable, Tuple
 import sqlite3
 import csv
-import json
 from pathlib import Path
 
 import structlog
@@ -83,58 +81,9 @@ def recompute_csv(csv_file: str, force: bool = False) -> int:
     return updated
 
 
-async def recompute_mongo(ctx: AppContext, force: bool = False, batch_size: int = 500) -> Tuple[int, int]:
-    """Recompute recruitment_score for Mongo documents.
-
-    Returns (scanned, updated).
-    """
-    if not ctx.mongo_client:
-        return 0, 0
-    coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-    q = {} if force else {"$or": [{"recruitment_score": {"$exists": False}}, {"recruitment_score": None}]}
-    scanned = 0
-    updated = 0
-    cursor = coll.find(q, {"_id": 1, "text": 1, "recruitment_score": 1})
-    batch: list[dict] = []
-    async for doc in cursor:
-        scanned += 1
-        batch.append(doc)
-        if len(batch) >= batch_size:
-            updated += await _update_mongo_batch(coll, batch, force)
-            batch.clear()
-    if batch:
-        updated += await _update_mongo_batch(coll, batch, force)
-    return scanned, updated
-
-
-async def _update_mongo_batch(coll, batch: Iterable[dict], force: bool) -> int:
-    ops = []
-    changed = 0
-    for d in batch:
-        if d.get("recruitment_score") is not None and not force:
-            continue
-        score = utils.compute_recruitment_signal(d.get("text") or "")
-        ops.append(
-            {
-                "update_one": {
-                    "filter": {"_id": d["_id"]},
-                    "update": {"$set": {"recruitment_score": score}},
-                }
-            }
-        )
-        changed += 1
-    if ops:
-        await coll.bulk_write(ops, ordered=False)
-    return changed
-
-
 async def recompute_all(force: bool = False) -> None:
+    """Recompute recruitment_score across SQLite and CSV backends."""
     ctx = await get_context()
-    updated_mongo = (0, 0)
-    try:
-        updated_mongo = await recompute_mongo(ctx, force=force)
-    except Exception as exc:  # pragma: no cover
-        logger.warning("mongo_recompute_failed", error=str(exc))
     try:
         up_sqlite = recompute_sqlite(ctx.settings.sqlite_path, force=force)
     except Exception as exc:  # pragma: no cover
@@ -147,8 +96,6 @@ async def recompute_all(force: bool = False) -> None:
         logger.warning("csv_recompute_failed", error=str(exc))
     logger.info(
         "recompute_done",
-        mongo_scanned=updated_mongo[0],
-        mongo_updated=updated_mongo[1],
         sqlite_updated=up_sqlite,
         csv_updated=up_csv,
         force=force,

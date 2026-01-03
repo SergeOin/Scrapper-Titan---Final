@@ -27,7 +27,6 @@ $null = New-Item -ItemType Directory -Force -Path (Join-Path $ud 'traces') | Out
 $Env:APP_HOST = '127.0.0.1'
 $Env:LOG_LEVEL = 'INFO'
 $Env:LOG_FILE = (Join-Path $ud 'logs\server.log')
-$Env:DISABLE_MONGO = '1'
 $Env:DISABLE_REDIS = '1'
 $Env:SQLITE_PATH = (Join-Path $ud 'fallback.sqlite3')
 $Env:STORAGE_STATE = (Join-Path $ud 'storage_state.json')

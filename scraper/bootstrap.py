@@ -3,14 +3,14 @@
 Central responsibilities:
 - Load and validate settings from environment (.env loaded externally or by Settings class)
 - Configure structured logging (structlog + rotating handlers)
-- Initialize asynchronous clients: Mongo (Motor) and Redis
+- Initialize optional Redis client for job queue
 - Provide a shared context object for the worker logic
 - Expose Prometheus metric instruments (counters, histograms)
 
 Design notes:
 - Avoid heavy imports at module import time (lazy when possible)
-- Ensure idempotent initialization (safe to call bootstrap() once in worker entry
-- Support fallback when Mongo or Redis are unavailable (handled later in worker/storage layer)
+- Ensure idempotent initialization (safe to call bootstrap() once in worker entry)
+- SQLite is the primary storage backend
 """
 from __future__ import annotations
 
@@ -28,13 +28,7 @@ import structlog
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Optional / future: we import lazily inside functions to avoid
-# forcing dependencies when only part of the system is used.
-try:
-    from motor.motor_asyncio import AsyncIOMotorClient  # type: ignore
-except Exception:  # pragma: no cover - if not installed or during type checking
-    AsyncIOMotorClient = Any  # type: ignore
-
+# Optional: Redis for job queue (not required for SQLite-only mode)
 try:
     import redis.asyncio as aioredis  # type: ignore
 except Exception:  # pragma: no cover
@@ -133,21 +127,13 @@ class Settings(BaseSettings):
     min_sleep_ms: int = Field(900, alias="MIN_SLEEP_MS")
     max_sleep_ms: int = Field(2500, alias="MAX_SLEEP_MS")
 
-    # Mongo
-    mongo_uri: str = Field("mongodb://localhost:27017", alias="MONGO_URI")
-    mongo_db: str = Field("linkedin_scrape", alias="MONGO_DB")
-    mongo_collection_posts: str = Field("posts", alias="MONGO_COLLECTION_POSTS")
-    mongo_collection_meta: str = Field("meta", alias="MONGO_COLLECTION_META")
-    mongo_connect_timeout_ms: int = Field(5000, alias="MONGO_CONNECT_TIMEOUT_MS")
-
-    # Redis
+    # Redis (optional - for distributed job queue)
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
     redis_queue_key: str = Field("jobs:scrape", alias="REDIS_QUEUE_KEY")
     job_visibility_timeout: int = Field(300, alias="JOB_VISIBILITY_TIMEOUT")
     job_poll_interval: int = Field(3, alias="JOB_POLL_INTERVAL")
 
-    # Optional: disable remote backends entirely (useful for pure-local SQLite mode)
-    disable_mongo: bool = Field(False, alias="DISABLE_MONGO")
+    # Optional: disable Redis entirely (SQLite-only mode)
     disable_redis: bool = Field(False, alias="DISABLE_REDIS")
 
     # Fallback storage - use absolute path in LOCALAPPDATA for packaged app
@@ -590,6 +576,147 @@ LEGAL_FILTER_AVG_SCORE = Gauge(
     "legal_filter_avg_score", "Average score of accepted posts", labelnames=("score_type",)
 )
 
+# ------------------------------------------------------------
+# New Module Metrics (adapters.py integration)
+# ------------------------------------------------------------
+# Post Cache metrics
+POST_CACHE_CHECKS = Counter(
+    "post_cache_checks_total", "Total deduplication checks performed"
+)
+POST_CACHE_HITS = Counter(
+    "post_cache_hits_total", "Cache hits (duplicates found)", labelnames=("layer",)
+)
+POST_CACHE_MISSES = Counter(
+    "post_cache_misses_total", "Cache misses (new posts)"
+)
+POST_CACHE_SIZE = Gauge(
+    "post_cache_size", "Current cache size", labelnames=("layer",)
+)
+
+# Smart Scheduler metrics
+SCHEDULER_INTERVAL = Gauge(
+    "scheduler_interval_seconds", "Current recommended scrape interval"
+)
+SCHEDULER_EVENTS = Counter(
+    "scheduler_events_total", "Scheduler events recorded", labelnames=("event_type",)
+)
+SCHEDULER_PAUSED = Gauge(
+    "scheduler_paused", "Whether scheduler is currently paused (1=paused, 0=active)"
+)
+
+# Keyword Strategy metrics
+KEYWORD_STRATEGY_BATCHES = Counter(
+    "keyword_strategy_batches_total", "Total keyword batches generated"
+)
+KEYWORD_STRATEGY_SCORES = Gauge(
+    "keyword_strategy_score", "Performance score per keyword", labelnames=("keyword",)
+)
+KEYWORD_STRATEGY_EXPLORE_RATIO = Gauge(
+    "keyword_strategy_explore_ratio", "Current exploration ratio (vs exploitation)"
+)
+
+# Progressive Mode metrics
+PROGRESSIVE_MODE_CURRENT = Gauge(
+    "progressive_mode_current", "Current scraping mode (1=conservative, 2=moderate, 3=aggressive)"
+)
+PROGRESSIVE_MODE_SESSIONS = Counter(
+    "progressive_mode_sessions_total", "Sessions by result", labelnames=("result",)
+)
+
+# Unified Filter metrics
+UNIFIED_FILTER_CLASSIFICATIONS = Counter(
+    "unified_filter_classifications_total", "Posts classified by unified filter", labelnames=("category",)
+)
+UNIFIED_FILTER_CONFIDENCE = Histogram(
+    "unified_filter_confidence", "Confidence distribution of classifications"
+)
+
+# ML Interface metrics
+ML_INTERFACE_PREDICTIONS = Counter(
+    "ml_interface_predictions_total", "ML predictions made", labelnames=("backend", "category",)
+)
+ML_INTERFACE_LATENCY = Histogram(
+    "ml_interface_latency_seconds", "ML prediction latency"
+)
+
+# Feature Flags status
+FEATURE_FLAGS_ENABLED = Gauge(
+    "feature_flags_enabled", "Which feature flags are enabled", labelnames=("flag",)
+)
+
+
+def update_feature_flags_metrics():
+    """Update Prometheus metrics for feature flags.
+    
+    Call this after changing feature flags to update the metrics.
+    """
+    try:
+        from .adapters import get_feature_flags
+        flags = get_feature_flags()
+        
+        flag_names = [
+            "use_keyword_strategy",
+            "use_progressive_mode", 
+            "use_smart_scheduler",
+            "use_post_cache",
+            "use_unified_filter",
+            "use_metadata_extractor",
+            "use_selector_manager",
+            "use_ml_interface",
+        ]
+        
+        for name in flag_names:
+            value = 1.0 if getattr(flags, name, False) else 0.0
+            FEATURE_FLAGS_ENABLED.labels(flag=name).set(value)
+    except Exception:
+        pass  # Ignore errors if adapters not available
+
+
+def update_scheduler_metrics():
+    """Update Prometheus metrics for smart scheduler.
+    
+    Call periodically to track scheduler status.
+    """
+    try:
+        from .adapters import get_feature_flags, get_next_interval
+        flags = get_feature_flags()
+        
+        if flags.use_smart_scheduler:
+            interval = get_next_interval(default_interval=300)
+            SCHEDULER_INTERVAL.set(interval)
+            
+            # Check pause status
+            from .smart_scheduler import get_smart_scheduler
+            scheduler = get_smart_scheduler()
+            status = scheduler.get_status()
+            SCHEDULER_PAUSED.set(1.0 if status.get("is_paused") else 0.0)
+    except Exception:
+        pass
+
+
+def update_progressive_mode_metrics():
+    """Update Prometheus metrics for progressive mode.
+    
+    Call periodically to track current mode.
+    """
+    try:
+        from .adapters import get_feature_flags
+        flags = get_feature_flags()
+        
+        if flags.use_progressive_mode:
+            from .progressive_mode import get_progressive_mode_manager, ScrapingMode
+            manager = get_progressive_mode_manager()
+            mode = manager.get_current_mode()
+            
+            mode_values = {
+                ScrapingMode.CONSERVATIVE: 1,
+                ScrapingMode.MODERATE: 2,
+                ScrapingMode.AGGRESSIVE: 3,
+            }
+            PROGRESSIVE_MODE_CURRENT.set(mode_values.get(mode, 0))
+    except Exception:
+        pass
+
 
 # ------------------------------------------------------------
 # Helper: Build FilterConfig from Settings
@@ -746,7 +873,6 @@ if TYPE_CHECKING:
 class AppContext:
     settings: Settings
     logger: structlog.BoundLogger
-    mongo_client: Optional[Any] = None
     redis: Optional[Any] = None
     token_bucket: Optional["TokenBucket"] = None
     # Risk counters (anti-ban heuristics)
@@ -776,11 +902,6 @@ class AppContext:
 if TYPE_CHECKING:  # pragma: no cover
     from .rate_limit import TokenBucket
 
-    def mongo_db(self):  # type: ignore[override]
-        if self.mongo_client:
-            return self.mongo_client[self.settings.mongo_db]
-        return None
-
 
 _context_singleton: Optional[AppContext] = None
 _context_lock = asyncio.Lock()
@@ -789,42 +910,6 @@ _context_lock = asyncio.Lock()
 # ------------------------------------------------------------
 # Initialization helpers
 # ------------------------------------------------------------
-async def init_mongo(settings: Settings, logger: structlog.BoundLogger) -> Optional[Any]:
-    """Initialize Mongo client or return None if connection fails.
-
-    We do a lightweight ping to validate connectivity. Fallback handled elsewhere.
-    """
-    if AsyncIOMotorClient is Any:  # missing dependency
-        logger.warning("mongo_dependency_missing")
-        return None
-
-    try:
-        client = AsyncIOMotorClient(
-            settings.mongo_uri,
-            serverSelectionTimeoutMS=settings.mongo_connect_timeout_ms,
-            tz_aware=True,
-        )
-        await client.admin.command("ping")
-        logger.info("mongo_connected", uri=settings.mongo_uri)
-        return client
-    except asyncio.CancelledError:
-        # Don't let CancelledError crash the app - just skip Mongo
-        logger.warning("mongo_connection_cancelled", hint="Connexion annulée, utilisation de SQLite")
-        return None
-    except Exception as exc:  # pragma: no cover - depends on environment
-        # If pointing to a local default instance (localhost:27017), treat as optional and avoid noisy error logs.
-        uri = settings.mongo_uri or ""
-        if (("localhost" in uri) or ("127.0.0.1" in uri)) and (":27017" in uri):
-            logger.warning(
-                "mongo_unavailable_local_fallback",
-                error=str(exc),
-                hint="Démarrez MongoDB ou définissez DISABLE_MONGO=1 pour rester sur SQLite",
-            )
-        else:
-            logger.error("mongo_connection_failed", error=str(exc))
-        return None
-
-
 async def init_redis(settings: Settings, logger: structlog.BoundLogger) -> Optional[Any]:
     """Initialize Redis client if library available else return None."""
     if aioredis is None:
@@ -934,13 +1019,7 @@ async def bootstrap(force: bool = False) -> AppContext:
                 logger.warning("directory_creation_failed", path=d, error=str(e))
 
         t0 = time.perf_counter()
-        # Respect opt-out flags for remote backends
-        if settings.disable_mongo:
-            logger.debug("mongo_disabled_by_env")
-            mongo_client = None
-        else:
-            mongo_client = await init_mongo(settings, logger)
-
+        # Optional Redis for job queue (SQLite is primary storage)
         if settings.disable_redis:
             logger.debug("redis_disabled_by_env")
             redis_client = None
@@ -956,7 +1035,6 @@ async def bootstrap(force: bool = False) -> AppContext:
         ctx = AppContext(
             settings=settings,
             logger=logger.bind(subsystem="core"),
-            mongo_client=mongo_client,
             redis=redis_client,
             token_bucket=token_bucket,
         )
@@ -983,7 +1061,6 @@ async def bootstrap(force: bool = False) -> AppContext:
         log_method = logger.debug if settings.quiet_startup else logger.info
         log_method(
             "bootstrap_complete",
-            mongo=bool(mongo_client),
             redis=bool(redis_client),
             elapsed=f"{elapsed:.3f}s",
             keywords=settings.keywords,
@@ -1006,6 +1083,6 @@ async def get_context() -> AppContext:
 if __name__ == "__main__":  # pragma: no cover
     async def _demo():
         ctx = await bootstrap(force=True)
-        print("Context ready. Mongo?", bool(ctx.mongo_client), "Redis?", bool(ctx.redis))
+        print("Context ready. Redis?", bool(ctx.redis))
 
     asyncio.run(_demo())

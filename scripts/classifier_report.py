@@ -1,12 +1,11 @@
 #!/usr/bin/env python
 """Generate classifier rejection ratio and intent distribution.
 
-Reads recent posts from Mongo (if available) or SQLite fallback and prints a summary
-suitable for adding to a GitHub Issue comment.
+Reads recent posts from SQLite and prints a summary suitable for adding to a GitHub Issue comment.
 
 Environment overrides:
   - REPORT_LIMIT (default 500)
-  - SQLITE_PATH (fallback path)
+  - SQLITE_PATH (database path)
 """
 from __future__ import annotations
 import os, json, sqlite3, statistics
@@ -59,23 +58,7 @@ def _summarize(docs: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def main():
-    # Attempt Mongo first (optional dependency)
-    docs: list[dict[str, Any]] = []
-    try:
-        from motor.motor_asyncio import AsyncIOMotorClient  # type: ignore
-        import asyncio
-        async def _mongo():
-            uri = os.environ.get('MONGO_URI', 'mongodb://localhost:27017')
-            dbname = os.environ.get('MONGO_DB', 'linkedin_scrape')
-            coll = os.environ.get('MONGO_COLLECTION_POSTS', 'posts')
-            client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=2000)
-            # quick ping
-            await client.admin.command('ping')
-            cursor = client[dbname][coll].find({}, {"intent":1,"relevance_score":1,"confidence":1,"keywords_matched":1,"language":1,"collected_at":1}).sort("collected_at", -1).limit(REPORT_LIMIT)
-            return [d async for d in cursor]
-        docs = asyncio.run(_mongo())  # type: ignore
-    except Exception:
-        docs = _fetch_from_sqlite(REPORT_LIMIT)
+    docs = _fetch_from_sqlite(REPORT_LIMIT)
     summary = _summarize(docs)
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),

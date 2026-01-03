@@ -10,7 +10,7 @@ async def test_metrics_registration():
     bootstrap.SCRAPE_STORAGE_ATTEMPTS.labels('sqlite', 'success').inc(0)
     bootstrap.SCRAPE_QUEUE_DEPTH.set(0)
     bootstrap.SCRAPE_JOB_FAILURES.inc(0)
-    bootstrap.SCRAPE_STEP_DURATION.labels(step='mongo_insert').observe(0.0)
+    bootstrap.SCRAPE_STEP_DURATION.labels(step='sqlite_insert').observe(0.0)
 
     collected = list(REGISTRY.collect())
     # Build mapping name -> metric family
@@ -23,9 +23,8 @@ async def test_metrics_registration():
 
 @pytest.mark.asyncio
 async def test_storage_attempts_counter_increments(monkeypatch):
-    # Force absence of mongo to trigger sqlite path and then success path
+    # Force use of sqlite storage path
     ctx = await bootstrap.bootstrap(force=True)
-    ctx.mongo_client = None
 
     from scraper.worker import store_posts, Post
     import datetime, json as _json

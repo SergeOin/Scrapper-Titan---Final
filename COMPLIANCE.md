@@ -21,7 +21,7 @@ Ce document récapitule les garde‑fous implémentés et les actions attendues 
 ## 4. Schéma & Données
 - Données stockées : texte du post, auteur, date, lien, indicateurs de classification (score, keywords, intent, location_ok).
 - Aucune donnée sensible non nécessaire (emails privés, IDs internes) n'est collectée.
-- Possibilité de suppression sélective : supprimer par `_id` dans Mongo / clé primaire SQLite.
+- Possibilité de suppression sélective : supprimer par clé primaire SQLite.
 
 ## 5. Journalisation & Audit
 - Logs structurés (JSON) incluant événements de classification / filtrage / quota.

@@ -6,6 +6,10 @@ event loop conflicts with uvicorn/asyncio/pywebview in the main process.
 Usage:
     Called via subprocess from worker.py when scraping needs to be isolated.
     Communicates via JSON over stdin/stdout.
+    
+Migration Note:
+    This module can use the new adapters for filtering via FeatureFlags.
+    Set use_unified_filter=True to use UnifiedFilter instead of EXCLUSION lists.
 """
 from __future__ import annotations
 
@@ -22,6 +26,37 @@ from typing import Any, Optional
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+# =============================================================================
+# ADAPTERS - Progressive migration to new modular architecture
+# =============================================================================
+try:
+    from scraper.adapters import (
+        get_feature_flags,
+        should_keep_post,
+        is_duplicate_post,
+        mark_post_seen,
+    )
+    _ADAPTERS_AVAILABLE = True
+except ImportError:
+    _ADAPTERS_AVAILABLE = False
+    
+    def get_feature_flags():
+        """Stub when adapters not available."""
+        class _StubFlags:
+            use_unified_filter = False
+            use_ml_interface = False
+            use_post_cache = False
+        return _StubFlags()
+    
+    def should_keep_post(text, author="", company="", legacy_exclusions=None):
+        return True, "no_filter", 0.5
+    
+    def is_duplicate_post(text="", url="", post_id="", author=""):
+        return False
+    
+    def mark_post_seen(text="", url="", post_id="", author=""):
+        pass
 
 # Global debug logging function
 _DEBUG_LOG_PATH = None
@@ -1391,6 +1426,8 @@ def filter_post_titan_partners(post: dict) -> tuple[bool, str]:
     Returns: (is_valid, rejection_reason)
     - is_valid=True: post should be kept
     - is_valid=False: post should be excluded, reason explains why
+    
+    [ADAPTER] If use_unified_filter is enabled, delegates to UnifiedFilter.
     """
     author = post.get("author", "")
     author_profile = post.get("author_profile")
@@ -1398,6 +1435,23 @@ def filter_post_titan_partners(post: dict) -> tuple[bool, str]:
     text = post.get("text", "")
     published_at = post.get("published_at")
     
+    # [ADAPTER] Use UnifiedFilter if enabled
+    flags = get_feature_flags()
+    if _ADAPTERS_AVAILABLE and (flags.use_unified_filter or flags.use_ml_interface):
+        keep, category, confidence = should_keep_post(
+            text=text, 
+            author=author, 
+            company=company or "",
+        )
+        _debug_log(f"[ADAPTER] UnifiedFilter: keep={keep}, category={category}, confidence={confidence:.2f}")
+        if not keep:
+            return False, f"UNIFIED_FILTER:{category}"
+        # Still check post age (not in unified filter)
+        if is_post_too_old(published_at):
+            return False, f"TOO_OLD: post older than {MAX_POST_AGE_DAYS} days"
+        return True, "OK"
+    
+    # Legacy filtering logic below
     # Rule 1: Check post age (max 3 weeks)
     if is_post_too_old(published_at):
         return False, f"TOO_OLD: post older than {MAX_POST_AGE_DAYS} days"
@@ -2246,12 +2300,31 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
                         if random.random() < 0.2:
                             await simulate_reading_pause(page)
                         
-                        # Check for duplicates first
-                        post_hash = get_post_hash(post)
-                        if post_hash in seen_posts:
-                            results["stats"]["rejected_duplicate"] += 1
-                            continue
-                        seen_posts.add(post_hash)
+                        # Check for duplicates - use persistent cache if enabled
+                        flags = get_feature_flags()
+                        post_text = post.get("text", "")
+                        post_author = post.get("author", "")
+                        post_url = post.get("permalink", "") or post.get("author_profile", "")
+                        post_id = post.get("id", "")
+                        
+                        if _ADAPTERS_AVAILABLE and flags.use_post_cache:
+                            # Use persistent cache for deduplication across sessions
+                            if is_duplicate_post(
+                                text=post_text, 
+                                url=post_url, 
+                                post_id=post_id, 
+                                author=post_author
+                            ):
+                                results["stats"]["rejected_duplicate"] += 1
+                                _debug_log(f"[ADAPTER] PostCache: duplicate detected")
+                                continue
+                        else:
+                            # Legacy in-memory deduplication
+                            post_hash = get_post_hash(post)
+                            if post_hash in seen_posts:
+                                results["stats"]["rejected_duplicate"] += 1
+                                continue
+                            seen_posts.add(post_hash)
                         
                         # FILTRE LANGUE: Rejeter les posts non-français
                         # Titan Partners recherche uniquement des publications en France
@@ -2264,6 +2337,14 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
                             if is_valid:
                                 results["posts"].append(post)
                                 results["stats"]["accepted"] += 1
+                                # [ADAPTER] Mark post as seen in persistent cache
+                                if _ADAPTERS_AVAILABLE and flags.use_post_cache:
+                                    mark_post_seen(
+                                        text=post_text,
+                                        url=post_url,
+                                        post_id=post_id,
+                                        author=post_author,
+                                    )
                             else:
                                 # Track rejection reason
                                 if "AGENCY" in reason:
@@ -2287,6 +2368,14 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
                         else:
                             results["posts"].append(post)
                             results["stats"]["accepted"] += 1
+                            # [ADAPTER] Mark post as seen in persistent cache even without filter
+                            if _ADAPTERS_AVAILABLE and flags.use_post_cache:
+                                mark_post_seen(
+                                    text=post_text,
+                                    url=post_url,
+                                    post_id=post_id,
+                                    author=post_author,
+                                )
                     
                     results["keywords_processed"] += 1
                     

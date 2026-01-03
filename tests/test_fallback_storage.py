@@ -11,14 +11,14 @@ import structlog
 
 @pytest.mark.asyncio
 async def test_store_posts_fallback_sqlite(tmp_path, monkeypatch):
-    # Force no mongo client
+    # Test SQLite storage
     settings = Settings()
     settings.sqlite_path = str(tmp_path / 'fallback.sqlite3')  # type: ignore[attr-defined]
     settings.csv_fallback_file = str(tmp_path / 'fb.csv')  # type: ignore[attr-defined]
 
     configure_logging(settings.log_level, settings)
     logger = structlog.get_logger().bind(test="fallback")
-    ctx = AppContext(settings=settings, logger=logger, mongo_client=None, redis=None)
+    ctx = AppContext(settings=settings, logger=logger, redis=None)
 
     posts = [
         Post(
@@ -57,7 +57,7 @@ async def test_store_posts_fallback_csv(tmp_path, monkeypatch):
 
     configure_logging(settings.log_level, settings)
     logger = structlog.get_logger().bind(test="fallback_csv")
-    ctx = AppContext(settings=settings, logger=logger, mongo_client=None, redis=None)
+    ctx = AppContext(settings=settings, logger=logger, redis=None)
 
     from scraper import worker as worker_mod
 

@@ -6,7 +6,7 @@ Usage:
 
 --force : overwrite existing non-null scores.
 
-The script will attempt Mongo (if configured), then SQLite fallback, then CSV fallback.
+The script will recompute scores in SQLite and CSV backends.
 Logs are structured via structlog.
 """
 from __future__ import annotations

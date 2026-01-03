@@ -62,8 +62,7 @@ Set-Env AUTONOMOUS_WORKER_INTERVAL_SECONDS $Interval
 Set-Env LOGIN_INITIAL_WAIT_SECONDS $LoginWait
 Set-Env LOG_LEVEL info
 
-# Prefer local SQLite fallback unless explicitly overridden
-if (-not $Env:DISABLE_MONGO) { Set-Env DISABLE_MONGO 1 }
+# Prefer local SQLite + no Redis unless explicitly overridden
 if (-not $Env:DISABLE_REDIS) { Set-Env DISABLE_REDIS 1 }
 
 # (Optionnel) tokens pour endpoints protégés si vous voulez les utiliser

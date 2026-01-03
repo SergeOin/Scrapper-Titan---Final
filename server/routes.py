@@ -159,8 +159,8 @@ templates.env.filters['fmt_date'] = _fmt_date
 templates.env.filters['remove_key_emoji'] = _remove_key_emoji
 
 # ------------------------------------------------------------
-# Store for blocked LinkedIn accounts (Mongo if available, else SQLite)
-# Document: { id/_id: str, name: str | None, url: str, blocked_at: ISO8601 }
+# Store for blocked LinkedIn accounts (SQLite)
+# Document: { id: str, name: str | None, url: str, blocked_at: ISO8601 }
 # ------------------------------------------------------------
 from uuid import uuid4
 
@@ -231,13 +231,6 @@ def _blocked_slug_from_url(url: str) -> str:
         return ""
 
 async def _blocked_count(ctx) -> int:
-    # Mongo path
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db]["blocked_accounts"]
-            return await coll.count_documents({})
-        except Exception:
-            return 0
     # SQLite path
     path = ctx.settings.sqlite_path
     if not path or not Path(path).exists():
@@ -253,20 +246,6 @@ async def _blocked_count(ctx) -> int:
 
 
 async def _blocked_list(ctx) -> list[dict[str, Any]]:
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db]["blocked_accounts"]
-            cursor = coll.find({}, {"_id": 1, "url": 1, "blocked_at": 1}).sort("blocked_at", -1)
-            items: list[dict[str, Any]] = []
-            async for doc in cursor:
-                items.append({
-                    "id": str(doc.get("_id")),
-                    "url": doc.get("url"),
-                    "blocked_at": doc.get("blocked_at"),
-                })
-            return items
-        except Exception:
-            return []
     # SQLite
     path = ctx.settings.sqlite_path
     if not path or not Path(path).exists():
@@ -285,20 +264,6 @@ async def _blocked_list(ctx) -> list[dict[str, Any]]:
 async def _blocked_add(ctx, url: str):
     now_iso = datetime.now(timezone.utc).isoformat()
     item_id = str(uuid4())
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db]["blocked_accounts"]
-            # Unique by url: check duplicate
-            exists = await coll.find_one({"url": url})
-            if exists:
-                raise HTTPException(status_code=409, detail="Ce compte est déjà bloqué")
-            doc = {"_id": item_id, "url": url, "blocked_at": now_iso}
-            await coll.insert_one(doc)
-            return {"id": item_id, "url": url, "blocked_at": now_iso}
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Erreur d'insertion: {exc}")
     # SQLite
     path = ctx.settings.sqlite_path
     if not path:
@@ -319,17 +284,6 @@ async def _blocked_add(ctx, url: str):
 
 
 async def _blocked_delete(ctx, item_id: str):
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db]["blocked_accounts"]
-            res = await coll.delete_one({"_id": item_id})
-            if not getattr(res, 'deleted_count', 0):
-                raise HTTPException(status_code=404, detail="Compte introuvable")
-            return
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Erreur suppression: {exc}")
     # SQLite
     path = ctx.settings.sqlite_path
     if not path or not Path(path).exists():
@@ -835,7 +789,7 @@ def _fetch_deleted_posts(ctx) -> list[dict[str, Any]]:
             for r in conn.execute(query):
                 rows.append(dict(r))
         except sqlite3.OperationalError as e:
-            # In environments that never created the 'posts' table (e.g., Mongo-only setups),
+            # In environments that never created the 'posts' table,
             # gracefully degrade to an empty trash view instead of raising 500.
             if "no such table: posts" in str(e).lower():
                 try:
@@ -956,45 +910,10 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
         
         # === RULE 4: Cannot determine with certainty ===
         return None
-    # Mongo path
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            # Toujours exclure contenu de démonstration
-            mf: dict[str, Any] = {"author": {"$ne": "demo_recruteur"}, "keyword": {"$ne": "demo_recruteur"}}
-            if q:
-                mf["$or"] = [
-                    {"text": {"$regex": q, "$options": "i"}},
-                    {"author": {"$regex": q, "$options": "i"}},
-                    {"company": {"$regex": q, "$options": "i"}},
-                    {"keyword": {"$regex": q, "$options": "i"}},
-                ]
-            if intent and intent in ("recherche_profil","autre"):
-                mf["intent"] = intent
-            # Exclude raw + legacy score fields
-            projection = {"score": 0, "recruitment_score": 0}
-            if not include_raw:
-                projection["raw"] = 0
-            cursor = coll.find(mf, projection).sort(sort_field, sort_direction).skip(skip).limit(limit)
-            rows = []
-            async for doc in cursor:
-                try:
-                    author = str(doc.get("author") or "")
-                    comp = doc.get("company")
-                    prof = doc.get("author_profile")
-                    txt = doc.get("text")
-                    derived = _derive_company(author, comp, prof, txt)
-                    if derived and (not comp or str(comp).strip().lower() == author.strip().lower()):
-                        doc["company"] = derived
-                except Exception:
-                    pass
-                rows.append(doc)
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.error("posts_query_failed", error=str(exc))
-            rows = []
-    # SQLite fallback (if no mongo rows and/or mongo unavailable)
+    # SQLite storage
+    rows = []
     try:
-        if (not rows) and ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
+        if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
             conn = sqlite3.connect(ctx.settings.sqlite_path)
             conn.row_factory = sqlite3.Row
             with conn:
@@ -1150,7 +1069,7 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
     except Exception as exc:  # pragma: no cover
         ctx.logger.warning("sqlite_fallback_query_failed", error=str(exc))
 
-    # Apply flag annotations for mongo path or legacy rows
+    # Apply flag annotations for rows
     try:
         if rows and ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
             conn = sqlite3.connect(ctx.settings.sqlite_path)
@@ -1346,22 +1265,7 @@ async def fetch_posts(ctx, skip: int, limit: int, q: Optional[str] = None, sort_
 
 async def count_posts(ctx, q: Optional[str] = None) -> int:
     q = _sanitize_query(q)
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            mf: dict[str, Any] = {"author": {"$ne": "demo_recruteur"}, "keyword": {"$ne": "demo_recruteur"}}
-            if q:
-                mf["$or"] = [
-                    {"text": {"$regex": q, "$options": "i"}},
-                    {"author": {"$regex": q, "$options": "i"}},
-                    {"company": {"$regex": q, "$options": "i"}},
-                    {"keyword": {"$regex": q, "$options": "i"}},
-                ]
-            return await coll.count_documents(mf)
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.error("posts_count_failed", error=str(exc))
-            return 0
-    # SQLite fallback
+    # SQLite storage
     try:
         if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
             conn = sqlite3.connect(ctx.settings.sqlite_path)
@@ -1405,46 +1309,32 @@ async def fetch_meta(ctx) -> dict[str, Any]:
         "pending_jobs": None,
         "keywords": ", ".join(ctx.settings.keywords),
     }
-    # Mongo authoritative if present
-    if ctx.mongo_client:
-        try:
-            mcoll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_meta]
-            doc = await mcoll.find_one({"_id": "global"})
-            if doc:
-                meta.update({
-                    "last_run": doc.get("last_run"),
-                    "posts_count": doc.get("posts_count", 0),
-                    "scraping_enabled": doc.get("scraping_enabled", meta["scraping_enabled"]),
-                })
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.error("meta_query_failed", error=str(exc))
-    else:
-        # SQLite meta: prefer explicit meta table when present, then approximate posts_count from posts
-        # NOTE: scraping_enabled is NOT read from SQLite - always use ctx.settings.scraping_enabled
-        # to avoid stale state from previous sessions overriding the default True value
-        try:
-            if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
-                conn = sqlite3.connect(ctx.settings.sqlite_path)
-                with conn:
-                    # Try meta table first (created by worker.update_meta)
-                    try:
-                        row = conn.execute("SELECT last_run, COALESCE(posts_count,0) FROM meta WHERE id = 'global'").fetchone()
-                        if row:
-                            meta["last_run"] = row[0]
-                            meta["posts_count"] = int(row[1] or 0)
-                            # meta["scraping_enabled"] stays as ctx.settings.scraping_enabled (default True)
-                    except Exception:
-                        pass
-                    # Fallback: compute posts_count from posts if meta table not present
-                    _ensure_post_flags(conn)
-                    c = conn.execute(
-                        "SELECT COUNT(*) FROM posts p LEFT JOIN post_flags f ON f.post_id = p.id "
-                        "WHERE LOWER(p.author) <> 'demo_recruteur' AND LOWER(p.keyword) <> 'demo_recruteur' AND COALESCE(f.is_deleted,0) = 0"
-                    ).fetchone()
-                    if c and (not meta.get("posts_count")):
-                        meta["posts_count"] = int(c[0] or 0)
-        except Exception:  # pragma: no cover
-            pass
+    # SQLite meta: prefer explicit meta table when present, then approximate posts_count from posts
+    # NOTE: scraping_enabled is NOT read from SQLite - always use ctx.settings.scraping_enabled
+    # to avoid stale state from previous sessions overriding the default True value
+    try:
+        if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
+            conn = sqlite3.connect(ctx.settings.sqlite_path)
+            with conn:
+                # Try meta table first (created by worker.update_meta)
+                try:
+                    row = conn.execute("SELECT last_run, COALESCE(posts_count,0) FROM meta WHERE id = 'global'").fetchone()
+                    if row:
+                        meta["last_run"] = row[0]
+                        meta["posts_count"] = int(row[1] or 0)
+                        # meta["scraping_enabled"] stays as ctx.settings.scraping_enabled (default True)
+                except Exception:
+                    pass
+                # Fallback: compute posts_count from posts if meta table not present
+                _ensure_post_flags(conn)
+                c = conn.execute(
+                    "SELECT COUNT(*) FROM posts p LEFT JOIN post_flags f ON f.post_id = p.id "
+                    "WHERE LOWER(p.author) <> 'demo_recruteur' AND LOWER(p.keyword) <> 'demo_recruteur' AND COALESCE(f.is_deleted,0) = 0"
+                ).fetchone()
+                if c and (not meta.get("posts_count")):
+                    meta["posts_count"] = int(c[0] or 0)
+    except Exception:  # pragma: no cover
+        pass
     if ctx.redis:
         try:
             meta["pending_jobs"] = await ctx.redis.llen(ctx.settings.redis_queue_key)
@@ -1817,14 +1707,6 @@ async def api_purge_post(
 ):
     """Purge définitivement un post (suppression de la base et des flags)."""
     removed = 0
-    # Mongo
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            res = await coll.delete_one({"_id": post_id})
-            removed += int(getattr(res, 'deleted_count', 0) or 0)
-        except Exception:
-            pass
     # SQLite
     path = ctx.settings.sqlite_path
     if path and Path(path).exists():
@@ -1850,9 +1732,6 @@ async def api_trash_empty(
 ):
     """Supprime définitivement tous les posts marqués supprimés (corbeille)."""
     removed_sqlite = 0
-    removed_mongo = 0
-    # Mongo: best-effort remove documents that have a corresponding deleted flag in SQLite (if any)
-    # If only Mongo is used, no flags table exists; skip to avoid heavy full scans.
     path = ctx.settings.sqlite_path
     deleted_ids: list[str] = []
     if path and Path(path).exists():
@@ -1879,14 +1758,9 @@ async def api_trash_empty(
                         pass
         except Exception:
             pass
-    if deleted_ids and ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            mres = await coll.delete_many({"_id": {"$in": deleted_ids}})
-            removed_mongo = int(getattr(mres, 'deleted_count', 0) or 0)
-        except Exception:
-            pass
-    return {"ok": True, "removed_sqlite": removed_sqlite, "removed_mongo": removed_mongo, "trash_count": _count_deleted(ctx)}
+    if deleted_ids:
+        pass  # All deletion already handled in SQLite above
+    return {"ok": True, "removed_sqlite": removed_sqlite, "trash_count": _count_deleted(ctx)}
 
 
 @router.get("/api/trash/count")
@@ -1919,19 +1793,8 @@ async def health(ctx=Depends(get_auth_context)):
     # Base status
     data: dict[str, Any] = {
         "status": "ok",
-        "mongo_connected": bool(ctx.mongo_client),
         "redis_connected": bool(ctx.redis),
     }
-    # Mongo ping time + meta
-    if ctx.mongo_client:
-        import time as _time
-        try:
-            t0 = _time.perf_counter()
-            await ctx.mongo_client.admin.command("ping")
-            data["mongo_ping_ms"] = round((_time.perf_counter() - t0) * 1000, 2)
-        except Exception as exc:  # pragma: no cover
-            data["mongo_ping_ms"] = None
-            data["mongo_error"] = str(exc)
     # Meta info (reuse existing helper)
     try:
         meta = await fetch_meta(ctx)
@@ -2017,17 +1880,6 @@ async def health(ctx=Depends(get_auth_context)):
         data["pacing_mode"] = pacing
     except Exception:
         pass
-    # Augmented meta stats: last job unknown author metrics if present
-    if ctx.mongo_client:
-        try:
-            mcoll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_meta]
-            doc = await mcoll.find_one({"_id": "global"}, {"last_job_unknown_authors":1,"last_job_posts":1,"last_job_unknown_ratio":1})
-            if doc:
-                data["last_job_unknown_authors"] = doc.get("last_job_unknown_authors")
-                data["last_job_posts"] = doc.get("last_job_posts")
-                data["last_job_unknown_ratio"] = doc.get("last_job_unknown_ratio")
-        except Exception:
-            pass
     return data
 
 
@@ -2585,7 +2437,7 @@ async def logout_redirect(request: Request, ctx=Depends(get_auth_context), _auth
 
 @router.post("/toggle")
 async def toggle_scraping(request: Request, ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
-    """Inverse l'état `scraping_enabled` en mémoire et persiste dans Mongo si disponible.
+    """Inverse l'état `scraping_enabled` en mémoire.
 
     Retourne le nouvel état. Note: Ce réglage n'est pas encore persisté dans un fichier de config;
     il sera réinitialisé au redémarrage sur la valeur d'origine des settings d'environnement.
@@ -2594,13 +2446,6 @@ async def toggle_scraping(request: Request, ctx=Depends(get_auth_context), _auth
     # Flip in-memory flag
     new_state = not ctx.settings.scraping_enabled
     ctx.settings.scraping_enabled = new_state  # type: ignore[attr-defined]
-    # Persist in meta doc si Mongo
-    if ctx.mongo_client:
-        try:
-            mcoll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_meta]
-            await mcoll.update_one({"_id": "global"}, {"$set": {"scraping_enabled": new_state}}, upsert=True)
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.warning("toggle_persist_failed", error=str(exc))
     # File persistence
     try:
         _save_runtime_state({"scraping_enabled": new_state})
@@ -2664,36 +2509,20 @@ async def debug_last_batch(limit: int = 5, ctx=Depends(get_auth_context), _auth=
     """Return the most recent posts (author/company debug) limited to 'limit'.
 
     Fields: author, company, keyword, collected_at, published_at, permalink.
-    Uses Mongo if available, else SQLite fallback. Does not expose raw text to keep payload small.
+    Uses SQLite storage. Does not expose raw text to keep payload small.
     """
     limit = max(1, min(50, limit))
     items: list[dict[str, Any]] = []
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            cursor = coll.find({}, {"author":1, "company":1, "keyword":1, "collected_at":1, "published_at":1, "permalink":1}).sort("collected_at", -1).limit(limit)
-            async for doc in cursor:
-                items.append({
-                    "author": doc.get("author"),
-                    "company": doc.get("company"),
-                    "keyword": doc.get("keyword"),
-                    "collected_at": doc.get("collected_at"),
-                    "published_at": doc.get("published_at"),
-                    "permalink": doc.get("permalink"),
-                })
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.error("debug_last_batch_mongo_failed", error=str(exc))
-    if not items:
-        # SQLite fallback
-        try:
-            if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
-                conn = sqlite3.connect(ctx.settings.sqlite_path)
-                conn.row_factory = sqlite3.Row
-                with conn:
-                    for r in conn.execute("SELECT author, company, keyword, collected_at, published_at, permalink FROM posts ORDER BY collected_at DESC LIMIT ?", (limit,)):
-                        items.append(dict(r))
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.warning("debug_last_batch_sqlite_failed", error=str(exc))
+    # SQLite storage
+    try:
+        if ctx.settings.sqlite_path and Path(ctx.settings.sqlite_path).exists():
+            conn = sqlite3.connect(ctx.settings.sqlite_path)
+            conn.row_factory = sqlite3.Row
+            with conn:
+                for r in conn.execute("SELECT author, company, keyword, collected_at, published_at, permalink FROM posts ORDER BY collected_at DESC LIMIT ?", (limit,)):
+                    items.append(dict(r))
+    except Exception as exc:  # pragma: no cover
+        ctx.logger.warning("debug_last_batch_sqlite_failed", error=str(exc))
     return {"count": len(items), "items": items}
 
 
@@ -2734,7 +2563,6 @@ async def api_stats(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
         "autonomous_interval": ctx.settings.autonomous_worker_interval_seconds,
         "scraping_enabled": ctx.settings.scraping_enabled,
         "keywords_count": len(ctx.settings.keywords),
-        "mongo_connected": bool(ctx.mongo_client),
         "redis_connected": bool(ctx.redis),
     }
     # Meta (posts count, last_run)
@@ -2866,7 +2694,7 @@ async def count_blocked_accounts(ctx=Depends(get_auth_context), _auth=Depends(re
 
 
 # ------------------------------------------------------------
-# Admin: purge all posts (Mongo + SQLite + CSV fallback)
+# Admin: purge all posts (SQLite + CSV fallback)
 # ------------------------------------------------------------
 @router.post("/api/admin/purge_posts")
 async def api_admin_purge_posts(request: Request, ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
@@ -2877,18 +2705,6 @@ async def api_admin_purge_posts(request: Request, ctx=Depends(get_auth_context),
     """
     _require_desktop_trigger(request)
     removed_sqlite = 0
-    removed_mongo = 0
-    # Mongo purge
-    if ctx.mongo_client:
-        try:
-            coll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_posts]
-            res = await coll.delete_many({})
-            removed_mongo = getattr(res, 'deleted_count', 0) or 0
-            # Reset meta doc counters
-            mcoll = ctx.mongo_client[ctx.settings.mongo_db][ctx.settings.mongo_collection_meta]
-            await mcoll.update_one({"_id": "global"}, {"$set": {"posts_count": 0, "last_run": None}}, upsert=True)
-        except Exception as exc:  # pragma: no cover
-            ctx.logger.error("api_purge_mongo_failed", error=str(exc))
     # SQLite purge
     import sqlite3 as _sqlite
     from pathlib import Path as _P
@@ -2924,9 +2740,561 @@ async def api_admin_purge_posts(request: Request, ctx=Depends(get_auth_context),
         ctx.daily_post_count = 0  # type: ignore[attr-defined]
     except Exception:
         pass
-    # Broadcast a lightweight event so UI can react (reuse toggle type or define new?)
+    # Broadcast a lightweight event so UI can react
     try:
-        await broadcast({"type": "purge", "removed_sqlite": removed_sqlite, "removed_mongo": removed_mongo})
+        await broadcast({"type": "purge", "removed_sqlite": removed_sqlite})
     except Exception:
         pass
-    return {"ok": True, "removed_sqlite": removed_sqlite, "removed_mongo": removed_mongo}
+    return {"ok": True, "removed_sqlite": removed_sqlite}
+
+
+# ------------------------------------------------------------
+# Advanced Module Endpoints (Selectors, Keywords, Scheduler, etc.)
+# These endpoints expose status and control for the new scraper modules
+# ------------------------------------------------------------
+
+@router.get("/api/selector_health")
+async def api_selector_health(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get CSS selector health and statistics.
+    
+    Returns selector success rates, fallback usage, and recommendations.
+    """
+    try:
+        from scraper.selectors import get_selector_manager
+        manager = get_selector_manager()
+        return {
+            "ok": True,
+            "health": manager.get_health_report(),
+        }
+    except ImportError:
+        return {"ok": False, "error": "Module selectors non disponible"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.get("/api/keyword_stats")
+async def api_keyword_stats(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get keyword strategy statistics.
+    
+    Returns keyword performance, rotation status, and recommendations.
+    """
+    try:
+        from scraper.keyword_strategy import get_keyword_strategy
+        strategy = get_keyword_strategy()
+        return {
+            "ok": True,
+            "stats": strategy.get_stats(),
+        }
+    except ImportError:
+        return {"ok": False, "error": "Module keyword_strategy non disponible"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.get("/api/progressive_mode")
+async def api_progressive_mode(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get current progressive scraping mode status.
+    
+    Returns current mode (conservative/moderate/aggressive), limits, and history.
+    """
+    try:
+        from scraper.progressive_mode import get_mode_manager
+        manager = get_mode_manager()
+        return {
+            "ok": True,
+            "mode": manager.current_mode.value,
+            "limits": {
+                "posts_per_run": manager.get_limits().posts_per_run,
+                "keywords_per_run": manager.get_limits().keywords_per_run,
+                "min_interval_seconds": manager.get_limits().min_interval_seconds,
+            },
+            "status": manager.get_status(),
+        }
+    except ImportError:
+        return {"ok": False, "error": "Module progressive_mode non disponible"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.post("/api/progressive_mode/set")
+async def api_set_progressive_mode(
+    request: Request,
+    mode: str = Body(..., embed=True),
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Manually set the progressive scraping mode.
+    
+    Valid modes: conservative, moderate, aggressive
+    """
+    _require_desktop_trigger(request)
+    try:
+        from scraper.progressive_mode import get_mode_manager, ScrapingMode
+        manager = get_mode_manager()
+        
+        mode_map = {
+            "conservative": ScrapingMode.CONSERVATIVE,
+            "moderate": ScrapingMode.MODERATE,
+            "aggressive": ScrapingMode.AGGRESSIVE,
+        }
+        
+        if mode.lower() not in mode_map:
+            raise HTTPException(status_code=400, detail=f"Mode invalide: {mode}")
+        
+        manager.set_mode(mode_map[mode.lower()])
+        
+        return {
+            "ok": True,
+            "mode": manager.current_mode.value,
+            "limits": {
+                "posts_per_run": manager.get_limits().posts_per_run,
+                "keywords_per_run": manager.get_limits().keywords_per_run,
+            },
+        }
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Module progressive_mode non disponible")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/api/scheduler_status")
+async def api_scheduler_status(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get smart scheduler status.
+    
+    Returns next run time, current interval, time window info, and history.
+    """
+    try:
+        from scraper.smart_scheduler import get_scheduler
+        scheduler = get_scheduler()
+        return {
+            "ok": True,
+            "status": scheduler.get_status(),
+        }
+    except ImportError:
+        return {"ok": False, "error": "Module smart_scheduler non disponible"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.post("/api/scheduler/pause")
+async def api_pause_scheduler(
+    request: Request,
+    duration_seconds: int = Body(3600, embed=True),
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Pause the smart scheduler for a duration.
+    
+    Default: 1 hour (3600 seconds)
+    """
+    _require_desktop_trigger(request)
+    try:
+        from scraper.smart_scheduler import get_scheduler
+        scheduler = get_scheduler()
+        scheduler.pause(duration_seconds)
+        return {
+            "ok": True,
+            "paused_until": scheduler._paused_until.isoformat() if scheduler._paused_until else None,
+        }
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Module smart_scheduler non disponible")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/api/scheduler/resume")
+async def api_resume_scheduler(
+    request: Request,
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Resume the smart scheduler if paused."""
+    _require_desktop_trigger(request)
+    try:
+        from scraper.smart_scheduler import get_scheduler
+        scheduler = get_scheduler()
+        scheduler.resume()
+        return {"ok": True, "paused": False}
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Module smart_scheduler non disponible")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/api/cache_stats")
+async def api_cache_stats(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get post cache statistics.
+    
+    Returns cache size, hit rate, and recent activity.
+    """
+    try:
+        from scraper.post_cache import get_post_cache
+        cache = get_post_cache()
+        return {
+            "ok": True,
+            "stats": cache.get_stats(),
+        }
+    except ImportError:
+        return {"ok": False, "error": "Module post_cache non disponible"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.post("/api/cache/clear")
+async def api_clear_cache(
+    request: Request,
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Clear the post deduplication cache."""
+    _require_desktop_trigger(request)
+    try:
+        from scraper.post_cache import get_post_cache
+        cache = get_post_cache()
+        cache.clear()
+        return {"ok": True, "message": "Cache vidé"}
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Module post_cache non disponible")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/api/ml_status")
+async def api_ml_status(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get ML classification status.
+    
+    Returns active backend, available backends, and classification stats.
+    """
+    try:
+        from scraper.ml_interface import get_ml_interface
+        ml = get_ml_interface()
+        return {
+            "ok": True,
+            "status": ml.get_status(),
+        }
+    except ImportError:
+        return {"ok": False, "error": "Module ml_interface non disponible"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.post("/api/ml/switch_backend")
+async def api_switch_ml_backend(
+    request: Request,
+    backend: str = Body(..., embed=True),
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Switch ML classification backend.
+    
+    Valid backends: heuristic, sklearn, api
+    """
+    _require_desktop_trigger(request)
+    try:
+        from scraper.ml_interface import get_ml_interface
+        ml = get_ml_interface()
+        
+        success = ml.switch_backend(backend)
+        if not success:
+            raise HTTPException(status_code=400, detail=f"Backend '{backend}' non disponible")
+        
+        return {
+            "ok": True,
+            "active_backend": ml.get_status()["active_backend"],
+        }
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Module ml_interface non disponible")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/api/system_health")
+async def api_system_health(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get unified system health combining all modules.
+    
+    Returns aggregated health status from all scraper modules.
+    """
+    health_data: dict[str, Any] = {
+        "ok": True,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "modules": {},
+    }
+    
+    # Selector health
+    try:
+        from scraper.selectors import get_selector_manager
+        manager = get_selector_manager()
+        health_data["modules"]["selectors"] = {
+            "status": "ok",
+            "data": manager.get_health_report(),
+        }
+    except Exception as exc:
+        health_data["modules"]["selectors"] = {"status": "error", "error": str(exc)}
+    
+    # Keyword strategy
+    try:
+        from scraper.keyword_strategy import get_keyword_strategy
+        strategy = get_keyword_strategy()
+        stats = strategy.get_stats()
+        health_data["modules"]["keywords"] = {
+            "status": "ok",
+            "active_keywords": stats.get("active_keywords", 0),
+            "retired_keywords": stats.get("retired_keywords", 0),
+        }
+    except Exception as exc:
+        health_data["modules"]["keywords"] = {"status": "error", "error": str(exc)}
+    
+    # Progressive mode
+    try:
+        from scraper.progressive_mode import get_mode_manager
+        manager = get_mode_manager()
+        health_data["modules"]["progressive_mode"] = {
+            "status": "ok",
+            "mode": manager.current_mode.value,
+        }
+    except Exception as exc:
+        health_data["modules"]["progressive_mode"] = {"status": "error", "error": str(exc)}
+    
+    # Scheduler
+    try:
+        from scraper.smart_scheduler import get_scheduler
+        scheduler = get_scheduler()
+        status = scheduler.get_status()
+        health_data["modules"]["scheduler"] = {
+            "status": "ok",
+            "paused": status.get("paused", False),
+            "next_run_in_seconds": status.get("next_run_in_seconds"),
+        }
+    except Exception as exc:
+        health_data["modules"]["scheduler"] = {"status": "error", "error": str(exc)}
+    
+    # Cache
+    try:
+        from scraper.post_cache import get_post_cache
+        cache = get_post_cache()
+        stats = cache.get_stats()
+        health_data["modules"]["cache"] = {
+            "status": "ok",
+            "size": stats.get("memory_cache_size", 0),
+            "hit_rate": stats.get("hit_rate", 0),
+        }
+    except Exception as exc:
+        health_data["modules"]["cache"] = {"status": "error", "error": str(exc)}
+    
+    # ML
+    try:
+        from scraper.ml_interface import get_ml_interface
+        ml = get_ml_interface()
+        ml_status = ml.get_status()
+        health_data["modules"]["ml"] = {
+            "status": "ok",
+            "active_backend": ml_status.get("active_backend"),
+        }
+    except Exception as exc:
+        health_data["modules"]["ml"] = {"status": "error", "error": str(exc)}
+    
+    # Check if any module has errors
+    error_count = sum(1 for m in health_data["modules"].values() if m.get("status") == "error")
+    if error_count > 0:
+        health_data["ok"] = False
+        health_data["error_count"] = error_count
+    
+    return health_data
+
+
+# =============================================================================
+# FEATURE FLAGS MANAGEMENT
+# =============================================================================
+
+@router.get("/api/feature_flags")
+async def api_feature_flags(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Get current feature flags status.
+    
+    Returns the state of all feature toggles for the new modular architecture.
+    """
+    try:
+        from scraper.adapters import get_feature_flags
+        
+        flags = get_feature_flags()
+        flags_dict = {
+            "use_keyword_strategy": flags.use_keyword_strategy,
+            "use_progressive_mode": flags.use_progressive_mode,
+            "use_smart_scheduler": flags.use_smart_scheduler,
+            "use_post_cache": flags.use_post_cache,
+            "use_selector_manager": flags.use_selector_manager,
+            "use_metadata_extractor": flags.use_metadata_extractor,
+            "use_unified_filter": flags.use_unified_filter,
+            "use_ml_interface": flags.use_ml_interface,
+        }
+        
+        # Count active flags
+        active_count = sum(1 for v in flags_dict.values() if v)
+        
+        # Determine current phase
+        if all(flags_dict.values()):
+            phase = "all"
+        elif flags.use_keyword_strategy and flags.use_progressive_mode:
+            phase = "phase2"
+        elif flags.use_post_cache and flags.use_smart_scheduler:
+            phase = "phase1"
+        elif active_count > 0:
+            phase = "custom"
+        else:
+            phase = "legacy"
+        
+        return {
+            "ok": True,
+            "flags": flags_dict,
+            "active_count": active_count,
+            "total_count": len(flags_dict),
+            "current_phase": phase,
+            "env_vars": {
+                "TITAN_ENABLE_ALL": "Enable all features",
+                "TITAN_ENABLE_PHASE2": "Enable Phase 2 (keywords + progressive + Phase 1)",
+                "TITAN_ENABLE_PHASE1": "Enable Phase 1 (cache + scheduler)",
+            },
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.post("/api/feature_flags/set")
+async def api_set_feature_flags(
+    request: Request,
+    ctx=Depends(get_auth_context),
+    _auth=Depends(require_auth),
+):
+    """Update feature flags at runtime.
+    
+    Body: {"flag_name": true/false, ...}
+    Example: {"use_post_cache": true, "use_smart_scheduler": true}
+    """
+    try:
+        from scraper.adapters import set_feature_flags, get_feature_flags
+        
+        body = await request.json()
+        
+        # Validate flags
+        valid_flags = {
+            "use_keyword_strategy", "use_progressive_mode", "use_smart_scheduler",
+            "use_post_cache", "use_selector_manager", "use_metadata_extractor",
+            "use_unified_filter", "use_ml_interface",
+        }
+        
+        updates = {}
+        invalid = []
+        for key, value in body.items():
+            if key in valid_flags:
+                updates[key] = bool(value)
+            else:
+                invalid.append(key)
+        
+        if updates:
+            set_feature_flags(**updates)
+        
+        # Return updated state
+        flags = get_feature_flags()
+        
+        return {
+            "ok": True,
+            "updated": list(updates.keys()),
+            "invalid_flags": invalid if invalid else None,
+            "current_state": {
+                "use_keyword_strategy": flags.use_keyword_strategy,
+                "use_progressive_mode": flags.use_progressive_mode,
+                "use_smart_scheduler": flags.use_smart_scheduler,
+                "use_post_cache": flags.use_post_cache,
+                "use_selector_manager": flags.use_selector_manager,
+                "use_metadata_extractor": flags.use_metadata_extractor,
+                "use_unified_filter": flags.use_unified_filter,
+                "use_ml_interface": flags.use_ml_interface,
+            },
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/api/feature_flags/enable_phase1")
+async def api_enable_phase1(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Enable Phase 1 features: post_cache + smart_scheduler (low risk)."""
+    try:
+        from scraper.adapters import enable_phase1, get_feature_flags
+        
+        enable_phase1()
+        flags = get_feature_flags()
+        
+        return {
+            "ok": True,
+            "phase": "phase1",
+            "enabled": ["use_post_cache", "use_smart_scheduler"],
+            "message": "Phase 1 activée: cache de déduplication + scheduling intelligent",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/api/feature_flags/enable_phase2")
+async def api_enable_phase2(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Enable Phase 2 features: Phase 1 + keyword_strategy + progressive_mode."""
+    try:
+        from scraper.adapters import enable_phase2, get_feature_flags
+        
+        enable_phase2()
+        flags = get_feature_flags()
+        
+        return {
+            "ok": True,
+            "phase": "phase2",
+            "enabled": ["use_post_cache", "use_smart_scheduler", "use_keyword_strategy", "use_progressive_mode"],
+            "message": "Phase 2 activée: stratégie mots-clés + mode progressif + Phase 1",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/api/feature_flags/enable_all")
+async def api_enable_all_features(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Enable all new module features."""
+    try:
+        from scraper.adapters import enable_all_features, get_feature_flags
+        
+        enable_all_features()
+        flags = get_feature_flags()
+        
+        return {
+            "ok": True,
+            "phase": "all",
+            "message": "Tous les modules sont activés",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/api/feature_flags/disable_all")
+async def api_disable_all_features(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
+    """Disable all new module features (return to legacy mode)."""
+    try:
+        from scraper.adapters import set_feature_flags, get_feature_flags
+        
+        set_feature_flags(
+            use_keyword_strategy=False,
+            use_progressive_mode=False,
+            use_smart_scheduler=False,
+            use_post_cache=False,
+            use_selector_manager=False,
+            use_metadata_extractor=False,
+            use_unified_filter=False,
+            use_ml_interface=False,
+        )
+        
+        return {
+            "ok": True,
+            "phase": "legacy",
+            "message": "Tous les modules désactivés - mode legacy actif",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))

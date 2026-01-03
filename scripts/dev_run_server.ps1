@@ -1,7 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $Env:APP_PORT = '8001'
 $Env:LOG_LEVEL = 'INFO'
-$Env:DISABLE_MONGO = '1'
 $Env:DISABLE_REDIS = '1'
 # Use repo-root storage_state.json for source-run
 $Env:STORAGE_STATE = 'storage_state.json'

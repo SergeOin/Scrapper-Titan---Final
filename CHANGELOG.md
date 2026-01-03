@@ -4,6 +4,74 @@ All notable changes to this project will be documented in this file.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses semantic versioning when practical.
 
+## [1.4.0] - 2025-12-19
+### Added - Modular Architecture
+- **8 nouveaux modules** avec activation progressive via FeatureFlags:
+  - `post_cache.py` - Déduplication persistante cross-sessions (LRU + SQLite)
+  - `smart_scheduler.py` - Intervalles adaptatifs basés sur l'historique
+  - `keyword_strategy.py` - Rotation intelligente explore/exploit des mots-clés
+  - `progressive_mode.py` - Mode conservative → moderate → aggressive
+  - `unified.py` - Filtre unifié consolidant toute la logique de filtrage
+  - `metadata_extractor.py` - Extraction robuste avec fallbacks
+  - `selectors.py` - Gestion dynamique des sélecteurs CSS avec auto-healing
+  - `ml_interface.py` - Interface ML avec fallback heuristique
+
+- **adapters.py** - Bridge pour migration progressive:
+  - FeatureFlags avec activation par phase (Phase 1, Phase 2, All)
+  - Variables d'environnement: `TITAN_ENABLE_PHASE1`, `TITAN_ENABLE_PHASE2`, `TITAN_ENABLE_ALL`
+  - Fonctions: `enable_phase1()`, `enable_phase2()`, `enable_all_features()`
+
+- **6 nouveaux endpoints API** pour feature flags:
+  - `GET /api/feature_flags` - Voir les flags actifs
+  - `POST /api/feature_flags/set` - Modifier des flags individuels
+  - `POST /api/feature_flags/enable_phase1` - Activer Phase 1 (cache + scheduler)
+  - `POST /api/feature_flags/enable_phase2` - Activer Phase 2 (+ keywords + progressive)
+  - `POST /api/feature_flags/enable_all` - Activer tous les modules
+  - `POST /api/feature_flags/disable_all` - Retour mode legacy
+
+- **Métriques Prometheus** pour les nouveaux modules:
+  - `POST_CACHE_*` - Stats déduplication
+  - `SCHEDULER_*` - Stats scheduler
+  - `KEYWORD_STRATEGY_*` - Stats rotation mots-clés
+  - `PROGRESSIVE_MODE_*` - Stats mode adaptatif
+  - `UNIFIED_FILTER_*` - Stats filtrage
+  - `ML_INTERFACE_*` - Stats ML
+  - `FEATURE_FLAGS_ENABLED` - Status des flags
+
+- **Script de validation** `scripts/validate_modules.py`:
+  - `--quick` - Test rapide (imports)
+  - `--phase1` - Validation Phase 1
+  - `--phase2` - Validation Phase 2
+  - Sans argument - Validation complète (22 tests)
+
+### Changed
+- **worker.py** - Intégré avec adapters.py pour:
+  - Rotation mots-clés via `get_next_keywords()`
+  - Intervalles via `get_next_interval()`
+  - Vérification pause via `should_scrape_now()`
+
+- **scrape_subprocess.py** - Intégré avec adapters.py pour:
+  - Déduplication persistante via `is_duplicate_post()` / `mark_post_seen()`
+  - Filtrage unifié via `should_keep_post()`
+
+### Documentation
+- **MIGRATION_GUIDE.md** mis à jour avec:
+  - Instructions d'activation par phase
+  - Nouveaux endpoints API documentés
+  - Recommandations de déploiement production
+
+### Tests
+- **194 nouveaux tests** pour les modules:
+  - test_adapters.py (21 tests)
+  - test_post_cache.py
+  - test_smart_scheduler.py
+  - test_keyword_strategy.py
+  - test_progressive_mode.py
+  - test_unified_filter.py
+  - test_ml_interface.py
+  - test_selectors.py
+  - test_metadata_extractor.py
+
 ## [1.3.25] - 2025-11-28
 ### Improved
 - **Filtre légal amélioré**: Taux de pertinence des posts passé de 29% à 59%
@@ -222,7 +290,7 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [1.2.x] - 2025-09-xx
 ### Overview
-Initial public-internal MVP iterations: multi-backend storage (Mongo/SQLite/CSV), recruitment signal metric, basic dashboard, Prometheus metrics, fallback logic, mock mode, packaging groundwork.
+Initial public-internal MVP iterations: SQLite storage with CSV fallback, recruitment signal metric, basic dashboard, Prometheus metrics, mock mode, packaging groundwork.
 
 [Unreleased]: https://github.com/SergeOin/Scrapper-Titan---Final/compare/v1.3.14...HEAD
 [1.3.14]: https://github.com/SergeOin/Scrapper-Titan---Final/releases/tag/v1.3.14

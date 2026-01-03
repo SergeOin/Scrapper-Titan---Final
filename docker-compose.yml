@@ -1,16 +1,6 @@
 version: '3.9'
 
 services:
-  mongo:
-    image: mongo:7
-    restart: unless-stopped
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo_data:/data/db
-    environment:
-      MONGO_INITDB_DATABASE: linkedin_scrape
-
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -21,29 +11,31 @@ services:
   api:
     build: .
     depends_on:
-      - mongo
       - redis
     environment:
-      MONGO_URI: mongodb://mongo:27017
       REDIS_URL: redis://redis:6379/0
+      SQLITE_PATH: /app/data/posts.sqlite3
       SCRAPING_ENABLED: "0"  # éviter le scraping auto dans le conteneur API
       ENABLE_METRICS: "1"
       PLAYWRIGHT_HEADLESS: "1"
     ports:
       - "8000:8000"
+    volumes:
+      - app_data:/app/data
     command: ["python", "-m", "uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
   worker:
     build: .
     depends_on:
-      - mongo
       - redis
     environment:
-      MONGO_URI: mongodb://mongo:27017
       REDIS_URL: redis://redis:6379/0
+      SQLITE_PATH: /app/data/posts.sqlite3
       SCRAPING_ENABLED: "1"
       PLAYWRIGHT_HEADLESS: "1"
+    volumes:
+      - app_data:/app/data
     command: ["python", "-m", "scraper.worker"]
 
 volumes:
-  mongo_data: {}
+  app_data: {}

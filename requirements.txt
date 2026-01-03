@@ -17,14 +17,10 @@ playwright~=1.55.0          # Browser automation (Chromium)
 browser-cookie3~=0.19.1     # Import cookies from local browsers (Chrome/Edge/Firefox)
 
 # =============================
-# Data Stores (Primary + Fallback)
+# Data Stores
 # =============================
-motor~=3.5.0                # Async MongoDB driver (primary storage)
-pymongo~=4.8.0              # Underlying Mongo driver (motor dependency clarity)
-dnspython~=2.6.0            # SRV record support for MongoDB Atlas (mongodb+srv://)
 redis~=5.0.0                # Redis client (async + sync) for queue / cache (includes asyncio support)
-# (Removed 'airedis' – not available on PyPI; redis >=5 covers async usage)
-aiosqlite~=0.20.0           # Lightweight async SQLite fallback
+aiosqlite~=0.20.0           # Lightweight async SQLite storage
 
 # =============================
 # Queue / Background / Concurrency Helpers

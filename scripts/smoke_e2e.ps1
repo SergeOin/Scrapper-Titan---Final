@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   - Temporarily avoids loading .env (pydantic strict parsing) by renaming it if present
-  - Starts the FastAPI server (mock mode, no Mongo/Redis) on a test port
+  - Starts the FastAPI server (mock mode, no Redis) on a test port
   - Waits until /health responds
   - Exercises /blocked-accounts endpoints: list, add, count, delete
   - Optionally checks /blocked HTML
@@ -53,7 +53,6 @@ if (Test-Path '.env') {
 try {
   # Isolate env for the child process
   $env:PLAYWRIGHT_MOCK_MODE = '1'
-  $env:DISABLE_MONGO = '1'
   $env:DISABLE_REDIS = '1'
   $env:APP_HOST = $BindHost
   $env:APP_PORT = "$Port"
