@@ -50,6 +50,51 @@ def _debug_log(msg: str):
 _init_debug_log()
 
 
+# =============================================================================
+# PHASE 2: IMPORTS CONDITIONNELS - Modules anti-détection (désactivés par défaut)
+# =============================================================================
+# Ces modules sont chargés mais NE SONT PAS UTILISÉS tant que les flags sont à 0.
+# Comportement actuel = strictement identique si flags désactivés.
+
+# FLAGS DE CONTRÔLE (désactivés par défaut - aucun impact sur le comportement existant)
+_USE_ENHANCED_TIMING = os.environ.get("TITAN_ENHANCED_TIMING", "0").lower() in ("1", "true", "yes")
+_USE_ENHANCED_STEALTH = os.environ.get("TITAN_ENHANCED_STEALTH", "0").lower() in ("1", "true", "yes")
+
+# Import conditionnel du module timing (délais ultra-safe)
+_TIMING_MODULE_AVAILABLE = False
+try:
+    from .timing import (
+        is_ultra_safe_mode,
+        get_delay_multiplier,
+        random_delay as timing_random_delay,
+        human_delay as timing_human_delay,
+        should_take_long_pause as timing_should_take_long_pause,
+        get_long_pause_duration as timing_get_long_pause_duration,
+    )
+    _TIMING_MODULE_AVAILABLE = True
+    _debug_log(f"[PHASE2] timing module loaded, ULTRA_SAFE={is_ultra_safe_mode()}, enabled={_USE_ENHANCED_TIMING}")
+except ImportError as e:
+    _debug_log(f"[PHASE2] timing module not available: {e}")
+
+# Import conditionnel du module stealth (anti-fingerprinting avancé)
+_STEALTH_MODULE_AVAILABLE = False
+try:
+    from .stealth import (
+        apply_stealth_scripts as stealth_apply_scripts,
+        apply_advanced_stealth as stealth_apply_advanced,
+        get_stealth_context_options as stealth_get_context_options,
+        detect_restriction_page as stealth_detect_restriction,
+    )
+    _STEALTH_MODULE_AVAILABLE = True
+    _debug_log(f"[PHASE2] stealth module loaded, enabled={_USE_ENHANCED_STEALTH}")
+except ImportError as e:
+    _debug_log(f"[PHASE2] stealth module not available: {e}")
+
+# Log status at import time
+_debug_log(f"[PHASE2] Module status: timing={_TIMING_MODULE_AVAILABLE}, stealth={_STEALTH_MODULE_AVAILABLE}")
+_debug_log(f"[PHASE2] Flags status: enhanced_timing={_USE_ENHANCED_TIMING}, enhanced_stealth={_USE_ENHANCED_STEALTH}")
+
+
 @dataclass
 class ScrapedPost:
     """Lightweight post data returned from subprocess."""
@@ -291,6 +336,71 @@ def get_long_pause_duration() -> int:
     """Retourne une durée de pause longue aléatoire."""
     return random_delay(LONG_PAUSE_MIN, LONG_PAUSE_MAX)
 
+
+# =============================================================================
+# PHASE 3: WRAPPERS CONDITIONNELS - Délais ultra-safe (timing.py)
+# =============================================================================
+# Ces wrappers délèguent au module timing.py SI le flag TITAN_ENHANCED_TIMING=1,
+# sinon ils utilisent les fonctions locales existantes (comportement inchangé).
+# Cela garantit une rétrocompatibilité totale quand le flag est désactivé.
+
+def _get_random_delay(min_ms: int, max_ms: int) -> int:
+    """Wrapper: utilise timing.py si TITAN_ENHANCED_TIMING=1, sinon local.
+    
+    Quand activé, timing.py applique:
+    - Distribution gaussienne améliorée
+    - Multiplicateur ULTRA_SAFE (x3 sur tous les délais)
+    - Micro-variations naturelles
+    """
+    if _USE_ENHANCED_TIMING and _TIMING_MODULE_AVAILABLE:
+        result = timing_random_delay(min_ms, max_ms)
+        _debug_log(f"[PHASE3] _get_random_delay({min_ms}, {max_ms}) -> {result} (enhanced)")
+        return result
+    return random_delay(min_ms, max_ms)
+
+def _get_human_delay(base_ms: int, variance_percent: float = 0.4) -> int:
+    """Wrapper: utilise timing.py si TITAN_ENHANCED_TIMING=1, sinon local.
+    
+    Quand activé, timing.py applique:
+    - Variance naturelle améliorée
+    - Multiplicateur ULTRA_SAFE (x3)
+    """
+    if _USE_ENHANCED_TIMING and _TIMING_MODULE_AVAILABLE:
+        result = timing_human_delay(base_ms, variance_percent)
+        _debug_log(f"[PHASE3] _get_human_delay({base_ms}) -> {result} (enhanced)")
+        return result
+    return human_delay(base_ms, variance_percent)
+
+def _should_take_long_pause() -> bool:
+    """Wrapper: utilise timing.py si TITAN_ENHANCED_TIMING=1, sinon local.
+    
+    Quand activé, timing.py a une probabilité plus élevée (mode conservateur).
+    """
+    if _USE_ENHANCED_TIMING and _TIMING_MODULE_AVAILABLE:
+        result = timing_should_take_long_pause()
+        if result:
+            _debug_log("[PHASE3] _should_take_long_pause() -> True (enhanced)")
+        return result
+    return should_take_long_pause()
+
+def _get_long_pause_duration() -> int:
+    """Wrapper: utilise timing.py si TITAN_ENHANCED_TIMING=1, sinon local.
+    
+    Quand activé, timing.py génère des pauses plus longues (2-5 min vs 30-90s).
+    """
+    if _USE_ENHANCED_TIMING and _TIMING_MODULE_AVAILABLE:
+        result = timing_get_long_pause_duration()
+        _debug_log(f"[PHASE3] _get_long_pause_duration() -> {result}ms (enhanced)")
+        return result
+    return get_long_pause_duration()
+
+# Log du statut des wrappers timing au chargement
+if _USE_ENHANCED_TIMING and _TIMING_MODULE_AVAILABLE:
+    _debug_log("[PHASE3] Timing wrappers ACTIVE - using timing.py with ULTRA_SAFE mode")
+else:
+    _debug_log("[PHASE3] Timing wrappers INACTIVE - using local functions (default behavior)")
+
+
 # ============================================================
 # ANTI-DETECTION: Mode Stealth et comportement humain
 # ============================================================
@@ -445,6 +555,69 @@ async def detect_restriction_page(page) -> tuple[bool, str]:
     
     return False, ""
 
+
+# =============================================================================
+# PHASE 3: WRAPPERS CONDITIONNELS - Stealth avancé (stealth.py)
+# =============================================================================
+# Ces wrappers délèguent au module stealth.py SI le flag TITAN_ENHANCED_STEALTH=1,
+# sinon ils utilisent les fonctions locales existantes (comportement inchangé).
+# Cela garantit une rétrocompatibilité totale quand le flag est désactivé.
+
+def _get_stealth_context_options() -> dict:
+    """Wrapper: utilise stealth.py si TITAN_ENHANCED_STEALTH=1, sinon local.
+    
+    Quand activé, stealth.py applique:
+    - Plus de presets de viewport (6 vs 1)
+    - Plus de user-agents (7 vs 5)
+    - Randomisation du device_scale_factor plus fine
+    """
+    if _USE_ENHANCED_STEALTH and _STEALTH_MODULE_AVAILABLE:
+        result = stealth_get_context_options()
+        _debug_log(f"[PHASE3] _get_stealth_context_options() -> enhanced (viewport={result.get('viewport', {})})")
+        return result
+    return get_stealth_context_options()
+
+async def _apply_stealth_scripts(page) -> None:
+    """Wrapper: utilise stealth.py si TITAN_ENHANCED_STEALTH=1, sinon local.
+    
+    Quand activé, stealth.py applique:
+    - Scripts anti-fingerprinting basiques (comme local)
+    - PLUS: WebGL vendor/renderer masking
+    - PLUS: Canvas fingerprint randomization
+    - PLUS: AudioContext protection
+    - PLUS: Hardware concurrency masking
+    """
+    if _USE_ENHANCED_STEALTH and _STEALTH_MODULE_AVAILABLE:
+        _debug_log("[PHASE3] _apply_stealth_scripts() -> applying enhanced stealth")
+        await stealth_apply_scripts(page)
+        # Appliquer également les protections avancées
+        try:
+            await stealth_apply_advanced(page)
+            _debug_log("[PHASE3] Advanced stealth scripts applied (WebGL, Canvas, Audio)")
+        except Exception as adv_exc:
+            _debug_log(f"[PHASE3] Advanced stealth error (non-blocking): {adv_exc}")
+    else:
+        await apply_stealth_scripts(page)
+
+async def _detect_restriction_page(page) -> tuple[bool, str]:
+    """Wrapper: utilise stealth.py si TITAN_ENHANCED_STEALTH=1, sinon local.
+    
+    Quand activé, stealth.py a potentiellement des indicateurs supplémentaires.
+    """
+    if _USE_ENHANCED_STEALTH and _STEALTH_MODULE_AVAILABLE:
+        is_restricted, reason = await stealth_detect_restriction(page)
+        if is_restricted:
+            _debug_log(f"[PHASE3] _detect_restriction_page() -> RESTRICTED: {reason} (enhanced)")
+        return is_restricted, reason
+    return await detect_restriction_page(page)
+
+# Log du statut des wrappers stealth au chargement
+if _USE_ENHANCED_STEALTH and _STEALTH_MODULE_AVAILABLE:
+    _debug_log("[PHASE3] Stealth wrappers ACTIVE - using stealth.py with advanced fingerprint protection")
+else:
+    _debug_log("[PHASE3] Stealth wrappers INACTIVE - using local functions (default behavior)")
+
+
 async def simulate_human_mouse_movement(page, target_x: int = None, target_y: int = None) -> None:
     """Simule un mouvement de souris humain avec courbe de Bézier."""
     try:
@@ -504,7 +677,8 @@ async def simulate_human_scroll(page, direction: str = "down", amount: int = Non
 
 async def simulate_reading_pause(page) -> None:
     """Simule une pause de lecture naturelle."""
-    await page.wait_for_timeout(random_delay(POST_READ_DELAY_MIN, POST_READ_DELAY_MAX))
+    # PHASE 3: Utilise le wrapper conditionnel
+    await page.wait_for_timeout(_get_random_delay(POST_READ_DELAY_MIN, POST_READ_DELAY_MAX))
     
     # Parfois, simuler un petit mouvement de souris pendant la lecture
     if random.random() < 0.3:
@@ -1367,12 +1541,14 @@ async def extract_posts_simple(page, keyword: str, max_items: int = 10) -> list[
     seen_ids = set()
     
     # Wait for posts to load with randomized delay to appear more human
-    await page.wait_for_timeout(random_delay(PAGE_LOAD_DELAY_MIN, PAGE_LOAD_DELAY_MAX))
+    # PHASE 3: Utilise le wrapper conditionnel
+    await page.wait_for_timeout(_get_random_delay(PAGE_LOAD_DELAY_MIN, PAGE_LOAD_DELAY_MAX))
     
     # Scroll to load more content (limited scrolls with random delays)
     for _ in range(MAX_SCROLLS_PER_PAGE):
         await page.evaluate("window.scrollBy(0, 800)")
-        await page.wait_for_timeout(random_delay(SCROLL_DELAY_MIN, SCROLL_DELAY_MAX))
+        # PHASE 3: Utilise le wrapper conditionnel
+        await page.wait_for_timeout(_get_random_delay(SCROLL_DELAY_MIN, SCROLL_DELAY_MAX))
     
     # Find post elements
     elements = []
@@ -1934,7 +2110,8 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
                 _debug_log("browser launched with stealth args")
             
             # Create context with storage state AND stealth options
-            stealth_opts = get_stealth_context_options()
+            # PHASE 3: Utilise le wrapper conditionnel
+            stealth_opts = _get_stealth_context_options()
             context_opts = {**stealth_opts}
             if storage_state and os.path.exists(storage_state):
                 context_opts["storage_state"] = storage_state
@@ -1946,7 +2123,8 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
             page = await context.new_page()
             
             # Apply anti-detection scripts
-            await apply_stealth_scripts(page)
+            # PHASE 3: Utilise le wrapper conditionnel (stealth avancé si TITAN_ENHANCED_STEALTH=1)
+            await _apply_stealth_scripts(page)
             if stealth_enabled():
                 _debug_log("page created with stealth scripts applied")
             
@@ -1956,7 +2134,8 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
             # Navigate to feed first to check auth
             _debug_log("navigating to LinkedIn feed...")
             await page.goto("https://www.linkedin.com/feed/", timeout=30000)
-            await page.wait_for_timeout(random_delay(PAGE_LOAD_DELAY_MIN, PAGE_LOAD_DELAY_MAX))
+            # PHASE 3: Utilise le wrapper conditionnel (délais ultra-safe si TITAN_ENHANCED_TIMING=1)
+            await page.wait_for_timeout(_get_random_delay(PAGE_LOAD_DELAY_MIN, PAGE_LOAD_DELAY_MAX))
             
             # Simulate reading the page
             await simulate_human_mouse_movement(page)
@@ -1966,7 +2145,8 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
             _debug_log(f"page title: {page_title}, url: {current_url}")
             
             # ========== DETECTION DE RESTRICTION ==========
-            is_restricted, restriction_reason = await detect_restriction_page(page)
+            # PHASE 3: Utilise le wrapper conditionnel
+            is_restricted, restriction_reason = await _detect_restriction_page(page)
             if is_restricted:
                 _debug_log(f"RESTRICTION DETECTED: {restriction_reason}")
                 results["success"] = False
@@ -2033,7 +2213,8 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
                     _debug_log("search page loaded, waiting random delay...")
                     
                     # ========== VÉRIFIER RESTRICTION APRÈS CHAQUE NAVIGATION ==========
-                    is_restricted, restriction_reason = await detect_restriction_page(page)
+                    # PHASE 3: Utilise le wrapper conditionnel
+                    is_restricted, restriction_reason = await _detect_restriction_page(page)
                     if is_restricted:
                         _debug_log(f"RESTRICTION DETECTED during scraping: {restriction_reason}")
                         results["success"] = False
@@ -2045,7 +2226,8 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
                     
                     # Délai humain avec scroll simulé
                     await simulate_human_scroll(page, "down", random.randint(100, 300))
-                    await page.wait_for_timeout(random_delay(PAGE_LOAD_DELAY_MIN, PAGE_LOAD_DELAY_MAX))
+                    # PHASE 3: Utilise le wrapper conditionnel (délais ultra-safe si TITAN_ENHANCED_TIMING=1)
+                    await page.wait_for_timeout(_get_random_delay(PAGE_LOAD_DELAY_MIN, PAGE_LOAD_DELAY_MAX))
                     
                     # Simuler lecture de la page de résultats
                     await simulate_reading_pause(page)

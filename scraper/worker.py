@@ -104,6 +104,80 @@ def _debug_log(msg: str):
         pass
 
 
+# =============================================================================
+# PHASE 2: IMPORTS CONDITIONNELS - Modules anti-détection (désactivés par défaut)
+# =============================================================================
+# Ces modules sont chargés mais NE SONT PAS UTILISÉS tant que les flags sont à 0.
+# Comportement actuel = strictement identique si flags désactivés.
+
+# FLAGS DE CONTRÔLE (désactivés par défaut - aucun impact sur le comportement existant)
+_USE_ENHANCED_TIMING = os.environ.get("TITAN_ENHANCED_TIMING", "0").lower() in ("1", "true", "yes")
+_USE_FORCED_BREAKS = os.environ.get("TITAN_FORCED_BREAKS", "0").lower() in ("1", "true", "yes")
+_USE_STRICT_HOURS = os.environ.get("TITAN_STRICT_HOURS", "0").lower() in ("1", "true", "yes")
+
+# Import conditionnel du module timing (délais ultra-safe)
+_TIMING_MODULE_AVAILABLE = False
+try:
+    from .timing import (
+        is_ultra_safe_mode,
+        get_delay_multiplier,
+        random_delay as timing_random_delay,
+        human_delay as timing_human_delay,
+        should_take_long_pause as timing_should_take_long_pause,
+        get_long_pause_duration as timing_get_long_pause_duration,
+    )
+    _TIMING_MODULE_AVAILABLE = True
+    _debug_log(f"[PHASE2] timing module loaded, ULTRA_SAFE={is_ultra_safe_mode()}, enabled={_USE_ENHANCED_TIMING}")
+except ImportError as e:
+    _debug_log(f"[PHASE2] timing module not available: {e}")
+
+# Import conditionnel du module human_patterns (pauses forcées, horaires stricts)
+_HUMAN_PATTERNS_MODULE_AVAILABLE = False
+try:
+    from .human_patterns import (
+        is_good_time_to_scrape,
+        should_take_break,
+        generate_session_profile,
+        BrowsingMood,
+    )
+    _HUMAN_PATTERNS_MODULE_AVAILABLE = True
+    _debug_log(f"[PHASE2] human_patterns module loaded, forced_breaks={_USE_FORCED_BREAKS}, strict_hours={_USE_STRICT_HOURS}")
+except ImportError as e:
+    _debug_log(f"[PHASE2] human_patterns module not available: {e}")
+
+
+def _get_current_time_context() -> dict:
+    """Helper function to get current time context for strict hours checking."""
+    from datetime import datetime
+    now = datetime.now()
+    weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    return {
+        'hour': now.hour,
+        'minute': now.minute,
+        'weekday': now.weekday(),
+        'weekday_name': weekday_names[now.weekday()],
+        'is_weekend': now.weekday() >= 5,
+    }
+
+
+# Import conditionnel du module human_actions (actions simulées - NON ACTIVÉ en Phase 2)
+_HUMAN_ACTIONS_MODULE_AVAILABLE = False
+try:
+    from .human_actions import (
+        should_take_session_break,
+        simulate_session_break,
+        reset_session_counters,
+    )
+    _HUMAN_ACTIONS_MODULE_AVAILABLE = True
+    _debug_log(f"[PHASE2] human_actions module loaded (not activated in Phase 2)")
+except ImportError as e:
+    _debug_log(f"[PHASE2] human_actions module not available: {e}")
+
+# Log status summary
+_debug_log(f"[PHASE2] Worker modules: timing={_TIMING_MODULE_AVAILABLE}, patterns={_HUMAN_PATTERNS_MODULE_AVAILABLE}, actions={_HUMAN_ACTIONS_MODULE_AVAILABLE}")
+_debug_log(f"[PHASE2] Worker flags: enhanced_timing={_USE_ENHANCED_TIMING}, forced_breaks={_USE_FORCED_BREAKS}, strict_hours={_USE_STRICT_HOURS}")
+
+
 # ------------------------------------------------------------
 # Session revocation handling and auto-reconnect
 # ------------------------------------------------------------
@@ -2451,6 +2525,52 @@ async def worker_loop() -> None:
                         ctx.daily_post_count = 0
                 except Exception:
                     pass
+                
+                # =============================================================
+                # PHASE 2: Horaires stricts (optionnel, activé par TITAN_STRICT_HOURS=1)
+                # =============================================================
+                # Ce bloc ENRICHIT la vérification d'horaires existante avec des
+                # règles plus strictes (9h-19h, pas de weekend, pas de jours fériés).
+                # Il ne REMPLACE PAS la logique existante, il s'ajoute en amont.
+                if _USE_STRICT_HOURS and _HUMAN_PATTERNS_MODULE_AVAILABLE:
+                    try:
+                        if not is_good_time_to_scrape():
+                            # Calculer le temps d'attente jusqu'à la prochaine fenêtre valide
+                            time_context = _get_current_time_context()
+                            reason = "outside_strict_hours"
+                            
+                            # Déterminer la raison précise
+                            if time_context.get('is_weekend', False):
+                                reason = "weekend"
+                                wait_seconds = 3600  # 1h, revérifier régulièrement
+                            elif time_context.get('hour', 12) < 9:
+                                reason = "too_early"
+                                # Attendre jusqu'à 9h + marge aléatoire
+                                minutes_until_9h = (9 - time_context.get('hour', 0)) * 60 - time_context.get('minute', 0)
+                                import random as _rnd
+                                wait_seconds = max(300, minutes_until_9h * 60 + _rnd.randint(60, 600))
+                            elif time_context.get('hour', 12) >= 19:
+                                reason = "too_late"
+                                wait_seconds = 1800  # 30 min, le lendemain reprendra
+                            else:
+                                wait_seconds = 300  # 5 min par défaut
+                            
+                            logger.info("phase2_strict_hours_blocked",
+                                       reason=reason,
+                                       wait_seconds=wait_seconds,
+                                       current_hour=time_context.get('hour'),
+                                       weekday=time_context.get('weekday_name', 'unknown'))
+                            _debug_log(f"[PHASE2] Strict hours: blocked ({reason}), waiting {wait_seconds}s")
+                            
+                            await asyncio.sleep(wait_seconds)
+                            continue  # Revérifier après l'attente
+                    except Exception as phase2_exc:
+                        # En cas d'erreur, on log et on continue avec la logique existante
+                        _debug_log(f"[PHASE2] Strict hours error (non-blocking): {phase2_exc}")
+                # =============================================================
+                # FIN PHASE 2: Horaires stricts
+                # =============================================================
+                
                 # run a cycle
                 async with run_with_lock(ctx):
                     try:
@@ -2458,6 +2578,65 @@ async def worker_loop() -> None:
                         logger.info("human_cycle_complete", new=new, hour=local_hour)
                     except Exception as exc:  # pragma: no cover
                         logger.error("human_cycle_failed", error=str(exc))
+                
+                # =============================================================
+                # PHASE 2: Pauses forcées (optionnel, activé par TITAN_FORCED_BREAKS=1)
+                # =============================================================
+                # Ce bloc ne s'exécute QUE si le flag est activé.
+                # Sinon, le comportement est strictement identique à l'existant.
+                if _USE_FORCED_BREAKS and _HUMAN_PATTERNS_MODULE_AVAILABLE:
+                    try:
+                        # Initialiser le tracking de session si pas encore fait
+                        if not hasattr(ctx, '_phase2_session_start'):
+                            ctx._phase2_session_start = _time.time()
+                            ctx._phase2_keywords_count = 0
+                        
+                        # Incrémenter le compteur de keywords traités dans cette session
+                        ctx._phase2_keywords_count += len(ctx.settings.keywords) if hasattr(ctx.settings, 'keywords') else 3
+                        
+                        # Vérifier si on doit prendre une pause forcée
+                        session_duration_minutes = (_time.time() - ctx._phase2_session_start) / 60
+                        keywords_count = ctx._phase2_keywords_count
+                        
+                        if should_take_break(session_duration_minutes, keywords_count):
+                            # Générer une durée de pause (20-45 minutes par défaut)
+                            import random as _rnd
+                            break_duration_seconds = _rnd.randint(20 * 60, 45 * 60)
+                            break_duration_minutes = break_duration_seconds / 60
+                            
+                            logger.info("phase2_forced_break_starting", 
+                                       duration_minutes=round(break_duration_minutes, 1),
+                                       session_duration_minutes=round(session_duration_minutes, 1),
+                                       keywords_processed=keywords_count)
+                            _debug_log(f"[PHASE2] Forced break: {break_duration_minutes:.1f} min after {session_duration_minutes:.1f} min session, {keywords_count} keywords")
+                            
+                            # Broadcast event pour l'UI (optionnel)
+                            if broadcast and EventType:
+                                try:
+                                    await broadcast({
+                                        "type": "FORCED_BREAK",
+                                        "duration_seconds": break_duration_seconds,
+                                        "reason": "session_limit_reached"
+                                    })
+                                except Exception:
+                                    pass
+                            
+                            # Prendre la pause
+                            await asyncio.sleep(break_duration_seconds)
+                            
+                            logger.info("phase2_forced_break_ended")
+                            _debug_log("[PHASE2] Forced break ended, resetting session counters")
+                            
+                            # Reset des compteurs de session
+                            ctx._phase2_session_start = _time.time()
+                            ctx._phase2_keywords_count = 0
+                    except Exception as phase2_exc:
+                        # En cas d'erreur, on log et on continue normalement
+                        _debug_log(f"[PHASE2] Forced break error (non-blocking): {phase2_exc}")
+                # =============================================================
+                # FIN PHASE 2: Pauses forcées
+                # =============================================================
+                
                 # record completion
                 now_ts = _time.time()
                 window.append(now_ts)

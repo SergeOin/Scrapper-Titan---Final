@@ -71,9 +71,28 @@ def get_bundled_exe_path() -> Path:
     else:
         # Running as script - look in dist folder
         script_dir = Path(__file__).parent.parent
-        dist_exe = script_dir / "dist" / EXE_NAME
+        dist_exe = script_dir / "dist" / "TitanScraper" / EXE_NAME
         if dist_exe.exists():
             return dist_exe
+    return None
+
+
+def get_bundled_internal_path() -> Path:
+    """Get the path to the bundled _internal folder."""
+    if getattr(sys, 'frozen', False):
+        base_path = Path(sys._MEIPASS)
+        bundled = base_path / "_internal"
+        if bundled.exists():
+            return bundled
+        bootstrapper_dir = Path(sys.executable).parent
+        nearby = bootstrapper_dir / "_internal"
+        if nearby.exists():
+            return nearby
+    else:
+        script_dir = Path(__file__).parent.parent
+        dist_internal = script_dir / "dist" / "TitanScraper" / "_internal"
+        if dist_internal.exists():
+            return dist_internal
     return None
 
 
@@ -370,12 +389,24 @@ def main():
         bundled_exe = get_bundled_exe_path()
         
         exe_path = INSTALL_DIR / EXE_NAME
-        
+        internal_path = INSTALL_DIR / "_internal"
+
         if bundled_exe and bundled_exe.exists():
             update_status(status_label, "Installation de TitanScraper...")
-            update_progress(progress, progress_label, 20)
+            update_progress(progress, progress_label, 15)
             shutil.copy2(bundled_exe, exe_path)
-            update_status(status_label, "TitanScraper installé ✓")
+            
+            # Copy _internal folder
+            bundled_internal = get_bundled_internal_path()
+            if bundled_internal and bundled_internal.exists():
+                update_status(status_label, "Copie des fichiers internes...")
+                update_progress(progress, progress_label, 20)
+                if internal_path.exists():
+                    shutil.rmtree(internal_path)
+                shutil.copytree(bundled_internal, internal_path)
+                update_status(status_label, "TitanScraper installé ✓")
+            else:
+                raise Exception("Dossier _internal non trouvé dans le package")
         else:
             raise Exception("TitanScraper.exe non trouvé dans le package")
         
