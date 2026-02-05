@@ -12,6 +12,11 @@ Notes:
 """
 from __future__ import annotations
 
+# Force PyInstaller to include scrape_subprocess module (hidden import)
+import scraper.scrape_subprocess as _scrape_subprocess_module  # noqa: F401
+# Force PyInstaller to include worker module (hidden import for store_posts)
+import scraper.worker as _worker_module  # noqa: F401
+
 import os
 import sys
 import time

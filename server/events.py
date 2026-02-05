@@ -21,6 +21,7 @@ class EventType(str, Enum):
     TOGGLE = "toggle"
     HEALTH = "health"  # reserved for future proactive pings
     QUOTA = "quota"  # daily quota milestone events
+    CAP_REACHED = "cap_reached"  # daily legal cap reached - stop collecting
     RISK_COOLDOWN = "risk_cooldown"  # anti-ban cooldown triggered
     NEW_POST = "new_post"  # individual post scraped and saved
     SESSION_REVOKED = "session_revoked"  # LinkedIn cookie revoked, needs re-login

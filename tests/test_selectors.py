@@ -8,7 +8,7 @@ class TestSelectorConfig:
     """Tests for SelectorConfig dataclass."""
     
     def test_selector_config_creation(self):
-        from scraper.selectors import SelectorConfig
+        from scraper.css_selectors import SelectorConfig
         
         config = SelectorConfig(
             css="div.test",
@@ -22,7 +22,7 @@ class TestSelectorConfig:
         assert config.is_fallback is False
     
     def test_selector_config_with_fallback(self):
-        from scraper.selectors import SelectorConfig
+        from scraper.css_selectors import SelectorConfig
         
         config = SelectorConfig(
             css="div.fallback",
@@ -39,23 +39,23 @@ class TestSelectorLists:
     """Tests for predefined selector lists."""
     
     def test_post_container_selectors_exist(self):
-        from scraper.selectors import POST_CONTAINER_SELECTORS
+        from scraper.css_selectors import POST_CONTAINER_SELECTORS
         
         assert len(POST_CONTAINER_SELECTORS) > 0
         assert all(hasattr(s, 'css') for s in POST_CONTAINER_SELECTORS)
     
     def test_author_selectors_exist(self):
-        from scraper.selectors import AUTHOR_SELECTORS
+        from scraper.css_selectors import AUTHOR_SELECTORS
         
         assert len(AUTHOR_SELECTORS) > 0
     
     def test_text_selectors_exist(self):
-        from scraper.selectors import TEXT_SELECTORS
+        from scraper.css_selectors import TEXT_SELECTORS
         
         assert len(TEXT_SELECTORS) > 0
     
     def test_date_selectors_exist(self):
-        from scraper.selectors import DATE_SELECTORS
+        from scraper.css_selectors import DATE_SELECTORS
         
         assert len(DATE_SELECTORS) > 0
 
@@ -64,7 +64,7 @@ class TestSelectorStats:
     """Tests for SelectorStats dataclass."""
     
     def test_stats_creation(self):
-        from scraper.selectors import SelectorStats
+        from scraper.css_selectors import SelectorStats
         
         stats = SelectorStats(name="test", css="div.test")
         
@@ -74,7 +74,7 @@ class TestSelectorStats:
         assert stats.successes == 0
     
     def test_success_rate_zero_attempts(self):
-        from scraper.selectors import SelectorStats
+        from scraper.css_selectors import SelectorStats
         
         stats = SelectorStats(name="test", css="div.test")
         
@@ -82,7 +82,7 @@ class TestSelectorStats:
         assert stats.success_rate == 0.5
     
     def test_success_rate_calculation(self):
-        from scraper.selectors import SelectorStats
+        from scraper.css_selectors import SelectorStats
         
         # API uses successes and failures, not attempts
         stats = SelectorStats(name="test", css="div.test")
@@ -105,7 +105,7 @@ class TestSelectorManager:
             pass  # Ignore on Windows
     
     def test_manager_creation(self, temp_db):
-        from scraper.selectors import SelectorManager
+        from scraper.css_selectors import SelectorManager
         
         manager = SelectorManager(db_path=temp_db)
         
@@ -113,7 +113,7 @@ class TestSelectorManager:
     
     @pytest.mark.asyncio
     async def test_get_selector_manager_singleton(self):
-        from scraper.selectors import get_selector_manager
+        from scraper.css_selectors import get_selector_manager
         
         # get_selector_manager is async
         m1 = await get_selector_manager()
@@ -122,7 +122,7 @@ class TestSelectorManager:
         assert m1 is m2
     
     def test_manager_has_selectors(self, temp_db):
-        from scraper.selectors import SelectorManager
+        from scraper.css_selectors import SelectorManager
         
         manager = SelectorManager(db_path=temp_db)
         
@@ -146,7 +146,7 @@ class TestSelectorManagerAsync:
     
     @pytest.mark.asyncio
     async def test_find_posts_with_mock_page(self, temp_db):
-        from scraper.selectors import SelectorManager
+        from scraper.css_selectors import SelectorManager
         from unittest.mock import AsyncMock, MagicMock
         
         manager = SelectorManager(db_path=temp_db)

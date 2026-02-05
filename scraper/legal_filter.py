@@ -169,20 +169,44 @@ EXCLUSION_FREELANCE = [
 ]
 
 # Locations outside France
+# FIX FP-002: Ajout des patterns Afrique et Canada manquants
 EXCLUSION_NON_FRANCE = [
+    # Canada (étendu)
     "canada", "quebec", "montreal", "toronto", "vancouver",
+    "halifax", "nova scotia", "nouvelle-ecosse", "ottawa", "calgary", "edmonton",
+    # USA
     "usa", "etats-unis", "united states", "new york", "los angeles",
+    "chicago", "san francisco", "washington dc", "boston", "miami",
+    # Europe hors France
     "belgique", "belgium", "bruxelles", "brussels",
-    "suisse", "switzerland", "geneve", "zurich", "lausanne",
+    "suisse", "switzerland", "geneve", "zurich", "lausanne", "berne",
     "luxembourg",
     "uk", "united kingdom", "royaume-uni", "london", "londres",
     "allemagne", "germany", "deutschland", "berlin", "munich", "frankfurt",
     "espagne", "spain", "madrid", "barcelona",
     "italie", "italy", "milan", "rome",
     "pays-bas", "netherlands", "amsterdam",
-    "singapour", "singapore", "dubai", "hong kong",
+    # Asie-Pacifique
+    "singapour", "singapore", "dubai", "hong kong", "tokyo", "japon", "japan",
     "australie", "australia", "sydney", "melbourne",
-    "maroc", "morocco", "casablanca", "tunisie", "tunisia", "algerie", "algeria",
+    # Afrique du Nord
+    "maroc", "morocco", "casablanca", "rabat",
+    "tunisie", "tunisia", "tunis",
+    "algerie", "algeria", "alger",
+    # Afrique Subsaharienne (FIX pour MSF WaCA, etc.)
+    "cote d ivoire", "cote d'ivoire", "côte d'ivoire", "abidjan",
+    "senegal", "dakar",
+    "cameroun", "cameroon", "douala", "yaounde",
+    "nigeria", "lagos", "abuja",
+    "ghana", "accra",
+    "kenya", "nairobi",
+    "afrique du sud", "south africa", "johannesburg", "cape town",
+    "waca", "west africa", "central africa", "afrique de l ouest", "afrique centrale",
+    "rdc", "congo", "kinshasa",
+    "burkina", "ouagadougou",
+    "mali", "bamako",
+    "togo", "lome",
+    "benin", "cotonou",
 ]
 
 # Job seekers (#opentowork) - terms indicating the AUTHOR is job seeking, not recruiting

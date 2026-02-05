@@ -14,9 +14,38 @@ You can then run real scraping with PLAYWRIGHT_MOCK_MODE=0.
 from __future__ import annotations
 import argparse
 import asyncio
+import json
 import os
 
 from pathlib import Path
+
+
+def fix_cookie_domains(storage_path: str) -> None:
+    """Fix LinkedIn cookie domains from .www.linkedin.com to .linkedin.com.
+    
+    This is critical because cookies with .www.linkedin.com domain won't be
+    sent to linkedin.com (without www), causing authentication failures.
+    """
+    try:
+        with open(storage_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        cookies = data.get("cookies", [])
+        changes = 0
+        
+        for cookie in cookies:
+            domain = cookie.get("domain", "")
+            if domain.startswith(".www."):
+                new_domain = domain.replace(".www.", ".", 1)
+                cookie["domain"] = new_domain
+                changes += 1
+        
+        if changes > 0:
+            with open(storage_path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            print(f"Fixed {changes} cookie domains (.www.linkedin.com -> .linkedin.com)")
+    except Exception as e:
+        print(f"Warning: Could not fix cookie domains: {e}")
 
 try:
     from playwright.async_api import async_playwright
@@ -78,6 +107,8 @@ async def main():
             print("Warning: feed navigation failed; session may still be valid if already there.")
         await context.storage_state(path=args.out)
         await browser.close()
+        # Fix cookie domains (.www.linkedin.com -> .linkedin.com)
+        fix_cookie_domains(args.out)
         print(f"Saved storage state to: {args.out}")
         if args.out != "storage_state.json":
             print("Update STORAGE_STATE env variable or .env if different name.")

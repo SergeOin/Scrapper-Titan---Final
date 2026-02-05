@@ -58,8 +58,37 @@ except ImportError:
     def mark_post_seen(text="", url="", post_id="", author=""):
         pass
 
+# =============================================================================
+# PRE-QUALIFICATION - v2 "Qualify Early, Extract Late" strategy
+# =============================================================================
+try:
+    from scraper.pre_qualifier import (
+        pre_qualify_post,
+        is_excluded_author,
+        PreQualificationResult,
+        PreQualificationMetrics,
+    )
+    _PRE_QUALIFIER_AVAILABLE = True
+    _PRE_QUAL_METRICS = PreQualificationMetrics()  # Global metrics instance
+except ImportError:
+    _PRE_QUALIFIER_AVAILABLE = False
+    _PRE_QUAL_METRICS = None
+    
+    def pre_qualify_post(preview_text="", author_name="", company_name=None, known_companies=None):
+        """Stub: accept all posts when pre_qualifier not available."""
+        class _StubResult:
+            should_extract = True
+            reason = None
+            rejection_reason = None
+            confidence = 1.0
+        return _StubResult()
+    
+    def is_excluded_author(author_name=""):
+        return (False, "")
+
 # Global debug logging function
 _DEBUG_LOG_PATH = None
+_DEBUG_LOG_MAX_SIZE = 1024 * 1024  # 1MB max size
 
 def _init_debug_log():
     global _DEBUG_LOG_PATH
@@ -70,12 +99,28 @@ def _init_debug_log():
         _DEBUG_LOG_PATH = Path(".") / "scrape_subprocess_debug.txt"
     _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+def _rotate_log_if_needed():
+    """Rotate log file if it exceeds max size."""
+    global _DEBUG_LOG_PATH
+    if _DEBUG_LOG_PATH is None:
+        return
+    try:
+        if _DEBUG_LOG_PATH.exists() and _DEBUG_LOG_PATH.stat().st_size > _DEBUG_LOG_MAX_SIZE:
+            # Keep last half of the file
+            content = _DEBUG_LOG_PATH.read_text(encoding='utf-8', errors='ignore')
+            lines = content.splitlines()
+            half = len(lines) // 2
+            _DEBUG_LOG_PATH.write_text('\n'.join(lines[half:]) + '\n', encoding='utf-8')
+    except Exception:
+        pass
+
 def _debug_log(msg: str):
-    """Log message to debug file."""
+    """Log message to debug file with rotation."""
     global _DEBUG_LOG_PATH
     if _DEBUG_LOG_PATH is None:
         _init_debug_log()
     try:
+        _rotate_log_if_needed()
         with open(_DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
             f.write(f"{msg}\n")
     except Exception:
@@ -147,7 +192,38 @@ class ScrapedPost:
 
 
 # =============================================================================
-# TITAN PARTNERS FILTERING - Exclusion lists
+# TITAN PARTNERS FILTERING - UNIFIED SOURCE OF TRUTH
+# =============================================================================
+# NOTE: Les listes ci-dessous sont DÉPRÉCIÉES.
+# La source de vérité unique est maintenant filters/unified.py
+# Ces listes locales sont conservées temporairement pour compatibilité
+# mais seront supprimées dans une version future.
+# 
+# TODO: Migrer tout le code vers:
+#   from filters.unified import (
+#       AGENCY_PATTERNS, EXTERNAL_RECRUITMENT_PATTERNS, 
+#       STAGE_ALTERNANCE_PATTERNS, FREELANCE_PATTERNS,
+#       NON_RECRUITMENT_PATTERNS, classify_post, is_relevant_post
+#   )
+# =============================================================================
+
+# Import depuis unified.py pour les nouvelles utilisations
+try:
+    from filters.unified import (
+        AGENCY_PATTERNS as UNIFIED_AGENCY_PATTERNS,
+        EXTERNAL_RECRUITMENT_PATTERNS as UNIFIED_EXTERNAL_PATTERNS,
+        STAGE_ALTERNANCE_PATTERNS as UNIFIED_STAGE_PATTERNS,
+        FREELANCE_PATTERNS as UNIFIED_FREELANCE_PATTERNS,
+        NON_RECRUITMENT_PATTERNS as UNIFIED_NON_RECRUITMENT_PATTERNS,
+        LEGAL_ROLES as UNIFIED_LEGAL_ROLES,
+        classify_post as unified_classify_post,
+    )
+    _UNIFIED_AVAILABLE = True
+except ImportError:
+    _UNIFIED_AVAILABLE = False
+
+# =============================================================================
+# LEGACY LISTS (DEPRECATED - kept for backward compatibility)
 # =============================================================================
 
 # Agences de recrutement / Job boards à EXCLURE
@@ -322,8 +398,9 @@ SCROLL_DELAY_MAX = 7000    # 7 secondes maximum
 KEYWORD_DELAY_MIN = 30000   # 30 secondes minimum
 KEYWORD_DELAY_MAX = 60000   # 60 secondes maximum
 
-# Nombre de scrolls par page - RÉDUIT
-MAX_SCROLLS_PER_PAGE = 2
+# Nombre de scrolls par page - RÉDUIT (v2: de 2 à 1 pour réduire les actions)
+# Avec la stratégie whitelist, on visite des pages ciblées donc 1 scroll suffit
+MAX_SCROLLS_PER_PAGE = 1
 
 # Délai de "lecture" simulée d'un post (ms) - LONG
 POST_READ_DELAY_MIN = 2000   # 2 secondes
@@ -493,23 +570,186 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
+# Cache du fingerprint persisté (évite les rechargements fréquents)
+_PERSISTED_FINGERPRINT: Optional[dict] = None
+
+
+def _get_fingerprint_storage_path() -> Path:
+    """Retourne le chemin de stockage du fingerprint persisté."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return base / "TitanScraper" / "fingerprint.json"
+
+
+def _load_persisted_fingerprint() -> Optional[dict]:
+    """Charge le fingerprint persisté depuis le disque."""
+    global _PERSISTED_FINGERPRINT
+    if _PERSISTED_FINGERPRINT is not None:
+        return _PERSISTED_FINGERPRINT
+    
+    fp_path = _get_fingerprint_storage_path()
+    if fp_path.exists():
+        try:
+            with open(fp_path, "r", encoding="utf-8") as f:
+                _PERSISTED_FINGERPRINT = json.load(f)
+                _debug_log(f"[STEALTH] Loaded persisted fingerprint from {fp_path}")
+                return _PERSISTED_FINGERPRINT
+        except Exception as e:
+            _debug_log(f"[STEALTH] Failed to load fingerprint: {e}")
+    return None
+
+
+def _save_fingerprint(fingerprint: dict) -> None:
+    """Sauvegarde le fingerprint sur le disque."""
+    global _PERSISTED_FINGERPRINT
+    _PERSISTED_FINGERPRINT = fingerprint
+    
+    fp_path = _get_fingerprint_storage_path()
+    try:
+        fp_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(fp_path, "w", encoding="utf-8") as f:
+            json.dump(fingerprint, f, indent=2)
+        _debug_log(f"[STEALTH] Saved fingerprint to {fp_path}")
+    except Exception as e:
+        _debug_log(f"[STEALTH] Failed to save fingerprint: {e}")
+
+
+def _clean_expired_cookies(storage_state_path: str) -> str:
+    """Nettoie les cookies expirés du fichier storage_state.
+    
+    Les cookies expirés peuvent causer des problèmes si le serveur les rejette.
+    Cette fonction supprime uniquement les cookies dont la date d'expiration
+    est dépassée, mais conserve tous les autres cookies (y compris les
+    cookies transitoires comme __cf_bm, lidc, JSESSIONID).
+    
+    Note: Les cookies transitoires sont régénérés par le serveur lors de 
+    la navigation, donc les supprimer n'est pas nécessaire et peut même
+    causer des problèmes.
+    
+    Args:
+        storage_state_path: Chemin vers le fichier storage_state.json
+        
+    Returns:
+        Le même chemin si succès, chaîne vide si échec
+    """
+    import time
+    
+    if not storage_state_path or not os.path.exists(storage_state_path):
+        return storage_state_path
+    
+    try:
+        with open(storage_state_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        if "cookies" not in data:
+            return storage_state_path
+        
+        original_count = len(data["cookies"])
+        now_ts = time.time()
+        
+        # Filtrer: supprimer uniquement les cookies vraiment expirés
+        # expires == 0 ou -1 signifie cookie de session (pas d'expiration)
+        cleaned_cookies = []
+        removed_expired = []
+        
+        for cookie in data["cookies"]:
+            cookie_name = cookie.get("name", "")
+            expires = cookie.get("expires", 0)
+            
+            # Cookie de session (expires <= 0) ou cookie non expiré (expires > now)
+            if expires <= 0 or expires > now_ts:
+                cleaned_cookies.append(cookie)
+            else:
+                removed_expired.append(cookie_name)
+        
+        if removed_expired:
+            _debug_log(f"[COOKIES] Removed {len(removed_expired)} expired cookies: {', '.join(removed_expired)}")
+            data["cookies"] = cleaned_cookies
+            
+            # Sauvegarder le fichier nettoyé
+            with open(storage_state_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            _debug_log(f"[COOKIES] Saved cleaned storage_state: {len(cleaned_cookies)}/{original_count} cookies kept")
+        else:
+            _debug_log(f"[COOKIES] All {original_count} cookies are valid, no cleanup needed")
+        
+        return storage_state_path
+        
+    except Exception as e:
+        _debug_log(f"[COOKIES] Error cleaning cookies: {e}")
+        return storage_state_path
+
+
 def get_stealth_context_options() -> dict:
-    """Retourne les options de contexte pour le mode stealth."""
+    """Retourne les options de contexte pour le mode stealth.
+    
+    Le fingerprint est persisté sur disque pour maintenir une identité
+    cohérente entre les sessions et éviter les alertes de sécurité LinkedIn.
+    """
     if not stealth_enabled():
         return {}
-    return {
-        "viewport": {"width": random.randint(1280, 1920), "height": random.randint(800, 1080)},
+    
+    # Essayer de charger un fingerprint existant
+    existing = _load_persisted_fingerprint()
+    if existing:
+        _debug_log("[STEALTH] Using persisted fingerprint")
+        # Ajouter les headers HTTP basés sur le fingerprint persisté
+        result = existing.copy()
+        # S'assurer que les extra_http_headers sont cohérents
+        if "extra_http_headers" not in result:
+            result["extra_http_headers"] = {
+                "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+                "DNT": "1",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+                "Upgrade-Insecure-Requests": "1",
+            }
+        return result
+    
+    # Générer un nouveau fingerprint et le persister
+    _debug_log("[STEALTH] Generating new persistent fingerprint")
+    # Viewport fixe pour cette installation (pas aléatoire à chaque fois)
+    viewport_width = 1920  # Standard full HD
+    viewport_height = 1080
+    device_scale = 1.0  # Standard, pas aléatoire
+    
+    fingerprint = {
+        "viewport": {"width": viewport_width, "height": viewport_height},
         "user_agent": random.choice(USER_AGENTS),
         "locale": "fr-FR",
         "timezone_id": "Europe/Paris",
         "geolocation": {"latitude": 48.8566, "longitude": 2.3522},  # Paris
         "permissions": ["geolocation"],
         "color_scheme": "light",
-        "device_scale_factor": random.choice([1, 1.25, 1.5]),
+        "device_scale_factor": device_scale,
         "has_touch": False,
         "is_mobile": False,
         "java_script_enabled": True,
+        "extra_http_headers": {
+            "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        },
     }
+    
+    # Persister pour les prochaines sessions
+    _save_fingerprint(fingerprint)
+    
+    return fingerprint
 
 async def apply_stealth_scripts(page) -> None:
     """Applique des scripts anti-détection au navigateur.
@@ -1006,15 +1246,24 @@ async def simulate_coffee_break(page) -> None:
 # ============================================================
 
 # Selectors (duplicated from worker.py to keep subprocess self-contained)
+# 2025-01: LinkedIn SDUI uses div[role="listitem"] for search results
 POST_CONTAINER_SELECTORS = [
-    "div.feed-shared-update-v2",
-    "div.occludable-update",
-    "div[data-urn*='urn:li:activity:']",
+    'div[role="listitem"]',  # NEW 2025: SDUI search results - MUST BE FIRST
+    "article[data-urn*='urn:li:activity']",  # Article format
+    "div[data-urn*='urn:li:activity:']",  # Div format with urn
+    "div.feed-shared-update-v2",  # Classic feed format
+    "div.update-components-feed-update",  # Update components format
+    "div.occludable-update",  # Occludable update format
 ]
 
 # Improved author selectors - try multiple patterns
 # IMPORTANT: Order matters - most specific selectors first
+# 2025-01: Added SDUI selectors with data-view-name attributes
 AUTHOR_SELECTORS = [
+    # NEW SDUI 2025: Use data-view-name attributes
+    "[data-view-name='feed-actor-image'] + a p",  # Company/author name in SDUI
+    "a[href*='/company/'] p:first-of-type",  # Company name from link
+    "a[href*='/in/'] p:first-of-type",  # Person name from link
     # Primary: The actual visible name in the actor container
     "a.update-components-actor__container-link span.update-components-actor__name span.hoverable-link-text span[aria-hidden='true']",
     "a.app-aware-link.update-components-actor__container-link span.update-components-actor__name span[aria-hidden='true']",
@@ -1038,27 +1287,43 @@ INVALID_AUTHOR_PATTERNS = [
     "actuellement", "currently", "annonce", "announcement",
 ]
 
-TEXT_SELECTOR = "div.feed-shared-update-v2__description, div.update-components-text, span.break-words"
+# 2025-01: Updated text selectors for SDUI structure
+# The post content is now in elements with data-view-name="feed-commentary"
+TEXT_SELECTOR = "[data-view-name='feed-commentary'], [data-testid='expandable-text-box'], div.feed-shared-update-v2__description, div.update-components-text, span.break-words"
 
-# Improved date selectors
+# Improved date selectors - 2025-01: SDUI uses relative time in specific elements
 DATE_SELECTORS = [
+    # NEW SDUI 2025: Time is in the 3rd <p> inside the author link section
+    # Looking for patterns like "1 sem •", "2 j •", "1 mois •"
+    "[data-view-name='feed-actor-image'] ~ a div div:nth-of-type(3) p",  # SDUI 2025 exact path
+    "[data-view-name='feed-actor-image'] ~ a p:nth-of-type(3)",  # "1 sem •" in SDUI
+    "a[href*='/in/'] div div:last-child p",  # Last p in author block
     "span.update-components-actor__sub-description time",
     "a.update-components-actor__sub-description-link time",
     "span.update-components-actor__sub-description span[aria-hidden='true']",
     "time.update-components-actor__sub-description",
     "span.feed-shared-actor__sub-description time",
     ".update-components-actor__sub-description",
+    "time[datetime]",
+    "time",
 ]
 
 # Company selectors - look for the company/title line
+# 2025-01: SDUI puts company info in links to /company/ OR in 2nd <p> of author block
 COMPANY_SELECTORS = [
+    "a[href*='/company/'] p:first-of-type",  # Company name from SDUI link
+    "[data-view-name='feed-actor-image'] ~ a div div:nth-of-type(2) p",  # 2nd line = title/company in SDUI
+    "a[href*='/in/'] div div:nth-of-type(2) p",  # 2nd div = title/company
     "span.update-components-actor__description",
     "span.feed-shared-actor__description", 
     "span.update-components-actor__second-line",
 ]
 
-# Profile link selectors
+# Profile link selectors - 2025-01: SDUI uses data-view-name="feed-actor-image" 
 PROFILE_LINK_SELECTORS = [
+    "[data-view-name='feed-actor-image']",  # NEW SDUI 2025
+    "a[href*='/company/']",  # Company profile link
+    "a[href*='/in/']",  # Person profile link
     "a.update-components-actor__meta-link",
     "a.app-aware-link.update-components-actor__container-link",
     "a.feed-shared-actor__container-link",
@@ -1166,6 +1431,9 @@ def detect_language(text: str, default: str = "fr") -> str:
         "juriste", "avocat", "juridique", "contrat", "contentieux",
     ]
     
+    # Strong French indicators that alone indicate French content
+    strong_fr_indicators = ["recrute", "recherche", "cherche", "juriste", "avocat", "juridique"]
+    
     # English-specific indicators
     en_indicators = [
         "the", "is", "are", "we", "our", "you", "your", "this", "that",
@@ -1177,6 +1445,9 @@ def detect_language(text: str, default: str = "fr") -> str:
     fr_count = sum(1 for w in fr_indicators if f" {w} " in f" {text_lower} " or text_lower.startswith(f"{w} ") or text_lower.endswith(f" {w}"))
     en_count = sum(1 for w in en_indicators if f" {w} " in f" {text_lower} " or text_lower.startswith(f"{w} ") or text_lower.endswith(f" {w}"))
     
+    # Check for strong French indicators
+    has_strong_fr = any(f" {w} " in f" {text_lower} " or text_lower.startswith(f"{w} ") or text_lower.endswith(f" {w}") for w in strong_fr_indicators)
+    
     # Determine language
     if fr_count >= 3 and fr_count > en_count:
         return "fr"
@@ -1184,8 +1455,14 @@ def detect_language(text: str, default: str = "fr") -> str:
         return "en"
     elif fr_count >= 2:
         return "fr"
+    elif has_strong_fr and en_count < 2:
+        # Strong French indicator with no/little English = French
+        return "fr"
     elif en_count >= 2:
         return "en"
+    elif fr_count >= 1 and en_count == 0:
+        # At least one French indicator and no English = likely French
+        return "fr"
     
     return default
 
@@ -1206,6 +1483,19 @@ def is_french_post(text: str) -> bool:
     
     text_lower = text.lower()
     
+    # ===== HANDLE ENCODING ISSUES =====
+    # Sometimes text comes with UTF-8 encoding issues (e.g., "Ã©" instead of "é")
+    # Try to decode/normalize
+    try:
+        if "ã" in text_lower or "â" in text_lower:
+            # Likely double-encoded UTF-8
+            try:
+                text_lower = text.encode('latin-1').decode('utf-8').lower()
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                pass
+    except Exception:
+        pass
+    
     # Reject posts that are bilingual (common in Canada/international)
     # These typically have both languages separated by "--" or "---"
     bilingual_markers = [
@@ -1221,16 +1511,43 @@ def is_french_post(text: str) -> bool:
         if en_count >= 5:  # Significant English presence
             return False
     
+    # ===== QUICK FRENCH DETECTION =====
+    # If we find clear French signals, accept it immediately
+    strong_fr_signals = [
+        "recrute", "recherche", "poste à pourvoir", "nous recherchons",
+        "rejoignez", "cabinet", "juriste", "avocat", "juridique",
+        "contrat", "cdi", "cdd", "alternance", "équipe",
+        "cher réseau", "chers tous", "rejoindre notre équipe",
+    ]
+    if any(signal in text_lower for signal in strong_fr_signals):
+        # But still reject if too much English
+        en_words = ["the ", "is ", "are ", "we ", "our ", "you ", "your "]
+        en_count = sum(1 for w in en_words if w in text_lower)
+        if en_count < 5:
+            return True
+    
     # Reject if primarily English
     lang = detect_language(text, default="unknown")
     if lang == "en":
         return False
     
-    # Also reject if unknown - be conservative
-    if lang == "unknown":
-        return False
+    # Accept French or unknown (be less conservative to avoid missing French posts
+    # with encoding issues)
+    if lang == "fr":
+        return True
     
-    return lang == "fr"
+    # For unknown, do a final check for French content
+    # If there are French-looking words, accept it
+    fr_fallback_signals = [
+        "notre", "nous", "vous", "pour", "dans", "avec", "sur", "les", "des",
+        "une", "est", "sont", "cette", "ces", "aussi", "ainsi", "donc",
+    ]
+    fr_found = sum(1 for signal in fr_fallback_signals if f" {signal} " in f" {text_lower} ")
+    if fr_found >= 2:
+        return True
+    
+    # Default: reject unknown language
+    return False
 
 
 def make_post_id(*parts) -> str:
@@ -1594,6 +1911,38 @@ async def extract_posts_simple(page, keyword: str, max_items: int = 10) -> list[
     posts = []
     seen_ids = set()
     
+    # Attendre que le contenu réel de LinkedIn soit chargé
+    # LinkedIn utilise un skeleton loader qui disparaît quand le contenu est prêt
+    _debug_log("Waiting for LinkedIn content to load...")
+    content_loaded = False
+    
+    # Attendre jusqu'à 15 secondes que le contenu apparaisse
+    for attempt in range(15):
+        # Vérifier si le skeleton loader a disparu
+        skeleton = await page.query_selector("div.app-boot-bg-skeleton")
+        if skeleton:
+            is_visible = await skeleton.is_visible()
+            if is_visible:
+                _debug_log(f"Skeleton loader still visible, waiting... (attempt {attempt+1})")
+                await page.wait_for_timeout(1000)
+                continue
+        
+        # Vérifier si les conteneurs de posts sont présents
+        for selector in POST_CONTAINER_SELECTORS:
+            elements = await page.query_selector_all(selector)
+            if elements and len(elements) > 0:
+                _debug_log(f"Content loaded! Found {len(elements)} posts with selector '{selector}'")
+                content_loaded = True
+                break
+        
+        if content_loaded:
+            break
+        
+        await page.wait_for_timeout(1000)
+    
+    if not content_loaded:
+        _debug_log("WARNING: Content may not be fully loaded after 15 seconds")
+    
     # Wait for posts to load with randomized delay to appear more human
     # PHASE 3: Utilise le wrapper conditionnel
     await page.wait_for_timeout(_get_random_delay(PAGE_LOAD_DELAY_MIN, PAGE_LOAD_DELAY_MAX))
@@ -1604,62 +1953,96 @@ async def extract_posts_simple(page, keyword: str, max_items: int = 10) -> list[
         # PHASE 3: Utilise le wrapper conditionnel
         await page.wait_for_timeout(_get_random_delay(SCROLL_DELAY_MIN, SCROLL_DELAY_MAX))
     
+    # DEBUG: Sauvegarder un extrait du HTML pour diagnostic si aucun élément trouvé
+    try:
+        html_snippet = await page.evaluate("() => document.body.innerHTML.substring(0, 10000)")
+        _debug_log(f"Page HTML snippet (first 2000 chars): {html_snippet[:2000]}")
+    except Exception as e:
+        _debug_log(f"Could not capture HTML: {e}")
+    
     # Find post elements
     elements = []
+    _debug_log(f"Looking for post containers with {len(POST_CONTAINER_SELECTORS)} selectors")
     for selector in POST_CONTAINER_SELECTORS:
         try:
             found = await page.query_selector_all(selector)
+            _debug_log(f"Selector '{selector}' found {len(found) if found else 0} elements")
             if found:
                 elements.extend(found)
-        except Exception:
+        except Exception as e:
+            _debug_log(f"Selector '{selector}' error: {e}")
             continue
+    _debug_log(f"Total elements found: {len(elements)}")
     
-    for el in elements:
+    # Debug: log structure of first element to understand new SDUI layout
+    if elements:
+        try:
+            first_el = elements[0]
+            inner_html = await first_el.evaluate("el => el.innerHTML.substring(0, 5000)")
+            _debug_log(f"FIRST ELEMENT HTML (5000 chars): {inner_html}")
+        except Exception as e:
+            _debug_log(f"Could not get first element HTML: {e}")
+    
+    for idx, el in enumerate(elements):
         if len(posts) >= max_items:
             break
         
         try:
+            _debug_log(f"Processing element {idx+1}/{len(elements)}")
             # Author - try multiple selectors
             # Use empty string instead of "Unknown" - leave blank if not found
             author = ""
             author_profile = None
             
-            # First, try to get the profile link - this helps validate the author
-            for link_sel in PROFILE_LINK_SELECTORS:
-                try:
-                    link_el = await el.query_selector(link_sel)
-                    if link_el:
-                        href = await link_el.get_attribute("href")
-                        if href and "/in/" in href:
-                            author_profile = href.split("?")[0]  # Remove query params
-                            break
-                        elif href and "/company/" in href:
-                            # Company profile - extract company name from URL
-                            import re
-                            match = re.search(r'/company/([^/?]+)', href)
-                            if match:
-                                # Use company name as author for company posts
-                                pass
-                except Exception:
-                    continue
+            # NEW 2025: Try SDUI author extraction first
+            # In SDUI, author/company name is in link to /company/ or /in/
+            try:
+                # Try company link first
+                company_link = await el.query_selector("a[href*='/company/']")
+                if company_link:
+                    href = await company_link.get_attribute("href")
+                    if href:
+                        author_profile = href.split("?")[0]
+                    # Get company name from first <p> inside or adjacent
+                    name_el = await company_link.query_selector("p")
+                    if name_el:
+                        author = normalize_whitespace(await name_el.inner_text())
+                        if author:
+                            _debug_log(f"  Found author from company link: '{author}'")
+                
+                # If no company, try person link
+                if not author:
+                    person_link = await el.query_selector("a[href*='/in/']")
+                    if person_link:
+                        href = await person_link.get_attribute("href")
+                        if href:
+                            author_profile = href.split("?")[0]
+                        name_el = await person_link.query_selector("p")
+                        if name_el:
+                            author = normalize_whitespace(await name_el.inner_text())
+                            if author:
+                                _debug_log(f"  Found author from person link: '{author}'")
+            except Exception as e:
+                _debug_log(f"  SDUI author extraction error: {e}")
             
-            # Now try to extract author name
-            for author_sel in AUTHOR_SELECTORS:
-                try:
-                    author_el = await el.query_selector(author_sel)
-                    if author_el:
-                        raw_author = await author_el.inner_text()
-                        raw_author = clean_author_name(raw_author)
-                        # Validate the extracted name
-                        if raw_author and raw_author != "Unknown" and len(raw_author) > 2:
-                            if raw_author.lower().startswith("view"):
-                                continue
-                            # Use the validation function to check if it's a real name
-                            if is_valid_author_name(raw_author):
-                                author = raw_author
-                                break
-                except Exception:
-                    continue
+            # Fallback: classic selectors for author
+            if not author:
+                for author_sel in AUTHOR_SELECTORS:
+                    try:
+                        author_el = await el.query_selector(author_sel)
+                        if author_el:
+                            raw_author = await author_el.inner_text()
+                            raw_author = clean_author_name(raw_author)
+                            # Validate the extracted name
+                            if raw_author and raw_author != "Unknown" and len(raw_author) > 2:
+                                if raw_author.lower().startswith("view"):
+                                    continue
+                                # Use the validation function to check if it's a real name
+                                if is_valid_author_name(raw_author):
+                                    author = raw_author
+                                    break
+                    except Exception:
+                        continue
             
             # If author is still unknown but we have a profile link, try to extract from URL
             if author == "Unknown" and author_profile:
@@ -1676,14 +2059,97 @@ async def extract_posts_simple(page, keyword: str, max_items: int = 10) -> list[
                     if len(name_parts) >= 2 and len(name_parts) <= 5:
                         author = ' '.join(p.capitalize() for p in name_parts)
             
-            # Text
+            _debug_log(f"  Element {idx+1}: author='{author}', author_profile={author_profile}")
+            
+            # ===== PRE-QUALIFICATION PHASE 1: Author check (0 HTTP cost) =====
+            # Skip immediately if author is a known excluded entity (agency, competitor, etc.)
+            if _PRE_QUALIFIER_AVAILABLE and author:
+                is_excluded, exclusion_reason = is_excluded_author(author)
+                if is_excluded:
+                    _debug_log(f"  SKIPPING element {idx+1}: pre-qual rejected author '{author}' ({exclusion_reason})")
+                    if _PRE_QUAL_METRICS:
+                        _PRE_QUAL_METRICS.record("rejected_author_only")
+                    continue
+            
+            # Text - try multiple selectors for new SDUI structure
             text = ""
-            text_el = await el.query_selector(TEXT_SELECTOR)
-            if text_el:
-                text = normalize_whitespace(await text_el.inner_text())
+            
+            # NEW 2025: Try SDUI selectors first (data-view-name based)
+            sdui_text_selectors = [
+                "[data-view-name='feed-commentary']",
+                "[data-testid='expandable-text-box']",
+            ]
+            for sdui_sel in sdui_text_selectors:
+                try:
+                    text_el = await el.query_selector(sdui_sel)
+                    if text_el:
+                        text = normalize_whitespace(await text_el.inner_text())
+                        if text and len(text) > 20:
+                            _debug_log(f"  Found text with SDUI selector '{sdui_sel}', length={len(text)}")
+                            break
+                except Exception as e:
+                    _debug_log(f"  SDUI selector '{sdui_sel}' error: {e}")
+            
+            # If no text found with SDUI, try classic selectors
+            if not text or len(text) < 20:
+                classic_text_selectors = [
+                    "div.feed-shared-update-v2__description",
+                    "div.update-components-text",
+                    "span.break-words",
+                ]
+                for classic_sel in classic_text_selectors:
+                    try:
+                        text_el = await el.query_selector(classic_sel)
+                        if text_el:
+                            candidate = normalize_whitespace(await text_el.inner_text())
+                            if candidate and len(candidate) > 20:
+                                text = candidate
+                                _debug_log(f"  Found text with classic selector '{classic_sel}'")
+                                break
+                    except Exception:
+                        continue
+            
+            # Last fallback - any text in div[dir='ltr']
+            if not text or len(text) < 20:
+                try:
+                    text_el = await el.query_selector("div[dir='ltr']")
+                    if text_el:
+                        candidate = normalize_whitespace(await text_el.inner_text())
+                        if candidate and len(candidate) > 50:  # Higher threshold for generic selector
+                            text = candidate
+                            _debug_log("  Found text with fallback div[dir='ltr']")
+                except Exception:
+                    pass
+            
+            _debug_log(f"  Element {idx+1}: text length={len(text)}, text preview='{text[:100] if text else 'EMPTY'}..'")
             
             if not text or len(text) < 20:
+                _debug_log(f"  SKIPPING element {idx+1}: text too short or empty")
                 continue
+            
+            # ===== PRE-QUALIFICATION PHASE 2: Text preview check =====
+            # Use only first 400 chars for pre-qual (sufficient for pattern matching)
+            # This avoids expensive full extraction for posts that will be rejected anyway
+            if _PRE_QUALIFIER_AVAILABLE:
+                text_preview = text[:400] if len(text) > 400 else text
+                pre_qual_result = pre_qualify_post(
+                    preview_text=text_preview,
+                    author_name=author,
+                    company_name=None,  # Company not extracted yet
+                    known_companies=None,  # Could be populated from whitelist
+                )
+                if not pre_qual_result.should_extract:
+                    rejection_reason = getattr(pre_qual_result, 'rejection_reason', None) or getattr(pre_qual_result, 'reason', 'unknown')
+                    _debug_log(f"  SKIPPING element {idx+1}: pre-qual rejected - {rejection_reason}")
+                    if _PRE_QUAL_METRICS:
+                        _PRE_QUAL_METRICS.record(f"rejected_{rejection_reason}")
+                    continue
+                else:
+                    _debug_log(f"  Element {idx+1} PASSED pre-qual (reason={getattr(pre_qual_result, 'reason', 'unknown')})")
+                    if _PRE_QUAL_METRICS:
+                        _PRE_QUAL_METRICS.record("passed_to_full_extraction")
+            else:
+                _debug_log(f"  Element {idx+1} BYPASSED pre-qual (module not available)")
             
             # Date - try multiple selectors for published_at (NOT collected_at)
             published_at = None
@@ -1696,9 +2162,28 @@ async def extract_posts_simple(page, keyword: str, max_items: int = 10) -> list[
                             dt = parse_relative_date(date_txt)
                             if dt:
                                 published_at = dt.isoformat()
+                                _debug_log(f"  Found date '{date_txt}' via selector {date_sel}")
                                 break
                 except Exception:
                     continue
+            
+            # SDUI fallback: search for date pattern in all <p> elements
+            if not published_at:
+                try:
+                    all_p = await el.query_selector_all("p")
+                    for p_el in all_p:
+                        p_txt = await p_el.inner_text()
+                        if p_txt:
+                            # Look for patterns like "3 sem •", "1 mois •", "2 j •"
+                            import re
+                            if re.search(r'\d+\s*(sem|mois|jour|j|h|min|an)\s*[•·]', p_txt, re.IGNORECASE):
+                                dt = parse_relative_date(p_txt)
+                                if dt:
+                                    published_at = dt.isoformat()
+                                    _debug_log(f"  Found date in <p>: '{p_txt[:30]}...'")
+                                    break
+                except Exception:
+                    pass
             
             # Company - extract just the company name, not the full description
             company = None
@@ -1714,11 +2199,28 @@ async def extract_posts_simple(page, keyword: str, max_items: int = 10) -> list[
                             # Try to extract company from patterns like "Title at Company" or "Company • Location"
                             company = extract_company_name(raw_company)
                             if company and len(company) <= 60:
+                                _debug_log(f"  Found company via selector: '{company}'")
                                 break
                             else:
                                 company = None
                 except Exception:
                     continue
+            
+            # SDUI fallback: Look for "chez" or "@" pattern in all <p> elements
+            if not company:
+                try:
+                    all_p = await el.query_selector_all("p")
+                    for p_el in all_p:
+                        p_txt = await p_el.inner_text()
+                        if p_txt and len(p_txt) < 150:
+                            company = extract_company_name(p_txt)
+                            if company and is_valid_company_name(company):
+                                _debug_log(f"  Found company in <p>: '{company}' from '{p_txt[:40]}...'")
+                                break
+                            else:
+                                company = None
+                except Exception:
+                    pass
             
             # If still no company, try to extract from author description
             if not company and author and author != "Unknown" and author != "":
@@ -1761,9 +2263,132 @@ async def extract_posts_simple(page, keyword: str, max_items: int = 10) -> list[
                 except Exception:
                     pass
             
-            # MANDATORY: Skip posts without a permalink
-            # Every post must have a link to be useful
             if not permalink:
+                # Method 3: SDUI - Look for direct links to /feed/update/ with URN
+                try:
+                    import re
+                    # SDUI uses href with full URN path
+                    for link_sel in [
+                        "a[href*='/feed/update/urn:li:']",  # Direct URN link
+                        "a[href*='/feed/update/']",  # Any update link
+                        "a[href*='/activity/']", 
+                        "a[href*='activity:']", 
+                        "button[data-urn*='activity']"
+                    ]:
+                        link_el = await el.query_selector(link_sel)
+                        if link_el:
+                            href = await link_el.get_attribute("href") or await link_el.get_attribute("data-urn")
+                            if href:
+                                # Extract URN from href like /feed/update/urn:li:share:7416215400826253312/
+                                urn_match = re.search(r'/feed/update/(urn:li:(?:activity|share|ugcPost):\d+)', href)
+                                if urn_match:
+                                    permalink = f"https://www.linkedin.com/feed/update/{urn_match.group(1)}"
+                                    _debug_log(f"  Found SDUI permalink via {link_sel}: {permalink[:80]}")
+                                    break
+                                # Also try activity ID pattern
+                                activity_match = re.search(r'activity[:/](\d+)', href)
+                                if activity_match:
+                                    permalink = f"https://www.linkedin.com/feed/update/urn:li:activity:{activity_match.group(1)}"
+                                    _debug_log(f"  Found activity ID in {link_sel}")
+                                    break
+                except Exception:
+                    pass
+            
+            if not permalink:
+                # Method 4: SDUI - Look for share/comment buttons with URN data
+                try:
+                    import re
+                    # Try to find any element with data attributes containing activity/share IDs
+                    for sel in [
+                        "button[aria-label*='commentaire']",  # Comment button
+                        "button[aria-label*='comment']",
+                        "button[aria-label*='Commenter']",
+                        "[data-urn*='share:']",  # Share URN
+                        "[data-urn*='ugcPost:']",  # UGC post URN
+                        "a[href*='/posts/']",  # Company posts link
+                    ]:
+                        try:
+                            btn = await el.query_selector(sel)
+                            if btn:
+                                # Check multiple data attributes
+                                for attr in ["data-urn", "data-id", "data-activity-id", "href"]:
+                                    val = await btn.get_attribute(attr)
+                                    if val:
+                                        # Look for activity ID pattern
+                                        match = re.search(r'(?:activity|share|ugcPost)[:/](\d+)', val)
+                                        if match:
+                                            permalink = f"https://www.linkedin.com/feed/update/urn:li:activity:{match.group(1)}"
+                                            _debug_log(f"  Found permalink via {sel} attr={attr}")
+                                            break
+                                if permalink:
+                                    break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+            
+            if not permalink:
+                # Method 5: Extract from full HTML of the element (search for URN patterns)
+                try:
+                    import re
+                    outer_html = await el.evaluate("el => el.outerHTML")
+                    if outer_html:
+                        # Look for activity URN in HTML - try multiple patterns
+                        # SDUI 2025 uses escaped JSON like \"activityId\":\"7416515147957137414\"
+                        patterns = [
+                            # SDUI 2025 specific patterns (with escaped quotes)
+                            (r'\\?"activityId\\?"\\s*:\\s*\\?"(\d{19,20})\\?"', 'activity'),
+                            (r'activityId["\s:]+(\d{19,20})', 'activity'),
+                            # Standard URN patterns
+                            (r'urn:li:activity:(\d+)', 'activity'),
+                            (r'urn:li:share:(\d+)', 'share'),
+                            (r'urn:li:ugcPost:(\d+)', 'ugcPost'),
+                            (r'/feed/update/urn:li:(activity|share|ugcPost):(\d+)', None),
+                            (r'"activityUrn"[:\s]+"urn:li:activity:(\d+)"', 'activity'),
+                            (r'"entityUrn"[:\s]+"urn:li:(activity|share|ugcPost):(\d+)"', None),
+                            (r'data-activity-id="(\d+)"', 'activity'),
+                            (r'share:(\d{19,20})', 'share'),
+                            (r'activity:(\d{19,20})', 'activity'),
+                        ]
+                        for pattern_tuple in patterns:
+                            pattern = pattern_tuple[0]
+                            urn_type = pattern_tuple[1] if len(pattern_tuple) > 1 else None
+                            match = re.search(pattern, outer_html)
+                            if match:
+                                # Handle patterns with multiple groups
+                                if match.lastindex and match.lastindex > 1:
+                                    urn_type = match.group(1)
+                                    urn_id = match.group(2)
+                                else:
+                                    urn_id = match.group(1)
+                                    if not urn_type:
+                                        urn_type = 'activity'
+                                
+                                # Validate ID length (LinkedIn IDs are 19-20 digits)
+                                if len(urn_id) >= 10:
+                                    permalink = f"https://www.linkedin.com/feed/update/urn:li:{urn_type}:{urn_id}"
+                                    _debug_log(f"  Found permalink in HTML via pattern: {pattern[:50]}")
+                                    break
+                except Exception as e:
+                    _debug_log(f"  Error extracting permalink from HTML: {e}")
+                    pass
+            
+            if not permalink:
+                # Method 6: Use author profile + hash as stable fallback (better than search URL)
+                # This creates a more stable identifier based on content
+                # The fallback points to the author's profile since we can't get the exact post URL
+                if author and author != "Unknown" and text and author_profile:
+                    import hashlib
+                    text_hash = hashlib.md5(text[:200].encode('utf-8')).hexdigest()[:12]
+                    # Use author profile as the clickable link (better UX than search results)
+                    # Add hash fragment for uniqueness in deduplication
+                    base_profile = author_profile.split('?')[0].rstrip('/')
+                    permalink = f"{base_profile}#post-{text_hash}"
+                    _debug_log(f"  Using author profile as fallback permalink for element {idx+1}: {permalink[:80]}")
+            
+            # Log if still no permalink
+            if not permalink:
+                _debug_log(f"  SKIPPING element {idx+1}: no permalink found")
                 continue
             
             # Final validation: ensure company is not a job title or post content
@@ -1777,7 +2402,9 @@ async def extract_posts_simple(page, keyword: str, max_items: int = 10) -> list[
                 continue
             seen_ids.add(post_id)
             
-            posts.append({
+            # Store author_profile for later human actions (after all posts are extracted)
+            # We can't do human actions during extraction because they navigate away and invalidate DOM
+            post_with_profile = {
                 "id": post_id,
                 "keyword": keyword,
                 "author": author,
@@ -1789,16 +2416,29 @@ async def extract_posts_simple(page, keyword: str, max_items: int = 10) -> list[
                 "company": company,
                 "permalink": permalink,
                 "raw": None,
-            })
-            
-            # ========== ACTIONS HUMAINES SUR LE POST ==========
-            # Effectuer des actions aléatoires pour simuler un comportement humain
-            post_data = {"author_profile": author_profile}
-            await perform_human_actions_on_post(page, el, post_data)
+            }
+            posts.append(post_with_profile)
+            _debug_log(f"  ✓ ADDED post from element {idx+1}: author={author[:30]}, permalink={permalink[:60] if permalink else 'None'}")
         
         except Exception as e:
-            # Skip this element on error
+            # Skip this element on error - log full traceback for debugging
+            import traceback
+            tb_str = traceback.format_exc()
+            _debug_log(f"  ERROR on element {idx+1}: {type(e).__name__}: {str(e)[:100]}")
+            _debug_log(f"  TRACEBACK:\n{tb_str}")
             continue
+    
+    # ========== ACTIONS HUMAINES SUR LES POSTS (APRÈS EXTRACTION) ==========
+    # Maintenant que tous les éléments sont extraits, on peut faire les actions humaines
+    # sans risquer d'invalider les références DOM
+    if posts:
+        _debug_log(f"Starting human actions on {len(posts)} collected posts")
+        for post_data in posts[:3]:  # Limit to first 3 posts to avoid too much time
+            if post_data.get("author_profile"):
+                try:
+                    await perform_human_actions_on_post(page, None, {"author_profile": post_data["author_profile"]})
+                except Exception as e:
+                    _debug_log(f"Human action error: {e}")
     
     return posts
 
@@ -1853,7 +2493,6 @@ def extract_company_name(description: str) -> Optional[str]:
     
     description_lower = description.lower().strip()
     
-    import re  # Import re at the top of function scope
     
     # Helper function to remove job titles from company name
     def clean_company_from_job_titles(company_name: str) -> str:
@@ -2054,10 +2693,41 @@ def is_valid_company_name(company: Optional[str]) -> bool:
     NOTE: This is a final check - the extraction should already have filtered most issues.
     Here we just reject obvious cases of post content or standalone job titles.
     """
+    import re
+    
     if not company or company.strip() == "":
         return False
     
     company_lower = company.lower().strip()
+    
+    # ===== REJECT DATE PATTERNS =====
+    # Patterns like "2 h •", "1 j •", "3 sem •" are dates, not companies
+    # The bullet may appear as UTF-8 encoded "â€¢" or as actual "•" or "·"
+    # Use regex to match these patterns directly
+    
+    # First, check if it starts with a number followed by time unit
+    date_match = re.match(r'^(\d+)\s*(h|j|min|sem|mois|an)s?', company_lower, re.IGNORECASE)
+    if date_match:
+        # Get what follows the time unit
+        after_unit = company_lower[date_match.end():].strip()
+        # If nothing follows, or if what follows looks like bullet/separator/garbage
+        # (includes "•", "·", "â€¢" or any non-letter garbage)
+        if not after_unit or not re.search(r'[a-zA-ZàâäéèêëïîôùûüçÀÂÄÉÈÊËÏÎÔÙÛÜÇ]', after_unit):
+            return False
+    
+    # Also check longer date formats
+    date_match_long = re.match(r'^(\d+)\s*(heure|jour|semaine|mois|année)s?', company_lower, re.IGNORECASE)
+    if date_match_long:
+        after_unit = company_lower[date_match_long.end():].strip()
+        if not after_unit or not re.search(r'[a-zA-ZàâäéèêëïîôùûüçÀÂÄÉÈÊËÏÎÔÙÛÜÇ]', after_unit):
+            return False
+    
+    # Reject pure time indicators
+    time_words = ['h', 'j', 'min', 'sem', 'mois', 'an', 'heure', 'jour', 'semaine', 'année']
+    # Check if the cleaned version (only letters) is a time word
+    letters_only = re.sub(r'[^a-zA-ZàâäéèêëïîôùûüçÀÂÄÉÈÊËÏÎÔÙÛÜÇ]', '', company_lower)
+    if letters_only.lower() in time_words:
+        return False
     
     # Reject if it's EXACTLY a job title (standalone)
     standalone_job_titles = [
@@ -2068,11 +2738,32 @@ def is_valid_company_name(company: Optional[str]) -> bool:
         'senior', 'junior', 'notaire associé', 'notaire associée',
         'mandataire judiciaire', 'magistrate administrative',
         'talent acquisition', 'head of legal',
+        # Added: common non-company terms
+        'technical skills', 'soft skills', 'skills', 'expertise',
+        'legal intern', 'intern', 'stage', 'alternance',
+        'data protection', 'compliance', 'gdpr', 'rgpd',
+        # Date-related words that should not be company names
+        'modifié', 'edited', 'modified', 'suivre', 'follow',
+        'abonnés', 'abonnes', 'followers', 'subscriber', 'subscribers',
     ]
     
     # Only reject if the entire company name is exactly a job title
     if company_lower in standalone_job_titles:
         return False
+    
+    # Reject partial matches for clearly non-company terms
+    non_company_patterns = [
+        'legal intern', 'intern in', 'stage en', 'alternance en',
+        'skills', 'expertise in', 'specialist in',
+        'abonné', 'abonne', 'follower', 'subscriber',  # Reject "37 258 abonnés" etc.
+        'réaction', 'reaction',  # Reject "1 réaction", "16 réactions"
+        'commentaire', 'comment',  # Reject comment counts
+        ' page', 'pages',  # Reject "2 pages" etc.
+        '.com', '.fr', '.org', '.net', '.io', '.co',  # Reject URLs
+    ]
+    for pattern in non_company_patterns:
+        if pattern in company_lower:
+            return False
     
     # Reject obvious post content indicators
     post_content_markers = [
@@ -2102,8 +2793,18 @@ def is_valid_company_name(company: Optional[str]) -> bool:
     return True
 
 
-async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keyword: int = 10, headless: bool = True, apply_titan_filter: bool = True) -> dict:
-    """Main scraping function - runs in isolated process."""
+async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keyword: int = 10, headless: bool = True, apply_titan_filter: bool = True, session_quota: int = 0) -> dict:
+    """Main scraping function - runs in isolated process.
+    
+    Args:
+        keywords: List of search keywords
+        storage_state: Path to browser storage state (cookies)
+        max_per_keyword: Max posts to extract per keyword
+        headless: Run browser in headless mode
+        apply_titan_filter: Apply Titan Partners filtering rules
+        session_quota: Max total posts to accept this session (0 = no limit)
+                       Used for v2 micro-session strategy (~10 posts per session)
+    """
     from playwright.async_api import async_playwright
     
     results = {
@@ -2111,6 +2812,7 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
         "posts": [],
         "errors": [],
         "keywords_processed": 0,
+        "session_quota_reached": False,  # v2: Track if we hit the quota
         "stats": {
             "total_scraped": 0,
             "accepted": 0,
@@ -2125,6 +2827,10 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
             "rejected_non_french": 0,
             "rejected_other": 0,
             "rejected_duplicate": 0,
+            # v2 pre-qualification metrics
+            "prequal_rejected_author": 0,
+            "prequal_rejected_text": 0,
+            "prequal_passed": 0,
         }
     }
     
@@ -2168,6 +2874,8 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
             stealth_opts = _get_stealth_context_options()
             context_opts = {**stealth_opts}
             if storage_state and os.path.exists(storage_state):
+                # Clean expired and transient cookies before loading to avoid ERR_TOO_MANY_REDIRECTS
+                storage_state = _clean_expired_cookies(storage_state)
                 context_opts["storage_state"] = storage_state
                 _debug_log(f"using storage_state from {storage_state}")
             else:
@@ -2185,7 +2893,19 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
             # Initial human-like behavior: random mouse movement
             await simulate_human_mouse_movement(page)
             
-            # Navigate to feed first to check auth
+            # ========== WARM-UP: Régénérer les cookies Cloudflare/LinkedIn ==========
+            # Les cookies __cf_bm et lidc sont régénérés en visitant d'abord la page publique
+            # Cela évite ERR_TOO_MANY_REDIRECTS causé par des cookies transitoires manquants
+            _debug_log("warm-up: navigating to LinkedIn homepage first...")
+            try:
+                await page.goto("https://www.linkedin.com/", timeout=20000)
+                await page.wait_for_timeout(_get_random_delay(2000, 4000))
+                _debug_log("warm-up: homepage loaded, Cloudflare/LinkedIn cookies regenerated")
+            except Exception as warmup_err:
+                _debug_log(f"warm-up: homepage navigation warning (non-fatal): {str(warmup_err)[:100]}")
+                # Continue anyway - this is just a warm-up
+            
+            # Navigate to feed to check auth
             _debug_log("navigating to LinkedIn feed...")
             await page.goto("https://www.linkedin.com/feed/", timeout=30000)
             # PHASE 3: Utilise le wrapper conditionnel (délais ultra-safe si TITAN_ENHANCED_TIMING=1)
@@ -2253,8 +2973,25 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
             
             _debug_log("authentication OK, starting keyword scraping")
             
+            # ========== SAVE REGENERATED COOKIES ==========
+            # After successful auth check, save the storage state with regenerated 
+            # transient cookies (__cf_bm, lidc, JSESSIONID) to prevent future
+            # ERR_TOO_MANY_REDIRECTS errors
+            if storage_state and os.path.exists(storage_state):
+                try:
+                    await context.storage_state(path=storage_state)
+                    _debug_log(f"[COOKIES] Saved updated storage_state with regenerated cookies to {storage_state}")
+                except Exception as save_err:
+                    _debug_log(f"[COOKIES] Warning: failed to save storage_state: {str(save_err)[:100]}")
+            
             # Process each keyword
             for kw_idx, keyword in enumerate(keywords):
+                # ===== v2 EARLY EXIT: Stop if session quota reached =====
+                if session_quota > 0 and results["stats"]["accepted"] >= session_quota:
+                    _debug_log(f"SESSION QUOTA REACHED ({session_quota} posts) - stopping early")
+                    results["session_quota_reached"] = True
+                    break
+                
                 _debug_log(f"Processing keyword {kw_idx+1}/{len(keywords)}: {keyword}")
                 try:
                     search_url = f"https://www.linkedin.com/search/results/content/?keywords={keyword}"
@@ -2295,49 +3032,91 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
                     results["stats"]["total_scraped"] += len(raw_posts)
                     
                     # Apply Titan Partners filtering if enabled
-                    for post in raw_posts:
-                        # Simuler lecture du post occasionnellement
-                        if random.random() < 0.2:
-                            await simulate_reading_pause(page)
-                        
-                        # Check for duplicates - use persistent cache if enabled
-                        flags = get_feature_flags()
-                        post_text = post.get("text", "")
-                        post_author = post.get("author", "")
-                        post_url = post.get("permalink", "") or post.get("author_profile", "")
-                        post_id = post.get("id", "")
-                        
-                        if _ADAPTERS_AVAILABLE and flags.use_post_cache:
-                            # Use persistent cache for deduplication across sessions
-                            if is_duplicate_post(
-                                text=post_text, 
-                                url=post_url, 
-                                post_id=post_id, 
-                                author=post_author
-                            ):
-                                results["stats"]["rejected_duplicate"] += 1
-                                _debug_log(f"[ADAPTER] PostCache: duplicate detected")
+                    _debug_log(f"Starting post filtering loop, apply_titan_filter={apply_titan_filter}")
+                    for post_idx, post in enumerate(raw_posts):
+                        try:
+                            _debug_log(f"Processing post {post_idx+1}/{len(raw_posts)}: author={post.get('author', 'N/A')[:30]}")
+                            # Simuler lecture du post occasionnellement
+                            if random.random() < 0.2:
+                                await simulate_reading_pause(page)
+                            
+                            # Check for duplicates - use persistent cache if enabled
+                            flags = get_feature_flags()
+                            post_text = post.get("text", "")
+                            post_author = post.get("author", "")
+                            post_url = post.get("permalink", "") or post.get("author_profile", "")
+                            post_id = post.get("id", "")
+                            
+                            if _ADAPTERS_AVAILABLE and flags.use_post_cache:
+                                # Use persistent cache for deduplication across sessions
+                                if is_duplicate_post(
+                                    text=post_text, 
+                                    url=post_url, 
+                                    post_id=post_id, 
+                                    author=post_author
+                                ):
+                                    results["stats"]["rejected_duplicate"] += 1
+                                    _debug_log("[ADAPTER] PostCache: duplicate detected")
+                                    continue
+                            else:
+                                # Legacy in-memory deduplication
+                                post_hash = get_post_hash(post)
+                                if post_hash in seen_posts:
+                                    results["stats"]["rejected_duplicate"] += 1
+                                    continue
+                                seen_posts.add(post_hash)
+                            
+                            # FILTRE LANGUE: Rejeter les posts non-français
+                            # Titan Partners recherche uniquement des publications en France
+                            if not is_french_post(post.get("text", "")):
+                                results["stats"]["rejected_non_french"] += 1
+                                _debug_log(f"  Post {post_idx+1}: rejected (non-french)")
                                 continue
-                        else:
-                            # Legacy in-memory deduplication
-                            post_hash = get_post_hash(post)
-                            if post_hash in seen_posts:
-                                results["stats"]["rejected_duplicate"] += 1
-                                continue
-                            seen_posts.add(post_hash)
-                        
-                        # FILTRE LANGUE: Rejeter les posts non-français
-                        # Titan Partners recherche uniquement des publications en France
-                        if not is_french_post(post.get("text", "")):
-                            results["stats"]["rejected_non_french"] += 1
-                            continue
-                        
-                        if apply_titan_filter:
-                            is_valid, reason = filter_post_titan_partners(post)
-                            if is_valid:
+                            
+                            if apply_titan_filter:
+                                is_valid, reason = filter_post_titan_partners(post)
+                                _debug_log(f"  Post {post_idx+1}: filter result valid={is_valid}, reason={reason}")
+                                if is_valid:
+                                    results["posts"].append(post)
+                                    results["stats"]["accepted"] += 1
+                                    # [ADAPTER] Mark post as seen in persistent cache
+                                    if _ADAPTERS_AVAILABLE and flags.use_post_cache:
+                                        mark_post_seen(
+                                            text=post_text,
+                                            url=post_url,
+                                            post_id=post_id,
+                                            author=post_author,
+                                        )
+                                    # ===== v2 EARLY EXIT: Check quota after each accepted post =====
+                                    if session_quota > 0 and results["stats"]["accepted"] >= session_quota:
+                                        _debug_log(f"SESSION QUOTA ({session_quota}) reached mid-keyword - breaking post loop")
+                                        break
+                                else:
+                                    # Track rejection reason
+                                    if "AGENCY" in reason:
+                                        results["stats"]["rejected_agency"] += 1
+                                    elif "EXTERNAL" in reason:
+                                        results["stats"]["rejected_external"] += 1
+                                    elif "JOBSEEKER" in reason:
+                                        results["stats"]["rejected_jobseeker"] += 1
+                                    elif "EXCLUDED_CONTRACT" in reason:
+                                        results["stats"]["rejected_contract_type"] += 1
+                                    elif "NON_RECRUITMENT" in reason:
+                                        results["stats"]["rejected_non_recruitment"] += 1
+                                    elif "NO_LEGAL" in reason:
+                                        results["stats"]["rejected_no_legal"] += 1
+                                    elif "NO_RECRUITMENT_SIGNAL" in reason:
+                                        results["stats"]["rejected_no_signal"] += 1
+                                    elif "TOO_OLD" in reason:
+                                        results["stats"]["rejected_too_old"] += 1
+                                    else:
+                                        results["stats"]["rejected_other"] += 1
+                                        _debug_log(f"  Post {post_idx+1}: rejected_other, reason={reason}")
+                            else:
                                 results["posts"].append(post)
                                 results["stats"]["accepted"] += 1
-                                # [ADAPTER] Mark post as seen in persistent cache
+                                _debug_log(f"  Post {post_idx+1}: accepted (no filter)")
+                                # [ADAPTER] Mark post as seen in persistent cache even without filter
                                 if _ADAPTERS_AVAILABLE and flags.use_post_cache:
                                     mark_post_seen(
                                         text=post_text,
@@ -2345,37 +3124,13 @@ async def scrape_keywords(keywords: list[str], storage_state: str, max_per_keywo
                                         post_id=post_id,
                                         author=post_author,
                                     )
-                            else:
-                                # Track rejection reason
-                                if "AGENCY" in reason:
-                                    results["stats"]["rejected_agency"] += 1
-                                elif "EXTERNAL" in reason:
-                                    results["stats"]["rejected_external"] += 1
-                                elif "JOBSEEKER" in reason:
-                                    results["stats"]["rejected_jobseeker"] += 1
-                                elif "EXCLUDED_CONTRACT" in reason:
-                                    results["stats"]["rejected_contract_type"] += 1
-                                elif "NON_RECRUITMENT" in reason:
-                                    results["stats"]["rejected_non_recruitment"] += 1
-                                elif "NO_LEGAL" in reason:
-                                    results["stats"]["rejected_no_legal"] += 1
-                                elif "NO_RECRUITMENT_SIGNAL" in reason:
-                                    results["stats"]["rejected_no_signal"] += 1
-                                elif "TOO_OLD" in reason:
-                                    results["stats"]["rejected_too_old"] += 1
-                                else:
-                                    results["stats"]["rejected_other"] += 1
-                        else:
-                            results["posts"].append(post)
-                            results["stats"]["accepted"] += 1
-                            # [ADAPTER] Mark post as seen in persistent cache even without filter
-                            if _ADAPTERS_AVAILABLE and flags.use_post_cache:
-                                mark_post_seen(
-                                    text=post_text,
-                                    url=post_url,
-                                    post_id=post_id,
-                                    author=post_author,
-                                )
+                                # ===== v2 EARLY EXIT: Check quota even without filter =====
+                                if session_quota > 0 and results["stats"]["accepted"] >= session_quota:
+                                    _debug_log(f"SESSION QUOTA ({session_quota}) reached - breaking post loop")
+                                    break
+                        except Exception as filter_err:
+                            _debug_log(f"ERROR processing post {post_idx+1}: {filter_err}")
+                            results["stats"]["rejected_other"] += 1
                     
                     results["keywords_processed"] += 1
                     
@@ -2462,6 +3217,7 @@ def main():
     storage_state = input_data.get("storage_state", "")
     max_per_keyword = input_data.get("max_per_keyword", 10)
     headless = input_data.get("headless", True)
+    session_quota = input_data.get("session_quota", 0)  # v2: optional session quota
     
     # Set browsers path if provided
     browsers_path = input_data.get("browsers_path")
@@ -2471,8 +3227,8 @@ def main():
     
     # Run scraping
     try:
-        _log("about to call asyncio.run(scrape_keywords())")
-        result = asyncio.run(scrape_keywords(keywords, storage_state, max_per_keyword, headless))
+        _log(f"about to call asyncio.run(scrape_keywords()) with session_quota={session_quota}")
+        result = asyncio.run(scrape_keywords(keywords, storage_state, max_per_keyword, headless, session_quota=session_quota))
         _log(f"scrape_keywords returned, success={result.get('success')}, posts_count={len(result.get('posts', []))}")
         # Log filtering stats for debugging
         stats = result.get('stats', {})

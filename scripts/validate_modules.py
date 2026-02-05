@@ -282,12 +282,12 @@ class ModuleValidator:
     
     @validate("SelectorManager - Import")
     def test_selector_manager_import(self):
-        from scraper.selectors import SelectorManager, SelectorConfig
+        from scraper.css_selectors import SelectorManager, SelectorConfig
         return True
     
     @validate("SelectorManager - Health Report")
     def test_selector_manager_health(self):
-        from scraper.selectors import SelectorManager
+        from scraper.css_selectors import SelectorManager
         import tempfile
         
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:

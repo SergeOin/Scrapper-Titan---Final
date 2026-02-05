@@ -59,6 +59,13 @@ from .bootstrap import (
     get_context,
 )
 
+# Import stealth module for browser fingerprint consistency
+from .stealth import (
+    get_stealth_context_options,
+    apply_stealth_scripts,
+    apply_advanced_stealth,
+)
+
 # Global rotation index for keyword batching (survives across worker cycles)
 # NOTE: Now managed by adapters.get_next_keywords() when use_keyword_strategy is enabled
 _keyword_rotation_index: int = 0
@@ -103,9 +110,25 @@ except Exception:  # pragma: no cover
 
 # Global debug log for subprocess debugging
 _WORKER_DEBUG_LOG_PATH = None
+_WORKER_DEBUG_LOG_MAX_SIZE = 1024 * 1024  # 1MB max size
+
+def _rotate_worker_log_if_needed():
+    """Rotate log file if it exceeds max size."""
+    global _WORKER_DEBUG_LOG_PATH
+    if _WORKER_DEBUG_LOG_PATH is None:
+        return
+    try:
+        if _WORKER_DEBUG_LOG_PATH.exists() and _WORKER_DEBUG_LOG_PATH.stat().st_size > _WORKER_DEBUG_LOG_MAX_SIZE:
+            # Keep last half of the file
+            content = _WORKER_DEBUG_LOG_PATH.read_text(encoding='utf-8', errors='ignore')
+            lines = content.splitlines()
+            half = len(lines) // 2
+            _WORKER_DEBUG_LOG_PATH.write_text('\n'.join(lines[half:]) + '\n', encoding='utf-8')
+    except Exception:
+        pass
 
 def _debug_log(msg: str):
-    """Log message to worker debug file."""
+    """Log message to worker debug file with rotation."""
     global _WORKER_DEBUG_LOG_PATH
     if _WORKER_DEBUG_LOG_PATH is None:
         localappdata = os.environ.get("LOCALAPPDATA", "")
@@ -115,6 +138,7 @@ def _debug_log(msg: str):
             _WORKER_DEBUG_LOG_PATH = Path(".") / "worker_debug.txt"
         _WORKER_DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
+        _rotate_worker_log_if_needed()
         with open(_WORKER_DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
             f.write(f"{datetime.now().isoformat()} {msg}\n")
     except Exception:
@@ -418,13 +442,14 @@ async def _run_scraping_subprocess(keywords: list[str], ctx: AppContext, logger:
     
     # Use adapters for keyword selection if enabled, else legacy rotation
     flags = get_feature_flags()
+    start_idx = _keyword_rotation_index % total_keywords  # Always compute for logging
+    
     if flags.use_keyword_strategy:
         batch_keywords = _adapter_get_next_keywords(keywords, batch_size=batch_size)
         _debug_log(f"[ADAPTER] KeywordStrategy returned: {batch_keywords}")
     else:
         # Legacy rotation behavior
         _debug_log(f"rotation: index={_keyword_rotation_index}, total={total_keywords}")
-        start_idx = _keyword_rotation_index % total_keywords
         batch_keywords = []
         for i in range(batch_size):
             idx = (start_idx + i) % total_keywords
@@ -439,6 +464,7 @@ async def _run_scraping_subprocess(keywords: list[str], ctx: AppContext, logger:
                total_keywords=total_keywords)
     
     batch_posts = await _run_scraping_subprocess_batch(batch_keywords, ctx, logger)
+    _debug_log(f"_run_scraping_subprocess received batch_posts: type={type(batch_posts).__name__}, len={len(batch_posts) if isinstance(batch_posts, list) else 'N/A'}")
     
     # Check for restriction marker
     if isinstance(batch_posts, dict) and batch_posts.get("_restricted"):
@@ -450,6 +476,7 @@ async def _run_scraping_subprocess(keywords: list[str], ctx: AppContext, logger:
         return []
     
     posts = batch_posts if isinstance(batch_posts, list) else []
+    _debug_log(f"_run_scraping_subprocess returning {len(posts)} posts")
     logger.info("subprocess_batch_complete", posts_count=len(posts))
 
     return posts
@@ -461,6 +488,9 @@ async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, l
     browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
     storage_state_path = ctx.settings.storage_state
     
+    _debug_log(f"[STORAGE] Initial storage_state_path from settings: '{storage_state_path}'")
+    _debug_log(f"[STORAGE] frozen={getattr(sys, 'frozen', False)}")
+    
     if getattr(sys, "frozen", False):
         # In frozen mode, default to %LOCALAPPDATA%\TitanScraper paths
         localappdata = os.environ.get("LOCALAPPDATA", "")
@@ -468,9 +498,15 @@ async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, l
             titan_dir = os.path.join(localappdata, "TitanScraper")
             if not browsers_path:
                 browsers_path = os.path.join(titan_dir, "pw-browsers")
-            # If storage_state is relative, make it absolute in TitanScraper dir
-            if storage_state_path and not os.path.isabs(storage_state_path):
+            # If storage_state is relative or empty, make it absolute in TitanScraper dir
+            if not storage_state_path:
+                storage_state_path = os.path.join(titan_dir, "storage_state.json")
+                _debug_log(f"[STORAGE] storage_state was empty, defaulting to: '{storage_state_path}'")
+            elif not os.path.isabs(storage_state_path):
                 storage_state_path = os.path.join(titan_dir, storage_state_path)
+                _debug_log(f"[STORAGE] Made storage_state absolute: '{storage_state_path}'")
+    
+    _debug_log(f"[STORAGE] Final storage_state_path: '{storage_state_path}', exists={os.path.exists(storage_state_path) if storage_state_path else False}")
     
     # Prepare input data
     input_data = {
@@ -620,19 +656,29 @@ async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, l
         logger.info("subprocess_scraping_complete", posts_count=len(posts), keywords_processed=result.get("keywords_processed", 0))
         
         # [ADAPTER] Record successful scrape result for all modules
-        record_scrape_result(
-            posts_found=len(posts),
-            had_restriction=False,
-            had_captcha=False,
-        )
+        try:
+            record_scrape_result(
+                keywords_processed=keywords,
+                posts_found=len(posts),
+                posts_stored=len(posts),  # Will be updated after actual storage
+                had_restriction=False,
+                had_captcha=False,
+            )
+        except Exception as adapter_exc:
+            _debug_log(f"WARNING: record_scrape_result failed: {adapter_exc}")
         
         # [ADAPTER] Record results per keyword if available
-        for kw in batch_keywords:
-            record_keyword_result(keyword=kw, posts_found=len(posts) // len(batch_keywords))
+        try:
+            for kw in keywords:
+                record_keyword_result(keyword=kw, posts_found=len(posts) // len(keywords))
+        except Exception as adapter_exc:
+            _debug_log(f"WARNING: record_keyword_result failed: {adapter_exc}")
         
+        _debug_log(f"about to return {len(posts)} posts from _run_scraping_subprocess_batch")
         return posts
     
     except Exception as exc:
+        _debug_log(f"EXCEPTION in _run_scraping_subprocess_batch: {type(exc).__name__}: {exc}")
         logger.error("subprocess_scraping_error", error=str(exc))
         return []
     
@@ -642,6 +688,15 @@ async def _run_scraping_subprocess_batch(keywords: list[str], ctx: AppContext, l
             os.unlink(input_file.name)
         except Exception:
             pass
+        # DEBUG: Garder une copie du dernier output pour analyse
+        try:
+            import shutil
+            debug_output = Path(os.environ.get("LOCALAPPDATA", ".")) / "TitanScraper" / "last_scraper_output.json"
+            if os.path.exists(output_file_path):
+                shutil.copy2(output_file_path, debug_output)
+                _debug_log(f"DEBUG: Saved output copy to {debug_output}")
+        except Exception as copy_err:
+            _debug_log(f"DEBUG: Failed to copy output: {copy_err}")
         try:
             os.unlink(output_file_path)
         except Exception:
@@ -701,12 +756,15 @@ async def _ensure_authenticated(page: Any, ctx: AppContext, logger: structlog.Bo
                 pass
     # Re-check after possible wait
     if await _has_li_at_cookie(page):
-        # Save storage state (may contain fresh cookies / session)
-        try:
-            await page.context.storage_state(path=ctx.settings.storage_state)
-            logger.info("storage_state_updated", path=ctx.settings.storage_state)
-        except Exception as exc:
-            logger.warning("storage_state_save_failed", error=str(exc))
+        # NOTE: Disabled storage_state auto-save as it can overwrite valid session with 
+        # a degraded token from LinkedIn's feed page that fails on search URLs.
+        # Session should only be generated via manual login or auto_reconnect.py
+        logger.info("session_valid", has_li_at=True)
+        # try:
+        #     await page.context.storage_state(path=ctx.settings.storage_state)
+        #     logger.info("storage_state_updated", path=ctx.settings.storage_state)
+        # except Exception as exc:
+        #     logger.warning("storage_state_save_failed", error=str(exc))
     else:
         logger.warning("still_unauthenticated_after_wait")
     # Always attempt a diagnostic screenshot after auth handling (best-effort)
@@ -726,10 +784,17 @@ async def process_keywords_single_session(keywords: list[str], ctx: AppContext) 
     try:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=ctx.settings.playwright_headless_scrape)
-            context = await browser.new_context(
-                storage_state=ctx.settings.storage_state if os.path.exists(ctx.settings.storage_state) else None
-            )
+            # Apply stealth options to match real Chrome browser fingerprint
+            stealth_opts = get_stealth_context_options()
+            context_opts = {
+                **stealth_opts,
+                "storage_state": ctx.settings.storage_state if os.path.exists(ctx.settings.storage_state) else None,
+            }
+            context = await browser.new_context(**context_opts)
             page = await context.new_page()
+            # Apply anti-detection scripts
+            await apply_stealth_scripts(page)
+            await apply_advanced_stealth(page)
             await _ensure_authenticated(page, ctx, logger)
             for idx, keyword in enumerate(keywords):
                 # cooperative cancellation between keywords
@@ -794,11 +859,17 @@ async def _attempt_navigation(page: Any, url: str, ctx: AppContext, logger: stru
 async def _recover_browser(pw, ctx: AppContext, logger: structlog.BoundLogger):  # returns (browser, page) or None
     try:
         browser = await pw.chromium.launch(headless=ctx.settings.playwright_headless_scrape)
-        # Apply storage_state on context to restore authenticated session
-        context = await browser.new_context(
-            storage_state=ctx.settings.storage_state if os.path.exists(ctx.settings.storage_state) else None
-        )
+        # Apply stealth options to match real Chrome browser fingerprint
+        stealth_opts = get_stealth_context_options()
+        context_opts = {
+            **stealth_opts,
+            "storage_state": ctx.settings.storage_state if os.path.exists(ctx.settings.storage_state) else None,
+        }
+        context = await browser.new_context(**context_opts)
         page = await context.new_page()
+        # Apply anti-detection scripts
+        await apply_stealth_scripts(page)
+        await apply_advanced_stealth(page)
         await _ensure_authenticated(page, ctx, logger)
         return browser, page
     except Exception as exc:
@@ -979,39 +1050,64 @@ class StorageError(Exception):
 # ------------------------------------------------------------
 # Storage Helpers
 # ------------------------------------------------------------
+
+async def _get_daily_count_from_db(ctx: AppContext, today_iso: str) -> int:
+    """Get the count of posts collected today from SQLite.
+    
+    FIX BUG-001/002: This ensures daily_count is synchronized with actual DB state.
+    
+    Args:
+        ctx: Application context with settings
+        today_iso: Today's date in ISO format (YYYY-MM-DD)
+    
+    Returns:
+        Number of posts collected today
+    """
+    try:
+        if ctx.settings.sqlite_path:
+            import sqlite3
+            conn = sqlite3.connect(ctx.settings.sqlite_path)
+            try:
+                cur = conn.cursor()
+                # Count posts where collected_at starts with today's date
+                cur.execute(
+                    "SELECT COUNT(*) FROM posts WHERE collected_at LIKE ?",
+                    (f"{today_iso}%",)
+                )
+                result = cur.fetchone()
+                count = result[0] if result else 0
+                _debug_log(f"_get_daily_count_from_db: {count} posts for {today_iso}")
+                return count
+            finally:
+                conn.close()
+    except Exception as exc:
+        _debug_log(f"_get_daily_count_from_db failed: {exc}")
+    return 0
+
+
 async def store_posts(ctx: AppContext, posts: list[Post]) -> int:
     """Store posts using priority: SQLite → CSV.
 
     Each path tries to insert many; duplicates filtered by _id (hash).
     
-    [ADAPTER] If use_post_cache is enabled, deduplicates using PostCache before storage.
+    NOTE: PostCache deduplication is now handled in scrape_subprocess.py.
+    The subprocess already calls mark_post_seen() for accepted posts,
+    so we skip the duplicate check here to avoid double-filtering.
     """
     if not posts:
         return 0
     
-    # [ADAPTER] Filter duplicates using PostCache if enabled
-    flags = get_feature_flags()
-    if flags.use_post_cache:
-        original_count = len(posts)
-        non_duplicate_posts = []
-        for p in posts:
-            if not is_duplicate_post(text=p.text, url=getattr(p, 'permalink', ''), post_id=p.id):
-                non_duplicate_posts.append(p)
-                # Mark as seen for future deduplication
-                mark_post_seen(text=p.text, url=getattr(p, 'permalink', ''), post_id=p.id)
-        
-        if len(non_duplicate_posts) < original_count:
-            ctx.logger.info("post_cache_dedup", 
-                          original=original_count, 
-                          after_dedup=len(non_duplicate_posts),
-                          filtered_out=original_count - len(non_duplicate_posts))
-        posts = non_duplicate_posts
-        
-        if not posts:
-            return 0
+    # SKIP PostCache deduplication here - already done in subprocess via mark_post_seen()
+    # The subprocess marks posts as seen when accepting them, so checking again here
+    # would incorrectly filter out all posts that were just scraped.
+    # SQLite's INSERT OR IGNORE with unique indexes handles any remaining duplicates.
     
     # Retain posts as-is (tests rely on counting inserted rows), previously we filtered mock artifacts here.
     logger = ctx.logger.bind(step="store_posts", count=len(posts))
+    
+    # DEBUG: Log entry into store_posts - SIMPLE VERSION
+    _debug_log(f"STORE_POSTS ENTRY: {len(posts)} posts")
+    
     # SQLite primary storage
     try:
         with SCRAPE_STEP_DURATION.labels(step="sqlite_insert").time():
@@ -1037,6 +1133,7 @@ async def store_posts(ctx: AppContext, posts: list[Post]) -> int:
 
 def _store_sqlite(settings: "Settings", posts: list[Post]) -> int:
     path = settings.sqlite_path
+    _debug_log(f"_store_sqlite: using path={path}, posts={len(posts)}")
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     with conn:
@@ -1092,24 +1189,37 @@ def _store_sqlite(settings: "Settings", posts: list[Post]) -> int:
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uniq_posts_content_hash ON posts(content_hash) WHERE content_hash IS NOT NULL")
             except Exception:
                 pass
-        except Exception:
-            pass
-            # Add new classification columns if missing (idempotent)
-            for new_col, ddl in [
-                ("intent", "ALTER TABLE posts ADD COLUMN intent TEXT"),
-                ("relevance_score", "ALTER TABLE posts ADD COLUMN relevance_score REAL"),
-                ("confidence", "ALTER TABLE posts ADD COLUMN confidence REAL"),
-                ("location_ok", "ALTER TABLE posts ADD COLUMN location_ok INTEGER"),
-                ("keywords_matched", "ALTER TABLE posts ADD COLUMN keywords_matched TEXT"),
-            ]:
-                if new_col not in cols:
-                    try:
-                        conn.execute(ddl)
-                        cols.append(new_col)
-                    except Exception:
-                        pass
+            # Performance indexes for common queries
+            try:
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_collected_at ON posts(collected_at DESC)")
+            except Exception:
+                pass
+            try:
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author)")
+            except Exception:
+                pass
+            try:
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_keyword ON posts(keyword)")
+            except Exception:
+                pass
         except Exception:
             cols = []  # pragma: no cover
+        
+        # Add new classification columns if missing (idempotent)
+        for new_col, ddl in [
+            ("intent", "ALTER TABLE posts ADD COLUMN intent TEXT"),
+            ("relevance_score", "ALTER TABLE posts ADD COLUMN relevance_score REAL"),
+            ("confidence", "ALTER TABLE posts ADD COLUMN confidence REAL"),
+            ("location_ok", "ALTER TABLE posts ADD COLUMN location_ok INTEGER"),
+            ("keywords_matched", "ALTER TABLE posts ADD COLUMN keywords_matched TEXT"),
+        ]:
+            if new_col not in cols:
+                try:
+                    conn.execute(ddl)
+                    cols.append(new_col)
+                except Exception:
+                    pass
+        
         rows: list[tuple] = []
         seen_hashes = set()
         for p in posts:
@@ -1180,15 +1290,31 @@ def _store_sqlite(settings: "Settings", posts: list[Post]) -> int:
             col_names = list(rows[0].keys())
             placeholders = ",".join(["?"] * len(col_names))
             sql = f"INSERT OR IGNORE INTO posts ({','.join(col_names)}) VALUES ({placeholders})"
+            
+            # DEBUG: Count before insert
+            count_before = conn.execute("SELECT COUNT(*) FROM posts").fetchone()[0]
+            _debug_log(f"_store_sqlite: about to insert {len(rows)} rows, count_before={count_before}")
+            
             conn.executemany(sql, [tuple(r[c] for c in col_names) for r in rows])
-            # Capture number of newly inserted rows before any post_flags updates
+            conn.commit()  # Explicit commit
+            
+            # DEBUG: Count after insert
+            count_after = conn.execute("SELECT COUNT(*) FROM posts").fetchone()[0]
+            inserted_rows = count_after - count_before
+            _debug_log(f"_store_sqlite: count_after={count_after}, inserted={inserted_rows}")
+            
+            # DEBUG: Log to file
             try:
-                inserted_rows = conn.total_changes
+                debug_path = Path(os.environ.get("LOCALAPPDATA", ".")) / "TitanScraper" / "sqlite_debug.txt"
+                with open(debug_path, 'a', encoding='utf-8') as f:
+                    from datetime import datetime, timezone
+                    now = datetime.now(timezone.utc).isoformat()
+                    f.write(f"{now} - rows_to_insert={len(rows)}, before={count_before}, after={count_after}, inserted={inserted_rows}\n")
+                    for r in rows[:3]:  # Log first 3 rows
+                        f.write(f"  Row: id={r.get('id','?')}, author={r.get('author','?')[:30]}, permalink={r.get('permalink','?')[:50]}\n")
             except Exception:
-                try:
-                    inserted_rows = int(conn.execute("SELECT changes()").fetchone()[0])
-                except Exception:
-                    inserted_rows = 0
+                pass
+            
             # Auto-favorite opportunity posts (unified predicate utils.is_opportunity)
             try:
                 conn.execute("""CREATE TABLE IF NOT EXISTS post_flags (
@@ -1297,7 +1423,9 @@ async def update_meta(ctx: AppContext, total_new: int) -> None:
 # Playwright extraction logic (élargi)
 # ------------------------------------------------------------
 # Plusieurs sélecteurs possibles pour couvrir différents layouts LinkedIn.
+# 2025-01: LinkedIn utilise maintenant div[role="listitem"] pour les résultats de recherche
 POST_CONTAINER_SELECTORS = [
+    'div[role="listitem"]',  # NEW 2025: Search results use listitem role
     "article[data-urn*='urn:li:activity']",
     "div.feed-shared-update-v2",
     "div.update-components-feed-update",
@@ -2250,12 +2378,15 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                     provided = [k.strip().lower() for k in ctx.settings.legal_keywords_override.split(';') if k.strip()]
             except Exception:
                 provided = []
-            # simple cap tracking per UTC day
+            # simple cap tracking per UTC day - FIXED: Sync with SQLite on date change
             from datetime import date
             today = date.today().isoformat()
             if getattr(ctx, 'legal_daily_date', None) != today:
                 setattr(ctx, 'legal_daily_date', today)
-                setattr(ctx, 'legal_daily_count', 0)
+                # FIX BUG-001/002: Synchronize daily_count with actual DB count for today
+                actual_today_count = await _get_daily_count_from_db(ctx, today)
+                setattr(ctx, 'legal_daily_count', actual_today_count)
+                _debug_log(f"daily_count synced from DB: {actual_today_count} posts for {today}")
             daily_count = getattr(ctx, 'legal_daily_count', 0)
             cap = ctx.settings.legal_daily_post_cap
             relaxed = bool(getattr(ctx, "_relaxed_filters", False))
@@ -2265,6 +2396,18 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
                 if (daily_count + accepted_in_batch) >= cap:
                     LEGAL_DAILY_CAP_REACHED.inc()
                     _debug_log(f"daily cap reached at {accepted_in_batch} accepted")
+                    # Broadcast SSE event to notify dashboard
+                    if broadcast and EventType:
+                        try:
+                            asyncio.create_task(broadcast({
+                                "type": EventType.CAP_REACHED,
+                                "message": f"Cap quotidien atteint ({cap} posts). Collecte suspendue jusqu'à demain.",
+                                "daily_count": daily_count + accepted_in_batch,
+                                "cap": cap,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }))
+                        except Exception:
+                            pass
                     break
                 # Classification and gating
                 lc = classify_legal_post(p.text, language=p.language, intent_threshold=ctx.settings.legal_intent_threshold)
@@ -2351,10 +2494,10 @@ async def process_job(keywords: Iterable[str], ctx: AppContext) -> int:
             if ctx.daily_post_date != today:
                 ctx.daily_post_date = today
                 ctx.daily_post_count = 0
-            ctx.daily_post_count += len(all_new)
+            ctx.daily_post_count += inserted  # Use actually inserted count
         except Exception:
             pass
-        await update_meta(ctx, len(all_new))
+        await update_meta(ctx, inserted)  # Use actually inserted count
         meta_written = True
         if broadcast and EventType:  # best-effort SSE
             try:

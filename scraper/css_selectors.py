@@ -12,7 +12,7 @@ Architecture:
     Stats are persisted to SQLite for continuity across restarts.
 
 Usage:
-    from scraper.selectors import get_selector_manager
+    from scraper.css_selectors import get_selector_manager
     
     manager = get_selector_manager()
     posts = await manager.find_posts(page)
@@ -57,12 +57,14 @@ class SelectorConfig:
 
 
 # Post containers (article/div wrapping each post)
+# 2025-01: LinkedIn utilise maintenant div[role="listitem"] pour les résultats de recherche
 POST_CONTAINER_SELECTORS: list[SelectorConfig] = [
-    SelectorConfig("article[data-urn*='urn:li:activity']", "article_data_urn", priority=0),
-    SelectorConfig("div[data-urn*='urn:li:activity:']", "div_data_urn", priority=1),
-    SelectorConfig("div.feed-shared-update-v2", "feed_shared_update", priority=2),
-    SelectorConfig("div.update-components-feed-update", "update_components", priority=3, is_fallback=True),
-    SelectorConfig("div.occludable-update", "occludable_update", priority=4, is_fallback=True),
+    SelectorConfig('div[role="listitem"]', "listitem_role", priority=0),  # NEW 2025: Search results
+    SelectorConfig("article[data-urn*='urn:li:activity']", "article_data_urn", priority=1),
+    SelectorConfig("div[data-urn*='urn:li:activity:']", "div_data_urn", priority=2),
+    SelectorConfig("div.feed-shared-update-v2", "feed_shared_update", priority=3),
+    SelectorConfig("div.update-components-feed-update", "update_components", priority=4, is_fallback=True),
+    SelectorConfig("div.occludable-update", "occludable_update", priority=5, is_fallback=True),
 ]
 
 # Author name within a post
@@ -166,7 +168,15 @@ class SelectorManager:
     """
     
     _instance: Optional['SelectorManager'] = None
-    _lock = asyncio.Lock()
+    _lock: Optional['asyncio.Lock'] = None  # Lazy init to avoid circular import with socket/selectors
+    
+    @classmethod
+    def _get_lock(cls) -> 'asyncio.Lock':
+        """Get or create the asyncio lock (lazy initialization)."""
+        if cls._lock is None:
+            import asyncio as _asyncio
+            cls._lock = _asyncio.Lock()
+        return cls._lock
     
     def __init__(self, db_path: Optional[str] = None):
         """Initialize with optional custom DB path."""
@@ -189,7 +199,7 @@ class SelectorManager:
         if self._initialized:
             return
         
-        async with self._lock:
+        async with self._get_lock():
             if self._initialized:
                 return
             
@@ -433,6 +443,14 @@ class SelectorManager:
     # =========================================================================
     # HEALTH & STATUS
     # =========================================================================
+    
+    def get_all_stats(self) -> dict[str, SelectorStats]:
+        """Get all selector statistics.
+        
+        Returns:
+            Dict mapping selector names to their stats
+        """
+        return self._stats.copy()
     
     def get_health_report(self) -> dict:
         """Generate health report for all selectors."""

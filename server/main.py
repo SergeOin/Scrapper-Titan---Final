@@ -264,7 +264,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
     finally:
         if bg_task:
             bg_task.cancel()
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await bg_task
             try:
                 setattr(ctx, "_autonomous_worker_active", False)
@@ -272,7 +272,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: D401
                 pass
         if norm_task:
             norm_task.cancel()
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await norm_task
         if getattr(ctx.settings, "quiet_startup", False):
             ctx.logger.debug("api_shutdown")

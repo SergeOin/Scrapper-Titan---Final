@@ -105,8 +105,9 @@ class Settings(BaseSettings):
     scroll_wait_ms: int = Field(1500, alias="SCROLL_WAIT_MS")  # Augmenté 800→1500 pour paraître humain
     min_posts_target: int = Field(5, alias="MIN_POSTS_TARGET")  # Réduit 15→5 pour éviter timeout
     # Seuil de signal de recrutement - AUGMENTÉ pour exiger un vrai signal de recrutement
-    # 0.15 = nécessite des termes explicites comme "recrute", "poste", "offre d'emploi"
-    recruitment_signal_threshold: float = Field(0.15, alias="RECRUITMENT_SIGNAL_THRESHOLD")
+    # 0.20 = nécessite des termes explicites comme "recrute", "poste", "offre d'emploi"
+    # (relevé de 0.15 à 0.20 pour réduire les faux positifs veille/articles)
+    recruitment_signal_threshold: float = Field(0.20, alias="RECRUITMENT_SIGNAL_THRESHOLD")
 
     # Post age filter (3 weeks = 21 days - STRICTEMENT APPLIQUÉ)
     max_post_age_days: int = Field(21, alias="MAX_POST_AGE_DAYS")  # CRITIQUE: Posts > 21 jours REJETÉS
@@ -200,7 +201,8 @@ class Settings(BaseSettings):
     # LEGAL FILTER: Filtre complet pour offres d'emploi juridiques (scoring + exclusions)
     filter_legal_posts_only: bool = Field(True, alias="FILTER_LEGAL_POSTS_ONLY")
     # Seuils de scoring pour le filtre légal (ajustables)
-    legal_filter_recruitment_threshold: float = Field(0.15, alias="LEGAL_FILTER_RECRUITMENT_THRESHOLD")
+    # NOTE: Relevé de 0.15 à 0.20 pour réduire les faux positifs (veille, articles)
+    legal_filter_recruitment_threshold: float = Field(0.20, alias="LEGAL_FILTER_RECRUITMENT_THRESHOLD")
     legal_filter_legal_threshold: float = Field(0.20, alias="LEGAL_FILTER_LEGAL_THRESHOLD")
     # Exclusions granulaires (toutes activées par défaut)
     legal_filter_exclude_stage: bool = Field(True, alias="LEGAL_FILTER_EXCLUDE_STAGE")
@@ -253,7 +255,11 @@ class Settings(BaseSettings):
         "village de la justice;michael page;robert half;hays;fed legal;fed juridique;"
         "page personnel;expectra;adecco;manpower;randstad;spring professional;"
         "lincoln associates;laurence simons;taylor root;major hunter;approach people;"
-        "keljob;monster;cadremploi",
+        "keljob;monster;cadremploi;"
+        # FIX FP-001: Ajout des job boards/agrégateurs identifiés comme faux positifs
+        "emplois & bourses;emplois bourses;jobrapide;job rapide;"
+        "emploi-juridique;emploijuridique;village-justice;legaljobs;legal jobs;"
+        "indeed;glassdoor;welcome to the jungle;welcometothejungle",
         alias="EXCLUDED_AUTHORS"
     )
     # Keywords de renfort (booster) injectés dynamiquement quand quota < 80%
@@ -729,7 +735,7 @@ def build_filter_config(settings: Settings) -> "FilterConfig":
     """
     from .legal_filter import FilterConfig
     return FilterConfig(
-        recruitment_threshold=getattr(settings, 'legal_filter_recruitment_threshold', 0.15),
+        recruitment_threshold=getattr(settings, 'legal_filter_recruitment_threshold', 0.20),
         legal_threshold=getattr(settings, 'legal_filter_legal_threshold', 0.20),
         exclude_stage=getattr(settings, 'legal_filter_exclude_stage', True),
         exclude_freelance=getattr(settings, 'legal_filter_exclude_freelance', True),

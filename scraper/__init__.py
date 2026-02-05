@@ -11,11 +11,16 @@ MODULES:
     - linkedin: Analyse spécifique LinkedIn (type d'auteur, etc.)
     - stats: Statistiques et logging détaillé
     - utils: Fonctions utilitaires
+    - stealth: Anti-detection et fingerprint management
+    - timing: Delay configuration and human-like timing
+    - content_loader: Dynamic content handling
+    - diagnostics: Health checks and troubleshooting
 
 USAGE:
     from scraper import is_legal_job_post, FilterConfig
     from scraper.linkedin import LinkedInPostAnalyzer, is_relevant_for_titan
     from scraper.stats import ScraperStats
+    from scraper.diagnostics import run_full_diagnostic
 """
 
 from . import utils  # noqa: F401 (expose utilitaires de haut niveau si nécessaire)

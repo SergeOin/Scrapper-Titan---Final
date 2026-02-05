@@ -395,6 +395,11 @@ class ProgressiveModeManager:
 _manager_instance: Optional[ProgressiveModeManager] = None
 
 
+def get_mode_manager() -> ProgressiveModeManager:
+    """Alias for get_progressive_mode_manager (backward compatibility)."""
+    return get_progressive_mode_manager()
+
+
 def get_progressive_mode_manager() -> ProgressiveModeManager:
     """Get or create progressive mode manager singleton."""
     global _manager_instance

@@ -37,7 +37,6 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -68,6 +67,10 @@ class FeatureFlags:
     use_metadata_extractor: bool = False   # Use MetadataExtractor for dates/authors
     use_unified_filter: bool = False       # Use unified filter instead of EXCLUSION lists
     use_ml_interface: bool = False         # Use ML classification
+    # v2 Micro-session strategy
+    use_session_orchestrator: bool = False # Use SessionOrchestrator for micro-sessions
+    use_company_whitelist: bool = False    # Use company whitelist instead of keywords
+    use_pre_qualifier: bool = False        # Use pre-qualification before full extraction
 
 
 def _load_flags_from_env() -> FeatureFlags:
@@ -76,8 +79,9 @@ def _load_flags_from_env() -> FeatureFlags:
     enable_all = _env_bool("TITAN_ENABLE_ALL")
     enable_phase2 = _env_bool("TITAN_ENABLE_PHASE2")
     enable_phase1 = _env_bool("TITAN_ENABLE_PHASE1")
-    
-    if enable_all:
+    enable_v2 = _env_bool("TITAN_ENABLE_V2")  # v2: Micro-session strategy
+
+    if enable_all or enable_v2:
         return FeatureFlags(
             use_keyword_strategy=True,
             use_progressive_mode=True,
@@ -87,8 +91,12 @@ def _load_flags_from_env() -> FeatureFlags:
             use_metadata_extractor=True,
             use_unified_filter=True,
             use_ml_interface=True,
+            # v2 features
+            use_session_orchestrator=enable_v2 or enable_all,
+            use_company_whitelist=enable_v2 or enable_all,
+            use_pre_qualifier=enable_v2 or enable_all,
         )
-    
+
     if enable_phase2:
         return FeatureFlags(
             use_keyword_strategy=True,
@@ -100,7 +108,7 @@ def _load_flags_from_env() -> FeatureFlags:
             use_unified_filter=False,
             use_ml_interface=False,
         )
-    
+
     if enable_phase1:
         return FeatureFlags(
             use_keyword_strategy=False,
@@ -112,7 +120,7 @@ def _load_flags_from_env() -> FeatureFlags:
             use_unified_filter=False,
             use_ml_interface=False,
         )
-    
+
     # Individual flags
     return FeatureFlags(
         use_keyword_strategy=_env_bool("TITAN_USE_KEYWORD_STRATEGY"),
@@ -123,6 +131,10 @@ def _load_flags_from_env() -> FeatureFlags:
         use_metadata_extractor=_env_bool("TITAN_USE_METADATA_EXTRACTOR"),
         use_unified_filter=_env_bool("TITAN_USE_UNIFIED_FILTER"),
         use_ml_interface=_env_bool("TITAN_USE_ML_INTERFACE"),
+        # v2 flags (individual toggle)
+        use_session_orchestrator=_env_bool("TITAN_USE_SESSION_ORCHESTRATOR"),
+        use_company_whitelist=_env_bool("TITAN_USE_COMPANY_WHITELIST"),
+        use_pre_qualifier=_env_bool("TITAN_USE_PRE_QUALIFIER"),
     )
 
 
@@ -220,29 +232,26 @@ def get_next_keywords(
         List of keywords for this scraping cycle
     """
     global _legacy_rotation_index
-    
+
     if _feature_flags.use_keyword_strategy:
         try:
             from .keyword_strategy import get_keyword_strategy
-            strategy = get_keyword_strategy()
-            # Initialize with all keywords if empty
-            if not strategy._stats:
-                strategy.initialize_keywords(all_keywords)
+            strategy = get_keyword_strategy(all_keywords)  # Pass keywords for initialization
             return strategy.get_next_batch(batch_size)
         except Exception as e:
             logger.warning(f"KeywordStrategy failed, using legacy: {e}")
-    
+
     # Legacy rotation behavior
     total = len(all_keywords)
     if total == 0:
         return []
-    
+
     start_idx = _legacy_rotation_index % total
     batch = []
     for i in range(batch_size):
         idx = (start_idx + i) % total
         batch.append(all_keywords[idx])
-    
+
     _legacy_rotation_index = (_legacy_rotation_index + batch_size) % total
     return batch
 
@@ -301,7 +310,7 @@ def get_scraping_limits(
             )
         except Exception as e:
             logger.warning(f"ProgressiveModeManager failed, using defaults: {e}")
-    
+
     return ScrapingLimits(
         posts_per_run=default_posts_per_run,
         keywords_per_run=default_keywords_per_run,
@@ -344,17 +353,17 @@ def get_next_interval(
         try:
             from .smart_scheduler import get_smart_scheduler, SchedulerEvent
             scheduler = get_smart_scheduler()
-            
+
             # Record the result
             if success:
                 scheduler.record_event(SchedulerEvent.SESSION_SUCCESS, {"posts_found": posts_found})
             else:
                 scheduler.record_event(SchedulerEvent.SESSION_FAILURE)
-            
+
             return scheduler.get_next_interval()
         except Exception as e:
             logger.warning(f"SmartScheduler failed, using default: {e}")
-    
+
     return default_interval
 
 
@@ -363,23 +372,104 @@ def should_scrape_now() -> tuple[bool, str]:
     
     Returns (should_scrape, reason)
     """
+    # v2: Use SessionOrchestrator for micro-session scheduling
+    if _feature_flags.use_session_orchestrator:
+        try:
+            from .session_orchestrator import get_session_orchestrator
+            orchestrator = get_session_orchestrator()
+
+            can_scrape, reason = orchestrator.should_scrape_now()
+            return can_scrape, reason
+        except Exception as e:
+            logger.warning(f"SessionOrchestrator check failed: {e}, falling back to SmartScheduler")
+
     if _feature_flags.use_smart_scheduler:
         try:
             from .smart_scheduler import get_smart_scheduler
             scheduler = get_smart_scheduler()
-            
+
             status = scheduler.get_status()
             if status.get("paused"):
                 return False, "Scheduler is paused"
-            
+
             if not status.get("in_active_window", True):
                 return False, "Outside active hours"
-            
+
             return True, "OK"
         except Exception as e:
             logger.warning(f"SmartScheduler check failed: {e}")
-    
+
     return True, "OK (legacy mode)"
+
+
+def get_session_quota() -> int:
+    """Get the post quota for current session.
+    
+    Returns 0 if no quota (unlimited) or if session orchestrator is disabled.
+    """
+    if _feature_flags.use_session_orchestrator:
+        try:
+            from .session_orchestrator import get_session_orchestrator
+            orchestrator = get_session_orchestrator()
+            return orchestrator.get_session_quota()
+        except Exception as e:
+            logger.warning(f"SessionOrchestrator quota check failed: {e}")
+
+    return 0  # No quota
+
+
+def start_scraping_session() -> Optional[dict]:
+    """Start a new scraping session with the orchestrator.
+    
+    Returns session info dict or None if not using orchestrator.
+    """
+    if _feature_flags.use_session_orchestrator:
+        try:
+            from .session_orchestrator import get_session_orchestrator
+            orchestrator = get_session_orchestrator()
+            return orchestrator.start_session()
+        except Exception as e:
+            logger.warning(f"Failed to start session: {e}")
+
+    return None
+
+
+def end_scraping_session(posts_collected: int = 0) -> None:
+    """End the current scraping session."""
+    if _feature_flags.use_session_orchestrator:
+        try:
+            from .session_orchestrator import get_session_orchestrator
+            orchestrator = get_session_orchestrator()
+            orchestrator.end_session(posts_collected)
+        except Exception as e:
+            logger.warning(f"Failed to end session: {e}")
+
+
+def get_target_companies(max_companies: int = 5) -> list[dict]:
+    """Get target companies for this session from whitelist.
+    
+    Returns list of company dicts with 'name', 'linkedin_url', 'tier'.
+    """
+    if _feature_flags.use_company_whitelist:
+        try:
+            from .company_whitelist import get_company_whitelist
+            whitelist = get_company_whitelist()
+            return whitelist.get_companies_for_session(max_companies)
+        except Exception as e:
+            logger.warning(f"CompanyWhitelist failed: {e}")
+
+    return []  # Fall back to keyword search
+
+
+def record_company_visit(company_name: str, posts_found: int = 0) -> None:
+    """Record a visit to a company page."""
+    if _feature_flags.use_company_whitelist:
+        try:
+            from .company_whitelist import get_company_whitelist
+            whitelist = get_company_whitelist()
+            whitelist.record_visit(company_name, posts_found)
+        except Exception as e:
+            logger.warning(f"Failed to record company visit: {e}")
 
 
 def pause_scheduler(duration_minutes: int = 60) -> None:
@@ -412,6 +502,7 @@ def is_duplicate_post(
     text: str = "",
     url: str = "",
     post_id: str = "",
+    author: str = "",
 ) -> bool:
     """Check if a post is a duplicate.
     
@@ -424,7 +515,7 @@ def is_duplicate_post(
             return cache.is_duplicate(text=text, url=url, post_id=post_id)
         except Exception as e:
             logger.warning(f"PostCache check failed: {e}")
-    
+
     return False
 
 
@@ -472,24 +563,24 @@ def should_keep_post(
                 return False, result.category.value, result.confidence
         except Exception as e:
             logger.warning(f"ML classification failed: {e}")
-    
+
     # Try unified filter
     if _feature_flags.use_unified_filter:
         try:
             from filters.unified import classify_post, PostCategory
             result = classify_post(text, author, company)
-            is_relevant = result.category == PostCategory.RELEVANT_LEGAL
+            is_relevant = result.category == PostCategory.RELEVANT
             return is_relevant, result.category.value, result.confidence
         except Exception as e:
             logger.warning(f"UnifiedFilter failed: {e}")
-    
+
     # Legacy exclusion-based filtering
     if legacy_exclusions:
         text_lower = text.lower()
         for pattern in legacy_exclusions:
             if pattern.lower() in text_lower:
                 return False, "excluded_pattern", 1.0
-    
+
     return True, "no_filter", 0.5
 
 
@@ -528,7 +619,7 @@ def extract_post_metadata(
             }
         except Exception as e:
             logger.warning(f"MetadataExtractor failed: {e}")
-    
+
     # Basic fallback
     return {
         "published_at": None,
@@ -550,12 +641,12 @@ def get_selector(name: str, fallback: str = "") -> str:
     """
     if _feature_flags.use_selector_manager:
         try:
-            from .selectors import get_selector_manager
+            from .css_selectors import get_selector_manager
             manager = get_selector_manager()
             return manager.get_selector(name) or fallback
         except Exception as e:
             logger.warning(f"SelectorManager failed: {e}")
-    
+
     return fallback
 
 
@@ -563,10 +654,10 @@ def record_selector_success(name: str) -> None:
     """Record a successful selector use."""
     if _feature_flags.use_selector_manager:
         try:
-            from .selectors import get_selector_manager
+            from .css_selectors import get_selector_manager
             manager = get_selector_manager()
             manager.record_success(name)
-        except Exception as e:
+        except Exception:
             pass
 
 
@@ -574,10 +665,10 @@ def record_selector_failure(name: str) -> None:
     """Record a failed selector use."""
     if _feature_flags.use_selector_manager:
         try:
-            from .selectors import get_selector_manager
+            from .css_selectors import get_selector_manager
             manager = get_selector_manager()
             manager.record_failure(name)
-        except Exception as e:
+        except Exception:
             pass
 
 
@@ -612,7 +703,7 @@ def record_scrape_result(
                 )
         except Exception as e:
             logger.warning(f"Failed to record keyword results: {e}")
-    
+
     # Record progressive mode events
     if _feature_flags.use_progressive_mode:
         try:
@@ -626,7 +717,7 @@ def record_scrape_result(
                 manager.record_success()
         except Exception as e:
             logger.warning(f"Failed to update progressive mode: {e}")
-    
+
     # Record scheduler events
     if _feature_flags.use_smart_scheduler:
         try:
@@ -639,10 +730,11 @@ def record_scrape_result(
                 scheduler.record_event(SchedulerEvent.SESSION_SUCCESS, {"posts_found": posts_stored})
         except Exception as e:
             logger.warning(f"Failed to update scheduler: {e}")
-    
+
+    # FIX BUG-003: Use keywords_count instead of keywords to avoid structlog conflict
     logger.info(
         "scrape_result_recorded",
-        keywords=len(keywords_processed),
+        keywords_count=len(keywords_processed),
         posts_found=posts_found,
         posts_stored=posts_stored,
         had_restriction=had_restriction,
@@ -670,7 +762,7 @@ def get_adapter_status() -> dict[str, Any]:
         },
         "modules": {},
     }
-    
+
     # Check each module
     if _feature_flags.use_keyword_strategy:
         try:
@@ -679,7 +771,7 @@ def get_adapter_status() -> dict[str, Any]:
             status["modules"]["keyword_strategy"] = strategy.get_stats()
         except Exception as e:
             status["modules"]["keyword_strategy"] = {"error": str(e)}
-    
+
     if _feature_flags.use_progressive_mode:
         try:
             from .progressive_mode import get_mode_manager
@@ -687,7 +779,7 @@ def get_adapter_status() -> dict[str, Any]:
             status["modules"]["progressive_mode"] = manager.get_status()
         except Exception as e:
             status["modules"]["progressive_mode"] = {"error": str(e)}
-    
+
     if _feature_flags.use_smart_scheduler:
         try:
             from .smart_scheduler import get_smart_scheduler
@@ -695,7 +787,7 @@ def get_adapter_status() -> dict[str, Any]:
             status["modules"]["smart_scheduler"] = scheduler.get_status()
         except Exception as e:
             status["modules"]["smart_scheduler"] = {"error": str(e)}
-    
+
     if _feature_flags.use_post_cache:
         try:
             from .post_cache import get_post_cache
@@ -703,5 +795,5 @@ def get_adapter_status() -> dict[str, Any]:
             status["modules"]["post_cache"] = cache.get_stats()
         except Exception as e:
             status["modules"]["post_cache"] = {"error": str(e)}
-    
+
     return status

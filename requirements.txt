@@ -49,8 +49,8 @@ XlsxWriter~=3.2.0           # Excel export engine for pandas.to_excel
 # =============================
 # Security
 # =============================
-passlib[bcrypt]~=1.7.0      # Password hashing if internal auth layer added
-bcrypt==3.2.2               # Pinned for compatibility with passlib 1.7.x (bcrypt 4.x breaks __about__ attr usage)
+passlib~=1.7.4              # Password hashing (compatible with bcrypt 4.x via CryptContext)
+bcrypt~=4.2.0               # Modern bcrypt - passlib 1.7.4+ handles 4.x correctly
 pyopenssl~=24.1.0           # TLS utilities (optional)
 
 # Dev & tooling dependencies déplacées dans requirements-dev.txt

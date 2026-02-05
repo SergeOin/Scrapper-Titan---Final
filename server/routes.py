@@ -5,6 +5,7 @@ Endpoints:
 - POST /trigger       : Enqueue a scraping job (keywords optional)
 - GET /api/posts      : JSON listing with pagination
 - GET /health         : Simple liveness check
+- GET /healthz        : Kubernetes-style liveness probe (alias)
 - GET /metrics        : Prometheus metrics
 
 Auth (optional): Basic auth if INTERNAL_AUTH_USER and INTERNAL_AUTH_PASS_HASH set.
@@ -1883,6 +1884,12 @@ async def health(ctx=Depends(get_auth_context)):
     return data
 
 
+@router.get("/healthz")
+async def healthz(ctx=Depends(get_auth_context)):
+    """Kubernetes-style liveness probe (alias for /health)."""
+    return await health(ctx)
+
+
 @router.post("/api/admin/normalize_companies")
 async def admin_normalize_companies(ctx=Depends(get_auth_context), _auth=Depends(require_auth)):
     """Manual trigger for company normalization (SQLite only).
@@ -2760,7 +2767,7 @@ async def api_selector_health(ctx=Depends(get_auth_context), _auth=Depends(requi
     Returns selector success rates, fallback usage, and recommendations.
     """
     try:
-        from scraper.selectors import get_selector_manager
+        from scraper.css_selectors import get_selector_manager
         manager = get_selector_manager()
         return {
             "ok": True,
@@ -3026,7 +3033,7 @@ async def api_system_health(ctx=Depends(get_auth_context), _auth=Depends(require
     
     # Selector health
     try:
-        from scraper.selectors import get_selector_manager
+        from scraper.css_selectors import get_selector_manager
         manager = get_selector_manager()
         health_data["modules"]["selectors"] = {
             "status": "ok",

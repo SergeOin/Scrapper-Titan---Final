@@ -41,7 +41,7 @@ posts = await page.query_selector_all("div.feed-shared-update-v2")
 
 AFTER:
 ```python
-from scraper.selectors import get_selector_manager
+from scraper.css_selectors import get_selector_manager
 
 selector_mgr = get_selector_manager()
 posts = await selector_mgr.find_posts(page)
@@ -288,7 +288,7 @@ ml.switch_backend("custom")
 Add these endpoints to server/routes.py:
 
 ```python
-from scraper.selectors import get_selector_manager
+from scraper.css_selectors import get_selector_manager
 from scraper.keyword_strategy import get_keyword_strategy
 from scraper.progressive_mode import get_progressive_mode_manager
 from scraper.smart_scheduler import get_smart_scheduler
@@ -343,7 +343,7 @@ def get_integration_status() -> Dict[str, bool]:
     status = {}
     
     modules = [
-        ("selectors", "scraper.selectors", "get_selector_manager"),
+        ("selectors", "scraper.css_selectors", "get_selector_manager"),
         ("keyword_strategy", "scraper.keyword_strategy", "get_keyword_strategy"),
         ("progressive_mode", "scraper.progressive_mode", "get_progressive_mode_manager"),
         ("unified_filters", "filters.unified", "get_filter_config"),
@@ -369,7 +369,7 @@ def get_all_health_reports() -> Dict[str, Any]:
     reports = {}
     
     try:
-        from scraper.selectors import get_selector_manager
+        from scraper.css_selectors import get_selector_manager
         reports["selectors"] = get_selector_manager().get_health_report()
     except Exception as e:
         reports["selectors"] = {"error": str(e)}

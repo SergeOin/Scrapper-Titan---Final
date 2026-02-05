@@ -59,6 +59,36 @@ def _read_session_store(ctx: AppContext) -> dict[str, Any]:
     return {}
 
 
+def _fix_linkedin_cookie_domains(storage_path: str) -> None:
+    """Fix LinkedIn cookie domains from .www.linkedin.com to .linkedin.com.
+    
+    This is critical because cookies with .www.linkedin.com domain won't be
+    sent to linkedin.com (without www), causing authentication failures.
+    This function should be called after every storage_state save.
+    """
+    try:
+        path = Path(storage_path)
+        if not path.exists():
+            return
+        
+        data = json.loads(path.read_text(encoding="utf-8"))
+        cookies = data.get("cookies", [])
+        changes = 0
+        
+        for cookie in cookies:
+            domain = cookie.get("domain", "")
+            # Fix .www.linkedin.com -> .linkedin.com
+            if domain.startswith(".www."):
+                cookie["domain"] = domain.replace(".www.", ".", 1)
+                changes += 1
+        
+        if changes > 0:
+            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            structlog.get_logger().debug("fixed_cookie_domains", changes=changes, path=storage_path)
+    except Exception:
+        pass  # Silently fail - not critical
+
+
 async def session_status(ctx: AppContext) -> SessionStatus:
     # basic validation: storage_state.json presence and contains cookies
     details: dict[str, Any] = {"storage_state": ctx.settings.storage_state}
@@ -201,10 +231,43 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
         def _sync_login_impl() -> tuple[bool, dict[str, Any]]:
             try:
                 with sync_playwright() as spw:
-                    browser = spw.chromium.launch(headless=_headless)
-                    page = browser.new_page()
+                    # Use persistent browser profile to preserve session across logins
+                    # This helps LinkedIn recognize the browser and reduces security emails
+                    user_data_dir = Path(os.environ.get("LOCALAPPDATA", ".")) / "TitanScraper" / "chrome-profile"
+                    user_data_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    print(f"[LOGIN] Launching persistent context in: {user_data_dir}")
+                    
+                    context = spw.chromium.launch_persistent_context(
+                        user_data_dir=str(user_data_dir),
+                        channel="chrome",  # Use system Chrome instead of Playwright's Chromium
+                        headless=_headless,
+                        locale="fr-FR",
+                        timezone_id="Europe/Paris",
+                        viewport={"width": 1920, "height": 1080},
+                        # Anti-detection flags
+                        args=[
+                            "--disable-blink-features=AutomationControlled",
+                            "--disable-dev-shm-usage",
+                            "--no-first-run",
+                            "--no-default-browser-check",
+                        ],
+                    )
+                    
+                    print(f"[LOGIN] Context launched, existing pages: {len(context.pages)}")
+                    
+                    # Always get or create a page
+                    if context.pages:
+                        page = context.pages[0]
+                        print(f"[LOGIN] Using existing page, current URL: {page.url}")
+                    else:
+                        page = context.new_page()
+                        print("[LOGIN] Created new page")
+                    
                     try:
+                        print(f"[LOGIN] Navigating to LinkedIn login...")
                         page.goto("https://www.linkedin.com/login", timeout=_login_timeout_ms)
+                        print(f"[LOGIN] Navigation complete, current URL: {page.url}")
                         page.fill("input#username", email)
                         page.fill("input#password", password)
                         page.click("button[type=submit]")
@@ -258,15 +321,16 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                                     has_li_at = any(c.get("name") == "li_at" for c in cookies)
                                 except Exception:
                                     pass
-                            page.context.storage_state(path=_storage_state_path)
+                            context.storage_state(path=_storage_state_path)
+                            _fix_linkedin_cookie_domains(_storage_state_path)  # Fix .www.linkedin.com -> .linkedin.com
                             # Save session store using extracted path
                             try:
                                 Path(_session_store_path).write_text(json.dumps({"source": "playwright_sync", "has_li_at": has_li_at}, ensure_ascii=False, indent=2), encoding="utf-8")
                             except Exception:
                                 pass
-                            browser.close()
+                            context.close()
                             return True, {"has_li_at": has_li_at}
-                        browser.close()
+                        context.close()
                         # Provide detailed error about what's blocking login
                         if blocking_reason:
                             return False, {
@@ -278,7 +342,7 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                         return False, {"error": "timeout or captcha/mfa not completed"}
                     except Exception as _e:
                         try:
-                            browser.close()
+                            context.close()
                         except Exception:
                             pass
                         msg = str(_e) or _e.__class__.__name__
@@ -343,6 +407,7 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                 # success if li_at present
                 if has_li_at:
                     await page.context.storage_state(path=ctx.settings.storage_state)
+                    _fix_linkedin_cookie_domains(ctx.settings.storage_state)  # Fix .www.linkedin.com -> .linkedin.com
                     _save_session_store(ctx, {"source": "playwright", "has_li_at": True})
                     await browser.close()
                     return True, {"has_li_at": True}
@@ -356,6 +421,7 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                     except Exception:
                         pass
                     await page.context.storage_state(path=ctx.settings.storage_state)
+                    _fix_linkedin_cookie_domains(ctx.settings.storage_state)  # Fix .www.linkedin.com -> .linkedin.com
                     _save_session_store(ctx, {"source": "playwright", "on_feed": True, "has_li_at": has_li_at})
                     await browser.close()
                     return True, {"on_feed": True, "has_li_at": has_li_at}
@@ -435,6 +501,7 @@ async def login_via_playwright(ctx: AppContext, email: str, password: str, mfa_c
                             total_wait += step
                         if has_li_at or page.url.startswith("https://www.linkedin.com/feed"):
                             page.context.storage_state(path=ctx.settings.storage_state)
+                            _fix_linkedin_cookie_domains(ctx.settings.storage_state)  # Fix .www.linkedin.com -> .linkedin.com
                             _save_session_store(ctx, {"source": "playwright_sync", "has_li_at": has_li_at})
                             browser.close()
                             return True, {"has_li_at": has_li_at}

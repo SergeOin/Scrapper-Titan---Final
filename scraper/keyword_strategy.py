@@ -339,6 +339,14 @@ class KeywordStrategy:
             "all_active": sorted(active, key=lambda x: x["yield_score"], reverse=True),
         }
     
+    def record_result(self, keyword: str, posts_found: int = 0, had_restriction: bool = False, **kwargs) -> None:
+        """Record result of scraping a keyword (alias for update_stats).
+        
+        Provides compatibility with adapters.py interface.
+        """
+        posts_retained = kwargs.get('posts_retained', posts_found if not had_restriction else 0)
+        self.update_stats(keyword, posts_found, posts_retained)
+    
     def retire_keyword(self, keyword: str) -> bool:
         """Manually retire a keyword."""
         if keyword in self._stats:
